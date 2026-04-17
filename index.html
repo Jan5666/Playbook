@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Playbook · Jan's 30% Target</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="description" content="Investment playbook — live prices, P&L, price alerts">
+<meta name="theme-color" content="#09090b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Playbook">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="format-detection" content="telephone=no">
+
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<link rel="apple-touch-icon" sizes="192x192" href="./icon-192.png">
+<link rel="apple-touch-icon" sizes="512x512" href="./icon-512.png">
+<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="./styles.css">
+
+<style>
+  /* Loading splash */
+  #loader { position: fixed; inset: 0; background: #09090b; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; }
+  #loader .mark { width: 72px; height: 72px; border-radius: 18px; background: linear-gradient(135deg, #3b82f6, #a855f7); display: flex; align-items: center; justify-content: center; color: white; font-family: Fraunces, serif; font-weight: 700; font-size: 42px; margin-bottom: 14px; }
+  #loader .txt { color: #71717a; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; }
+  #loader.hide { opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+</style>
+</head>
+<body>
+
+<div id="loader">
+  <div class="mark">P</div>
+  <div class="txt">Loading playbook…</div>
+</div>
+
+<div id="root"></div>
+
+<!-- React (production) -->
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+
+<!-- App -->
+<script src="./data.js"></script>
+<script src="./app.js"></script>
+
+<script>
+  // Hide loader once React mounts
+  const obs = new MutationObserver(() => {
+    const root = document.getElementById('root');
+    if (root && root.children.length > 0) {
+      document.getElementById('loader')?.classList.add('hide');
+      setTimeout(() => document.getElementById('loader')?.remove(), 400);
+      obs.disconnect();
+    }
+  });
+  obs.observe(document.getElementById('root'), { childList: true, subtree: true });
+  // Fail-safe: hide after 8s regardless
+  setTimeout(() => document.getElementById('loader')?.classList.add('hide'), 8000);
+</script>
+
+</body>
+</html>
