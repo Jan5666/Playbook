@@ -106,6 +106,38 @@ window.PB_DATA = {
     {ticker:'NED',name:'Nedbank'},{ticker:'ABG',name:'Absa Group'},{ticker:'INP',name:'Investec plc'},
     {ticker:'DSY',name:'Discovery'},{ticker:'SLM',name:'Sanlam'},{ticker:'OMU',name:'Old Mutual'}
   ],
+  LSE_SUGGESTIONS: [
+    {ticker:'HSBA',name:'HSBC Holdings'},{ticker:'BP',name:'BP plc'},{ticker:'SHEL',name:'Shell'},
+    {ticker:'AZN',name:'AstraZeneca'},{ticker:'GSK',name:'GSK'},{ticker:'ULVR',name:'Unilever'},
+    {ticker:'RIO',name:'Rio Tinto'},{ticker:'AAL',name:'Anglo American'},{ticker:'GLEN',name:'Glencore'},
+    {ticker:'VOD',name:'Vodafone Group'},{ticker:'BT-A',name:'BT Group'},{ticker:'LLOY',name:'Lloyds Banking'},
+    {ticker:'BARC',name:'Barclays'},{ticker:'NWG',name:'NatWest Group'},{ticker:'STAN',name:'Standard Chartered'},
+    {ticker:'DGE',name:'Diageo'},{ticker:'REL',name:'RELX'},{ticker:'CPG',name:'Compass Group'},
+    {ticker:'WPP',name:'WPP'},{ticker:'EXPN',name:'Experian'},{ticker:'LSE',name:'London Stock Exchange Group'},
+    {ticker:'NG',name:'National Grid'},{ticker:'SSE',name:'SSE plc'},{ticker:'BKG',name:'Berkeley Group'}
+  ],
+  ASX_SUGGESTIONS: [
+    {ticker:'CBA',name:'Commonwealth Bank'},{ticker:'BHP',name:'BHP Group'},{ticker:'CSL',name:'CSL Limited'},
+    {ticker:'ANZ',name:'ANZ Banking Group'},{ticker:'WBC',name:'Westpac Banking'},{ticker:'NAB',name:'National Australia Bank'},
+    {ticker:'WES',name:'Wesfarmers'},{ticker:'WOW',name:'Woolworths Group'},{ticker:'MQG',name:'Macquarie Group'},
+    {ticker:'RIO',name:'Rio Tinto'},{ticker:'FMG',name:'Fortescue'},{ticker:'TCL',name:'Transurban'},
+    {ticker:'GMG',name:'Goodman Group'},{ticker:'REA',name:'REA Group'},{ticker:'ALL',name:'Aristocrat Leisure'},
+    {ticker:'COL',name:'Coles Group'},{ticker:'TLS',name:'Telstra'},{ticker:'XRO',name:'Xero Limited'},
+    {ticker:'APX',name:'Appen'},{ticker:'APT',name:'Afterpay'},{ticker:'ZIP',name:'Zip Co'}
+  ],
+  EU_SUGGESTIONS: [
+    {ticker:'ASML',name:'ASML Holding',exchange:'AMS'},{ticker:'PHIA',name:'Philips',exchange:'AMS'},
+    {ticker:'INGA',name:'ING Group',exchange:'AMS'},{ticker:'HEIA',name:'Heineken',exchange:'AMS'},
+    {ticker:'AIR',name:'Airbus',exchange:'PAR'},{ticker:'TTE',name:'TotalEnergies',exchange:'PAR'},
+    {ticker:'SAN',name:'Sanofi',exchange:'PAR'},{ticker:'BNP',name:'BNP Paribas',exchange:'PAR'},
+    {ticker:'MC',name:'LVMH',exchange:'PAR'},{ticker:'OR',name:"L'Oréal",exchange:'PAR'},
+    {ticker:'SU',name:'Schneider Electric',exchange:'PAR'},{ticker:'AI',name:'Air Liquide',exchange:'PAR'},
+    {ticker:'SAP',name:'SAP SE',exchange:'FRA'},{ticker:'SIE',name:'Siemens',exchange:'FRA'},
+    {ticker:'ALV',name:'Allianz',exchange:'FRA'},{ticker:'DTE',name:'Deutsche Telekom',exchange:'FRA'},
+    {ticker:'BMW',name:'BMW Group',exchange:'FRA'},{ticker:'VOW3',name:'Volkswagen',exchange:'FRA'},
+    {ticker:'MBG',name:'Mercedes-Benz',exchange:'FRA'},{ticker:'DBK',name:'Deutsche Bank',exchange:'FRA'},
+    {ticker:'BAS',name:'BASF',exchange:'FRA'},{ticker:'BAYN',name:'Bayer',exchange:'FRA'}
+  ],
   DEPLOYMENT_PHASES: [
     { order:1, phase:'Phase 1', title:'Immediate (within 10 days)',
       actions:['Sell ASPI full','Sell MSTR 50%','Trim NBIS 33%','Trim Citi 20%','Trim NVDA 15%','Trim ASML 25%','Trim OXY 25-30%','Deploy ~$150 CEG, ~$150 TSM, ~$130 UNH, ~$120 VRTX','Add $100 to hedges','Hold ~$150 as opportunity cash'] },
@@ -129,10 +161,15 @@ window.PB_DATA = {
   ]
 };
 
-// Known tickers for sector/name lookups (unified US + JSE suggestions)
+// Known tickers for sector/name lookups (all exchanges)
 window.PB_DATA.findInfo = function(ticker, market) {
-  if (market === 'JSE') {
-    return window.PB_DATA.JSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
+  if (market === 'JSE') return window.PB_DATA.JSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
+  if (market === 'LSE') return window.PB_DATA.LSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
+  if (market === 'ASX') return window.PB_DATA.ASX_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
+  if (market === 'FRA' || market === 'PAR' || market === 'AMS') {
+    return window.PB_DATA.EU_SUGGESTIONS.find(s => s.ticker === ticker && s.exchange === market)
+      || window.PB_DATA.EU_SUGGESTIONS.find(s => s.ticker === ticker)
+      || { ticker, name: ticker };
   }
   return window.PB_DATA.HOLDINGS.find(h => h.ticker === ticker)
     || window.PB_DATA.NEW_PICKS.find(p => p.ticker === ticker)
