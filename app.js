@@ -2621,19 +2621,51 @@ function WatchlistView(_ref8) {
   const pressOriginRef = useRef(null);
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
+  const hapticCtxRef = useRef(null);
 
   const triggerHaptic = () => {
-    // Closest cross-platform analogue to UIImpactFeedbackGenerator(.medium).
-    // No-op on iOS Safari, but works on Android / Windows.
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
       try { navigator.vibrate(20); } catch (_) {}
     }
+    // Audio tick for iOS (vibrate API unsupported). Barely-audible 12ms pop
+    // produced through the speaker — gives tactile-ish feedback on-device.
+    const ctx = hapticCtxRef.current;
+    if (ctx && ctx.state === 'running') {
+      try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        gain.gain.value = 0.08;
+        osc.frequency.value = 180;
+        osc.start();
+        osc.stop(ctx.currentTime + 0.012);
+      } catch (_) {}
+    }
   };
+
+  // Prevent iOS scroll while a drag is active (must be non-passive to cancel)
+  useEffect(() => {
+    const prevent = (e) => { if (dragRef.current && e.cancelable) e.preventDefault(); };
+    document.addEventListener('touchmove', prevent, { passive: false });
+    return () => document.removeEventListener('touchmove', prevent);
+  }, []);
+
+  // Clean up haptic AudioContext on unmount
+  useEffect(() => {
+    return () => { if (hapticCtxRef.current) try { hapticCtxRef.current.close(); } catch (_) {} };
+  }, []);
 
   const clearLongPress = () => {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
+    }
+    // Restore touch-action set during pointerdown when not entering a drag
+    const po = pressOriginRef.current;
+    if (po && !dragRef.current) {
+      const card = cardRefsRef.current.get(po.id);
+      if (card) card.style.touchAction = '';
     }
   };
 
@@ -2667,6 +2699,18 @@ function WatchlistView(_ref8) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (dragRef.current) return;
     clearLongPress();
+    // Claim touch-action NOW so iOS doesn't start a scroll gesture.
+    // (The browser evaluates touch-action at pointerdown time.)
+    const card = cardRefsRef.current.get(id);
+    if (card) card.style.touchAction = 'none';
+    // Warm up AudioContext during this user-gesture so the haptic tick
+    // can fire from the long-press setTimeout (iOS requires user-gesture init).
+    if (!hapticCtxRef.current) {
+      try { hapticCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+    }
+    if (hapticCtxRef.current && hapticCtxRef.current.state === 'suspended') {
+      try { hapticCtxRef.current.resume(); } catch (_) {}
+    }
     pressOriginRef.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY };
     longPressTimerRef.current = setTimeout(() => {
       longPressTimerRef.current = null;
@@ -2719,6 +2763,7 @@ function WatchlistView(_ref8) {
     if (card) {
       card.style.transition = '';
       card.style.transform = '';
+      card.style.touchAction = '';
       try { card.releasePointerCapture(drag.pointerId); } catch (_) {}
     }
     if (commit && drag.moved && drag.targetIdx !== drag.originIdx) {
