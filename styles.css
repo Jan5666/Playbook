@@ -141,30 +141,12 @@ a { color: inherit; text-decoration: none; }
 .badge.blue { background: var(--blue); }
 
 /* Hero */
-.hero { border-bottom: 1px solid var(--border); padding: 18px 0 14px; }
-.hero-grid {
-  display: flex; flex-direction: column; gap: 4px;
-  padding: 0 14px 0;
-}
-.hero-stat .label {
-  font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
-  color: var(--text-dim); margin-bottom: 5px; font-family: var(--mono);
-}
-.hero-stat .value {
-  font-family: var(--mono); font-size: 22px; font-weight: 600;
-  letter-spacing: -0.02em; line-height: 1.15;
-}
-.hero-stat .sub {
-  font-family: var(--mono); font-size: 11px; margin-top: 3px; color: var(--text-muted);
-}
-.hero-stat .sub.up { color: var(--emerald); }
-.hero-stat .sub.down { color: var(--rose); }
+.hero { border-bottom: 1px solid var(--border); padding: 8px 0 8px; }
 
 /* Market ribbon — pill grid */
 .ribbon-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
-  margin: 10px 14px 0; padding-top: 10px;
-  border-top: 1px dashed var(--border);
+  padding: 0 14px;
 }
 .ribbon-pill {
   display: flex; flex-direction: column; align-items: center; gap: 1px;
@@ -191,8 +173,7 @@ a { color: inherit; text-decoration: none; }
 
 /* Market ribbon — marquee */
 .ribbon-marquee {
-  overflow: hidden; margin: 10px 0 0; padding-top: 10px;
-  border-top: 1px dashed var(--border); touch-action: pan-x;
+  overflow: hidden; padding: 0 0; touch-action: none;
 }
 .ribbon-marquee-track {
   display: flex; gap: 8px; width: max-content;
@@ -418,6 +399,24 @@ main {
 .total-portfolio-card { text-align: center; }
 .total-portfolio-card .stat-value { font-size: 28px; }
 .total-portfolio-card .stat-label { font-size: 10px; letter-spacing: 0.15em; }
+
+/* Portfolio summary row inside the card */
+.portfolio-summary-row {
+  display: flex; gap: 8px; margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.portfolio-summary-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.portfolio-summary-label {
+  font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--mono);
+}
+.portfolio-summary-val {
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+}
+.portfolio-summary-val.up { color: var(--emerald); }
+.portfolio-summary-val.down { color: var(--rose); }
 
 /* Market allocation boxes */
 .market-alloc-row {
