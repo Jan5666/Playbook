@@ -65,5 +65,29 @@
   setTimeout(() => document.getElementById('loader')?.classList.add('hide'), 8000);
 </script>
 
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js', { scope: './' })
+        .then(reg => {
+          // A new SW version was found (you deployed new files and bumped CACHE_NAME).
+          // The new worker installs in the background; when it reaches 'installed'
+          // state a controller already exists, meaning this is an update not a
+          // first install — safe to tell the user to refresh.
+          reg.addEventListener('updatefound', () => {
+            const incoming = reg.installing;
+            incoming.addEventListener('statechange', () => {
+              if (incoming.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('[SW] New version ready — refresh to update.');
+                // Optional: show a toast/banner here prompting the user to reload.
+              }
+            });
+          });
+        })
+        .catch(err => console.warn('[SW] Registration failed:', err));
+    });
+  }
+</script>
+
 </body>
 </html>
