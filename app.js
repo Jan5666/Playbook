@@ -2608,31 +2608,140 @@ function WatchlistView(_ref8) {
   const [verifyError, setVerifyError] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [showSuggestions, setShowSuggestions] = usePersistedState('pb.watchlist.showSuggestions.v1', true);
-  const [reorderingId, setReorderingId] = useState(null);
+
+  // Freeform long-press drag-to-reorder. We use pointer events with capture so that
+  // the dragged card keeps receiving move events even when the pointer leaves it.
+  const [draggingId, setDraggingId] = useState(null);
+  const cardRefsRef = useRef(new Map());
+  const setCardRef = useCallback((id) => (el) => {
+    if (el) cardRefsRef.current.set(id, el);
+    else cardRefsRef.current.delete(id);
+  }, []);
   const longPressTimerRef = useRef(null);
-  const longPressFiredRef = useRef(false);
-  const startLongPress = (id) => {
-    longPressFiredRef.current = false;
-    longPressTimerRef.current = setTimeout(() => {
-      longPressFiredRef.current = true;
-      setReorderingId(prev => prev === id ? null : id);
-      if (navigator.vibrate) navigator.vibrate(10);
-    }, 500);
+  const pressOriginRef = useRef(null);
+  const dragRef = useRef(null);
+  const suppressClickRef = useRef(false);
+
+  const triggerHaptic = () => {
+    // Closest cross-platform analogue to UIImpactFeedbackGenerator(.medium).
+    // No-op on iOS Safari, but works on Android / Windows.
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try { navigator.vibrate(20); } catch (_) {}
+    }
   };
-  const cancelLongPress = () => {
+
+  const clearLongPress = () => {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
   };
-  const moveItem = (id, dir) => {
-    const idx = watchlist.findIndex(w => w.id === id);
-    const newIdx = idx + dir;
-    if (newIdx < 0 || newIdx >= watchlist.length) return;
-    const arr = [...watchlist];
-    [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
-    onReorder(arr);
-    if (navigator.vibrate) navigator.vibrate(10);
+
+  const startDrag = (id, pointerId, startY) => {
+    const card = cardRefsRef.current.get(id);
+    if (!card) return;
+    triggerHaptic();
+    const originIdx = watchlist.findIndex(w => w.id === id);
+    if (originIdx < 0) return;
+    dragRef.current = {
+      id, pointerId,
+      pointerStartY: startY,
+      originIdx, targetIdx: originIdx,
+      moved: false,
+    };
+    // Initial lift: pop up to scale 1.05 with a quick transition. Disable the
+    // transition right after so subsequent drag motion follows the finger 1:1.
+    card.style.transition = 'transform 140ms cubic-bezier(0.22, 1, 0.36, 1)';
+    card.style.transform = 'translateY(0) scale(1.05)';
+    setTimeout(() => {
+      if (dragRef.current && dragRef.current.id === id) {
+        card.style.transition = 'transform 0s';
+      }
+    }, 150);
+    try { card.setPointerCapture(pointerId); } catch (_) {}
+    setDraggingId(id);
+  };
+
+  const onCardPointerDown = (e, id) => {
+    if (e.target.closest('button,a,input,[data-no-drag]')) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (dragRef.current) return;
+    clearLongPress();
+    pressOriginRef.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      const po = pressOriginRef.current;
+      if (!po || po.id !== id) return;
+      startDrag(id, po.pointerId, po.y);
+    }, 450);
+  };
+
+  const onCardPointerMove = (e) => {
+    const drag = dragRef.current;
+    if (drag) {
+      if (e.pointerId !== drag.pointerId) return;
+      if (e.cancelable) e.preventDefault();
+      const dy = e.clientY - drag.pointerStartY;
+      const card = cardRefsRef.current.get(drag.id);
+      if (card) card.style.transform = `translateY(${dy}px) scale(1.05)`;
+      drag.moved = true;
+      // Resolve target index by comparing the pointer Y against each sibling's
+      // current center. Only siblings that have shifted past the pointer in the
+      // appropriate direction count.
+      const pointerY = e.clientY;
+      let targetIdx = drag.originIdx;
+      for (let i = 0; i < watchlist.length; i++) {
+        if (i === drag.originIdx) continue;
+        const sibEl = cardRefsRef.current.get(watchlist[i].id);
+        if (!sibEl) continue;
+        const r = sibEl.getBoundingClientRect();
+        const center = r.top + r.height / 2;
+        if (i < drag.originIdx && pointerY < center) { targetIdx = i; break; }
+        if (i > drag.originIdx && pointerY > center) { targetIdx = i; }
+      }
+      drag.targetIdx = targetIdx;
+      return;
+    }
+    if (longPressTimerRef.current) {
+      const po = pressOriginRef.current;
+      if (po) {
+        const dx = e.clientX - po.x;
+        const dy = e.clientY - po.y;
+        if (dx * dx + dy * dy > 100) clearLongPress();
+      }
+    }
+  };
+
+  const finishDrag = (commit) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const card = cardRefsRef.current.get(drag.id);
+    if (card) {
+      card.style.transition = '';
+      card.style.transform = '';
+      try { card.releasePointerCapture(drag.pointerId); } catch (_) {}
+    }
+    if (commit && drag.moved && drag.targetIdx !== drag.originIdx) {
+      const arr = [...watchlist];
+      const [m] = arr.splice(drag.originIdx, 1);
+      arr.splice(drag.targetIdx, 0, m);
+      onReorder(arr);
+    }
+    if (drag.moved) suppressClickRef.current = true;
+    dragRef.current = null;
+    setDraggingId(null);
+  };
+
+  const onCardPointerUp = () => {
+    clearLongPress();
+    pressOriginRef.current = null;
+    if (dragRef.current) finishDrag(true);
+  };
+
+  const onCardPointerCancel = () => {
+    clearLongPress();
+    pressOriginRef.current = null;
+    if (dragRef.current) finishDrag(false);
   };
   const submit = async () => {
     const t = newTicker.trim();
@@ -2691,10 +2800,10 @@ function WatchlistView(_ref8) {
       React.createElement("h3", null, "Empty watchlist"),
       React.createElement("p", null, "Tap Add to track your first ticker."))
     : React.createElement("div", { className: "grid grid-2 mb-6 watchlist-grid" },
-      watchlist.map((w, wi) => {
+      watchlist.map((w) => {
         const q = prices[priceKey(w.market, w.ticker)];
         const displayName = w.name || resolveTickerName(w.ticker, w.market, q) || w.ticker;
-        const isReordering = reorderingId === w.id;
+        const isDragging = draggingId === w.id;
         let athBadge = null;
         if (q && q.yearHigh && q.yearHigh > 0) {
           const pct = (q.price - q.yearHigh) / q.yearHigh * 100;
@@ -2705,15 +2814,18 @@ function WatchlistView(_ref8) {
              React.createElement("span", { className: "ath-badge-val" }, atAth ? 'ATH' : pct.toFixed(1) + '%'));
         }
         return React.createElement("div", {
-          key: w.id, className: "pos-card" + (isReordering ? " reordering" : ""),
+          key: w.id,
+          ref: setCardRef(w.id),
+          className: "pos-card" + (isDragging ? " dragging" : ""),
           onClick: () => {
-            if (longPressFiredRef.current) { longPressFiredRef.current = false; return; }
-            if (reorderingId) { setReorderingId(null); return; }
+            if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+            if (dragRef.current) return;
             onOpenDetail(w.ticker, w.market);
           },
-          onTouchStart: () => startLongPress(w.id),
-          onTouchEnd: cancelLongPress,
-          onTouchMove: cancelLongPress,
+          onPointerDown: (e) => onCardPointerDown(e, w.id),
+          onPointerMove: onCardPointerMove,
+          onPointerUp: onCardPointerUp,
+          onPointerCancel: onCardPointerCancel,
           onContextMenu: e => e.preventDefault()
         },
           React.createElement("div", { className: "pos-head" },
@@ -2724,30 +2836,11 @@ function WatchlistView(_ref8) {
               React.createElement("div", { className: "tkr-name" }, displayName)),
             React.createElement("div", { className: "flex items-center gap-2" },
               athBadge,
-              isReordering
-                ? React.createElement(React.Fragment, null,
-                    React.createElement("button", {
-                      className: "btn btn-ghost btn-xs reorder-btn",
-                      onClick: e => { e.stopPropagation(); moveItem(w.id, -1); },
-                      disabled: wi === 0,
-                      'aria-label': "Move up"
-                    }, React.createElement(Icon, { name: "chevron-up", size: 15 })),
-                    React.createElement("button", {
-                      className: "btn btn-ghost btn-xs reorder-btn",
-                      onClick: e => { e.stopPropagation(); moveItem(w.id, 1); },
-                      disabled: wi === watchlist.length - 1,
-                      'aria-label': "Move down"
-                    }, React.createElement(Icon, { name: "chevron-down", size: 15 })),
-                    React.createElement("button", {
-                      className: "btn btn-ghost btn-xs",
-                      onClick: e => { e.stopPropagation(); setReorderingId(null); },
-                      'aria-label': "Done"
-                    }, React.createElement(Icon, { name: "check", size: 13 })))
-                : React.createElement("button", {
-                    className: "btn btn-ghost btn-xs",
-                    onClick: e => { e.stopPropagation(); onRemove(w.id); },
-                    'aria-label': "Remove"
-                  }, React.createElement(Icon, { name: "x", size: 13 })))),
+              React.createElement("button", {
+                className: "btn btn-ghost btn-xs",
+                onClick: e => { e.stopPropagation(); onRemove(w.id); },
+                'aria-label': "Remove"
+              }, React.createElement(Icon, { name: "x", size: 13 })))),
           React.createElement(PriceBlock, { quote: q, size: "lg", showDailyRow: true }));
       })),
     React.createElement("div", { className: "eyebrow suggestions-head" },
