@@ -103,33 +103,45 @@ function useTtlCache(ttlMs) {
   return [cache, load];
 }
 function useSwipeDownToClose(panelRef, onClose) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
     const isMobileLayout = () => window.matchMedia('(max-width: 639px)').matches;
     let startY = 0;
     let lastY = 0;
+    let prevY = 0;
     let startScroll = 0;
     let dragging = false;
+    let velocity = 0;
+    let lastT = 0;
     const onTouchStart = (e) => {
       if (!isMobileLayout() || e.touches.length !== 1) return;
       startY = e.touches[0].clientY;
       lastY = startY;
+      prevY = startY;
       startScroll = panel.scrollTop;
-      dragging = true;
+      dragging = false;
+      velocity = 0;
+      lastT = Date.now();
     };
     const onTouchMove = (e) => {
-      if (!dragging) return;
-      lastY = e.touches[0].clientY;
-      const dy = lastY - startY;
-      if (dy <= 0) {
-        panel.classList.remove('swiping');
-        panel.style.transform = '';
-        return;
+      const y = e.touches[0].clientY;
+      const dy = y - startY;
+      if (!dragging) {
+        if (startScroll > 0 || dy <= 0) { lastY = y; return; }
+        dragging = true;
+        panel.classList.add('swiping');
       }
-      if (startScroll > 0) { dragging = false; return; }
-      panel.classList.add('swiping');
-      panel.style.transform = `translateY(${dy}px)`;
+      const now = Date.now();
+      const dt = now - lastT;
+      if (dt > 0) velocity = (y - prevY) / dt;
+      prevY = y;
+      lastT = now;
+      lastY = y;
+      const dampened = dy > 0 ? dy * 0.85 : 0;
+      panel.style.transform = `translateY(${dampened}px)`;
       if (e.cancelable) e.preventDefault();
     };
     const finish = () => {
@@ -137,11 +149,23 @@ function useSwipeDownToClose(panelRef, onClose) {
       dragging = false;
       const dy = lastY - startY;
       panel.classList.remove('swiping');
-      if (dy > 110) {
-        panel.classList.add('swipe-close');
-        setTimeout(() => onClose(), 220);
+      const shouldClose = dy > 110 || (dy > 40 && velocity > 0.4);
+      if (shouldClose) {
+        panel.style.transition = 'transform 0.24s cubic-bezier(0.4, 0, 1, 1)';
+        panel.style.transform = 'translateY(100%)';
+        const cb = () => {
+          panel.style.transition = '';
+          panel.style.transform = '';
+          closeRef.current();
+        };
+        panel.addEventListener('transitionend', cb, { once: true });
+        setTimeout(cb, 300);
       } else {
+        panel.style.transition = 'transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)';
         panel.style.transform = '';
+        const clear = () => { panel.style.transition = ''; };
+        panel.addEventListener('transitionend', clear, { once: true });
+        setTimeout(clear, 320);
       }
     };
     panel.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -154,7 +178,7 @@ function useSwipeDownToClose(panelRef, onClose) {
       panel.removeEventListener('touchend', finish);
       panel.removeEventListener('touchcancel', finish);
     };
-  }, [panelRef, onClose]);
+  }, [panelRef]);
 }
 const MARKET_CURRENCY = {
   US:  { sym: '$',   code: 'USD', label: 'USD' },
@@ -182,6 +206,26 @@ const DISPLAY_CURRENCIES = [
   { code: 'EUR', sym: '\u20ac', label: 'Euro' },
 ];
 const CURRENCY_SYMBOLS = { USD: '$', ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' };
+const RIBBON_CATALOG = [
+  { key: 'US:^SPX',    ticker: '^SPX',    market: 'US', label: 'S&P 500',         short: 'S&P',  decimals: 0, invertColor: false },
+  { key: 'US:^VIX',    ticker: '^VIX',    market: 'US', label: 'VIX',             short: 'VIX',  decimals: 2, invertColor: true  },
+  { key: 'US:^DJI',    ticker: '^DJI',    market: 'US', label: 'Dow Jones',       short: 'DOW',  decimals: 0, invertColor: false },
+  { key: 'US:^IXIC',   ticker: '^IXIC',   market: 'US', label: 'Nasdaq',          short: 'NDQ',  decimals: 0, invertColor: false },
+  { key: 'US:^FTSE',   ticker: '^FTSE',   market: 'US', label: 'FTSE 100',        short: 'FTSE', decimals: 0, invertColor: false },
+  { key: 'US:^N225',   ticker: '^N225',   market: 'US', label: 'Nikkei 225',      short: 'N225', decimals: 0, invertColor: false },
+  { key: 'US:^GDAXI',  ticker: '^GDAXI',  market: 'US', label: 'DAX',             short: 'DAX',  decimals: 0, invertColor: false },
+  { key: 'US:GC=F',    ticker: 'GC=F',    market: 'US', label: 'Gold',            short: 'GOLD', decimals: 2, invertColor: false },
+  { key: 'US:SI=F',    ticker: 'SI=F',    market: 'US', label: 'Silver',          short: 'SLVR', decimals: 2, invertColor: false },
+  { key: 'US:CL=F',    ticker: 'CL=F',    market: 'US', label: 'Crude Oil (WTI)', short: 'OIL',  decimals: 2, invertColor: false },
+  { key: 'US:BZ=F',    ticker: 'BZ=F',    market: 'US', label: 'Brent Crude',     short: 'BRNT', decimals: 2, invertColor: false },
+  { key: 'US:NG=F',    ticker: 'NG=F',    market: 'US', label: 'Natural Gas',     short: 'NGAS', decimals: 3, invertColor: false },
+  { key: 'US:HG=F',    ticker: 'HG=F',    market: 'US', label: 'Copper',          short: 'CPPR', decimals: 3, invertColor: false },
+  { key: 'US:PL=F',    ticker: 'PL=F',    market: 'US', label: 'Platinum',        short: 'PLAT', decimals: 2, invertColor: false },
+  { key: 'US:BTC-USD', ticker: 'BTC-USD', market: 'US', label: 'Bitcoin',         short: 'BTC',  decimals: 0, invertColor: false },
+  { key: 'US:ETH-USD', ticker: 'ETH-USD', market: 'US', label: 'Ethereum',        short: 'ETH',  decimals: 0, invertColor: false },
+];
+const RIBBON_CATALOG_MAP = Object.fromEntries(RIBBON_CATALOG.map(r => [r.key, r]));
+const DEFAULT_RIBBON_ITEMS = ['US:^SPX', 'US:^VIX'];
 // CORS proxies for endpoints that don't allow direct browser fetches
 // (Yahoo Finance, Stooq). Tried in order; first 200 wins. The ordering
 // reflects observed reliability — corsproxy.io is the most stable.
@@ -227,7 +271,7 @@ function yahooSymbol(ticker, market) {
   if (ticker === '^SPX') return '%5EGSPC';
   if (ticker === '^VIX') return '%5EVIX';
   if (ticker === '^GSPC') return '%5EGSPC';
-  return ticker;
+  return encodeURIComponent(ticker);
 }
 function stooqSymbol(ticker, market) {
   if (market === 'JSE') return ticker.toLowerCase() + '.jo';
@@ -1034,6 +1078,13 @@ const Icon = _ref => {
       cy: "12",
       r: "3"
     })),
+    'eye-off': React.createElement("g", null, React.createElement("path", {
+      d: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"
+    }), React.createElement("path", {
+      d: "M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"
+    }), React.createElement("path", {
+      d: "M14.12 14.12a3 3 0 1 1-4.24-4.24"
+    }), React.createElement("line", { x1: "1", y1: "1", x2: "23", y2: "23" })),
     star: React.createElement("path", {
       d: "M12 2 15.09 8.26 22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
     }),
@@ -1136,7 +1187,10 @@ const Icon = _ref => {
       y1: "18",
       x2: "3.01",
       y2: "18"
-    }))
+    })),
+    activity: React.createElement("polyline", {
+      points: "22 12 18 12 15 21 9 3 6 12 2 12"
+    })
   };
   return React.createElement("svg", {
     width: size,
@@ -1331,6 +1385,8 @@ function App() {
   const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
   const [displayCurrency, setDisplayCurrency] = usePersistedState('pb.displayCurrency.v1', 'USD');
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
+  const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
+  const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
   const [showSettings, setShowSettings] = useState(false);
   const [view, setView] = useState('dashboard');
   const [newsByTicker, loadNewsRaw] = useTtlCache(15 * 60 * 1000);
@@ -1388,19 +1444,18 @@ function App() {
     DATA.NEW_PICKS.forEach(p => set.add('US:' + p.ticker));
     DATA.HEDGES.forEach(h => set.add('US:' + h.ticker));
     set.add('US:VOO');
-    set.add('US:^SPX');
-    set.add('US:^VIX');
+    ribbonItems.forEach(k => set.add(k));
     positions.forEach(p => set.add(priceKey(p.market, p.ticker)));
     watchlist.forEach(w => set.add(priceKey(w.market, w.ticker)));
     alerts.forEach(a => set.add(priceKey(a.market, a.ticker)));
     return Array.from(set).map(k => {
-      const [m, t] = k.split(':');
+      const [m, ...rest] = k.split(':');
       return {
         market: m,
-        ticker: t
+        ticker: rest.join(':')
       };
     });
-  }, [positions, watchlist, alerts]);
+  }, [positions, watchlist, alerts, ribbonItems]);
   const { prices, loading, lastUpdate, refresh: refreshPrices } = usePriceFeed(tickersToFetch, toast);
   const fireNotification = useCallback(async trig => {
     const sym = trig.market === 'JSE' ? 'R' : '$';
@@ -1667,8 +1722,9 @@ function App() {
   }, React.createElement(Icon, {
     name: "settings"
   })))), React.createElement(Hero, {
-    positions: positions,
-    prices: prices
+    prices: prices,
+    ribbonItems: ribbonItems,
+    ribbonMode: ribbonMode
   }), React.createElement("nav", {
     className: "nav"
   }, React.createElement("div", {
@@ -1708,6 +1764,10 @@ function App() {
     prices: prices,
     onExport: exportData,
     onImport: importData,
+    ribbonItems: ribbonItems,
+    onSetRibbonItems: setRibbonItems,
+    ribbonMode: ribbonMode,
+    onSetRibbonMode: setRibbonMode,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -1737,52 +1797,87 @@ function App() {
 }
 function Hero(_ref4) {
   let {
-    positions,
-    prices
+    prices,
+    ribbonItems,
+    ribbonMode
   } = _ref4;
-  const groups = {};
-  positions.forEach(p => {
-    const mc = MARKET_CURRENCY[p.market];
-    if (!mc) return;
-    if (!groups[mc.code]) groups[mc.code] = { ...mc, value: 0, cost: 0, count: 0, fmtMarket: p.market };
-    groups[mc.code].cost += p.shares * p.costBasis;
-    const q = prices[priceKey(p.market, p.ticker)];
-    if (q) groups[mc.code].value += p.shares * q.price;
-    groups[mc.code].count++;
-  });
-  const spx = prices['US:^SPX'];
-  const vix = prices['US:^VIX'];
-  const renderIndex = (key, label, quote, decimals, invertColor) => {
+  const ribbonScrollRef = useRef(null);
+  const ribbonAnimRef = useRef(null);
+  const ribbonOffsetRef = useRef(0);
+  const ribbonDragRef = useRef(null);
+
+  useEffect(() => {
+    if (ribbonMode !== 'marquee') return;
+    const el = ribbonScrollRef.current;
+    if (!el) return;
+    let lastT = null;
+    const speed = 30;
+    const tick = (t) => {
+      if (!lastT) lastT = t;
+      if (!ribbonDragRef.current) {
+        ribbonOffsetRef.current += (t - lastT) / 1000 * speed;
+        const half = el.scrollWidth / 2;
+        if (half > 0 && ribbonOffsetRef.current >= half) ribbonOffsetRef.current -= half;
+        if (ribbonOffsetRef.current < 0) ribbonOffsetRef.current += half;
+        el.style.transform = `translateX(-${ribbonOffsetRef.current}px)`;
+      }
+      lastT = t;
+      ribbonAnimRef.current = requestAnimationFrame(tick);
+    };
+    ribbonAnimRef.current = requestAnimationFrame(tick);
+    return () => { if (ribbonAnimRef.current) cancelAnimationFrame(ribbonAnimRef.current); };
+  }, [ribbonMode, ribbonItems]);
+
+  const onRibbonTouchStart = (e) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    ribbonDragRef.current = { startX: touch.clientX, startOffset: ribbonOffsetRef.current };
+  };
+  const onRibbonTouchMove = (e) => {
+    const drag = ribbonDragRef.current;
+    if (!drag) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - drag.startX;
+    ribbonOffsetRef.current = drag.startOffset - dx;
+    const el = ribbonScrollRef.current;
+    if (el) el.style.transform = `translateX(-${ribbonOffsetRef.current}px)`;
+  };
+  const onRibbonTouchEnd = () => { ribbonDragRef.current = null; };
+
+  const renderPill = (key, suffix) => {
+    const cat = RIBBON_CATALOG_MAP[key];
+    if (!cat) return null;
+    const quote = prices[key];
     const has = !!quote;
     const up = has && quote.changePct >= 0;
-    const colorUp = invertColor ? !up : up;
-    return React.createElement("div", { key: key, className: "hero-index" },
-      React.createElement("span", { className: "hero-index-label" }, label),
-      React.createElement("span", { className: "hero-index-value" }, has ? quote.price.toFixed(decimals) : '—'),
-      React.createElement("span", { className: `hero-index-chg ${colorUp ? 'up' : 'down'}` },
-        has ? (quote.changePct >= 0 ? '+' : '') + quote.changePct.toFixed(2) + '%' : '—'
+    const colorUp = cat.invertColor ? !up : up;
+    return React.createElement("div", { key: key + (suffix || ''), className: "ribbon-pill" },
+      React.createElement("span", { className: "ribbon-pill-label" }, cat.short),
+      React.createElement("span", { className: "ribbon-pill-val" }, has ? quote.price.toLocaleString('en-US', { minimumFractionDigits: cat.decimals, maximumFractionDigits: cat.decimals }) : '—'),
+      React.createElement("span", { className: `ribbon-pill-chg ${colorUp ? 'up' : 'down'}` },
+        has ? (quote.changePct >= 0 ? '+' : '') + quote.changePct.toFixed(2) + '%' : ''
       )
     );
   };
+  const sortedRibbon = RIBBON_CATALOG.filter(r => ribbonItems.includes(r.key)).map(r => r.key);
+  const pills = sortedRibbon.map(k => renderPill(k)).filter(Boolean);
+
+  const useMarquee = ribbonMode === 'marquee' && pills.length > 3;
+  const ribbonEl = useMarquee
+    ? React.createElement("div", {
+        className: "ribbon-marquee",
+        onTouchStart: onRibbonTouchStart,
+        onTouchMove: onRibbonTouchMove,
+        onTouchEnd: onRibbonTouchEnd,
+        onTouchCancel: onRibbonTouchEnd
+      }, React.createElement("div", { ref: ribbonScrollRef, className: "ribbon-marquee-track" },
+        ...pills, ...sortedRibbon.map(k => renderPill(k, '-dup')).filter(Boolean)))
+    : pills.length > 0 ? React.createElement("div", { className: "ribbon-grid" }, pills) : null;
+
   return React.createElement("section", {
     className: "hero"
-  }, React.createElement("div", {
-    className: "hero-grid"
-  }, Object.values(groups).map(g => {
-    const gain = g.cost > 0 ? (g.value - g.cost) / g.cost * 100 : 0;
-    return React.createElement("div", { key: g.code, className: "hero-stat" },
-      React.createElement("div", { className: "label" }, "Your " + g.label),
-      React.createElement("div", { className: "value" }, fmt(g.value, g.fmtMarket)),
-      React.createElement("div", { className: `sub ${gain >= 0 ? 'up' : 'down'}` },
-        gain >= 0 ? '+' : '', gain.toFixed(2), "% \xB7 ", g.count, " pos"
-      )
-    );
-  })), React.createElement("div", {
-    className: "hero-indices"
-  },
-    renderIndex('spx', 'S&P 500', spx, 0, false),
-    renderIndex('vix', 'VIX', vix, 2, true)
-  ));
+  }, ribbonEl);
 }
 function PriceBlock(_ref5) {
   let {
@@ -2131,6 +2226,7 @@ function DashboardView(_ref6) {
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = totalCost > 0 ? totalPnl / totalCost * 100 : 0;
   const [contribModalOpen, setContribModalOpen] = useState(false);
+  const [valueHidden, setValueHidden] = usePersistedState('pb.valueHidden.v1', false);
   const contributed = contributions.reduce((map, c) => { map[c.currency] = (map[c.currency] || 0) + c.amount; return map; }, {});
   const overallReturnGroups = currencyGroups.filter(g => (contributed[g.code] || 0) > 0).map(g => ({
     ...g, contrib: contributed[g.code],
@@ -2150,10 +2246,18 @@ function DashboardView(_ref6) {
     : React.createElement(React.Fragment, null,
       // Stat cards row
       React.createElement("div", { className: "stat-card total-portfolio-card mb-4" },
-        React.createElement("div", { className: "stat-label" }, "Total Portfolio Value · " + displayCurrency),
-        React.createElement("div", { className: "stat-value" }, fmtCcy(totalValue, displayCurrency)),
-        React.createElement("div", { className: `stat-sub ${totalPnlPct >= 0 ? 'up' : 'down'}` },
-          totalPnlPct >= 0 ? '+' : '', totalPnlPct.toFixed(2), "% · ",
+        React.createElement("div", { className: "flex justify-between items-center" },
+          React.createElement("div", { className: "stat-label" }, "Total Portfolio Value \xB7 " + displayCurrency),
+          React.createElement("button", {
+            className: "icon-btn",
+            onClick: () => setValueHidden(v => !v),
+            'aria-label': valueHidden ? "Show value" : "Hide value",
+            style: { marginTop: -4, marginBottom: -4 }
+          }, React.createElement(Icon, { name: valueHidden ? 'eye-off' : 'eye', size: 14 }))),
+        React.createElement("div", { className: "stat-value", style: valueHidden ? { filter: 'blur(10px)', userSelect: 'none', WebkitUserSelect: 'none' } : {} },
+          fmtCcy(totalValue, displayCurrency)),
+        React.createElement("div", { className: `stat-sub ${totalPnlPct >= 0 ? 'up' : 'down'}`, style: valueHidden ? { filter: 'blur(6px)', userSelect: 'none', WebkitUserSelect: 'none' } : {} },
+          totalPnlPct >= 0 ? '+' : '', totalPnlPct.toFixed(2), "% \xB7 ",
           fmtCcySigned(totalPnl, displayCurrency))),
       marketGroups.length > 1 && React.createElement("div", { className: "market-alloc-row mb-4" },
         marketGroups.map(g => {
@@ -2492,6 +2596,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
   };
 
   const selectSuggestion = (s) => {
+    remoteReqId.current++;
     setQuery(s.ticker);
     onChange(s.ticker);
     onMarketChange(s.market);
@@ -2661,12 +2766,24 @@ function WatchlistView(_ref8) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
-    // Restore touch-action set during pointerdown when not entering a drag
-    const po = pressOriginRef.current;
-    if (po && !dragRef.current) {
-      const card = cardRefsRef.current.get(po.id);
-      if (card) card.style.touchAction = '';
-    }
+  };
+
+  const cardHeightCache = useRef(0);
+
+  const displaceNeighbours = (originIdx, targetIdx) => {
+    const h = cardHeightCache.current;
+    watchlist.forEach((w, i) => {
+      if (i === originIdx) return;
+      const el = cardRefsRef.current.get(w.id);
+      if (!el) return;
+      let shift = 0;
+      if (originIdx < targetIdx) {
+        if (i > originIdx && i <= targetIdx) shift = -h;
+      } else if (originIdx > targetIdx) {
+        if (i >= targetIdx && i < originIdx) shift = h;
+      }
+      el.style.transform = shift ? `translateY(${shift}px)` : '';
+    });
   };
 
   const startDrag = (id, pointerId, startY) => {
@@ -2675,19 +2792,20 @@ function WatchlistView(_ref8) {
     triggerHaptic();
     const originIdx = watchlist.findIndex(w => w.id === id);
     if (originIdx < 0) return;
+    const rect = card.getBoundingClientRect();
+    cardHeightCache.current = rect.height + 8;
     dragRef.current = {
       id, pointerId,
       pointerStartY: startY,
       originIdx, targetIdx: originIdx,
       moved: false,
     };
-    // Initial lift: pop up to scale 1.05 with a quick transition. Disable the
-    // transition right after so subsequent drag motion follows the finger 1:1.
     card.style.transition = 'transform 140ms cubic-bezier(0.22, 1, 0.36, 1)';
     card.style.transform = 'translateY(0) scale(1.05)';
+    card.style.zIndex = '50';
     setTimeout(() => {
       if (dragRef.current && dragRef.current.id === id) {
-        card.style.transition = 'transform 0s';
+        card.style.transition = 'none';
       }
     }, 150);
     try { card.setPointerCapture(pointerId); } catch (_) {}
@@ -2699,12 +2817,6 @@ function WatchlistView(_ref8) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (dragRef.current) return;
     clearLongPress();
-    // Claim touch-action NOW so iOS doesn't start a scroll gesture.
-    // (The browser evaluates touch-action at pointerdown time.)
-    const card = cardRefsRef.current.get(id);
-    if (card) card.style.touchAction = 'none';
-    // Warm up AudioContext during this user-gesture so the haptic tick
-    // can fire from the long-press setTimeout (iOS requires user-gesture init).
     if (!hapticCtxRef.current) {
       try { hapticCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
     }
@@ -2729,21 +2841,27 @@ function WatchlistView(_ref8) {
       const card = cardRefsRef.current.get(drag.id);
       if (card) card.style.transform = `translateY(${dy}px) scale(1.05)`;
       drag.moved = true;
-      // Resolve target index by comparing the pointer Y against each sibling's
-      // current center. Only siblings that have shifted past the pointer in the
-      // appropriate direction count.
       const pointerY = e.clientY;
       let targetIdx = drag.originIdx;
       for (let i = 0; i < watchlist.length; i++) {
         if (i === drag.originIdx) continue;
         const sibEl = cardRefsRef.current.get(watchlist[i].id);
         if (!sibEl) continue;
-        const r = sibEl.getBoundingClientRect();
-        const center = r.top + r.height / 2;
-        if (i < drag.originIdx && pointerY < center) { targetIdx = i; break; }
-        if (i > drag.originIdx && pointerY > center) { targetIdx = i; }
+        const baseTop = sibEl.getBoundingClientRect().top;
+        const currentTransform = sibEl.style.transform;
+        let appliedShift = 0;
+        if (currentTransform) {
+          const m = currentTransform.match(/translateY\(([-\d.]+)px\)/);
+          if (m) appliedShift = parseFloat(m[1]);
+        }
+        const naturalCenter = baseTop - appliedShift + sibEl.offsetHeight / 2;
+        if (i < drag.originIdx && pointerY < naturalCenter) { targetIdx = i; break; }
+        if (i > drag.originIdx && pointerY > naturalCenter) { targetIdx = i; }
       }
-      drag.targetIdx = targetIdx;
+      if (targetIdx !== drag.targetIdx) {
+        drag.targetIdx = targetIdx;
+        displaceNeighbours(drag.originIdx, targetIdx);
+      }
       return;
     }
     if (longPressTimerRef.current) {
@@ -2763,9 +2881,13 @@ function WatchlistView(_ref8) {
     if (card) {
       card.style.transition = '';
       card.style.transform = '';
-      card.style.touchAction = '';
+      card.style.zIndex = '';
       try { card.releasePointerCapture(drag.pointerId); } catch (_) {}
     }
+    watchlist.forEach(w => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el) el.style.transform = '';
+    });
     if (commit && drag.moved && drag.targetIdx !== drag.originIdx) {
       const arr = [...watchlist];
       const [m] = arr.splice(drag.originIdx, 1);
@@ -4530,7 +4652,8 @@ function FxSummary({ positions, contributions, prices, fxRates, displayCurrency,
 }
 
 function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
-                        positions, contributions, prices, onExport, onImport, onClose }) {
+                        positions, contributions, prices, onExport, onImport,
+                        ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const fileInputRef = useRef(null);
@@ -4547,6 +4670,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const rates = fxRates?.rates || {};
   const sections = [
     { key: 'display', label: 'Display', icon: 'globe' },
+    { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
     { key: 'data', label: 'Data', icon: 'download' },
   ];
@@ -4593,6 +4717,42 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               React.createElement(Icon, { name: "globe", size: 12 }), " How FX gain/loss is calculated"),
             React.createElement("div", { className: "settings-info-body" },
               "When you add a position, the live exchange rate is stored. Price P&L tracks native-currency changes. FX impact shows how much your ", displayCurrency, " value has shifted purely from currency moves.")
+          )
+        ),
+        activeSection === 'ribbon' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-row mb-3" },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, "Display mode"),
+              React.createElement("div", { className: "settings-row-desc" },
+                ribbonItems.length <= 3
+                  ? "With 3 or fewer items, pills display in a row."
+                  : "Choose how extra pills are laid out.")
+            ),
+            ribbonItems.length > 3 && React.createElement("select", {
+              value: ribbonMode,
+              onChange: e => onSetRibbonMode(e.target.value),
+              style: { width: 'auto', minWidth: 110 }
+            },
+              React.createElement("option", { value: "rows" }, "Rows of 3"),
+              React.createElement("option", { value: "marquee" }, "Scrolling ticker"))
+          ),
+          React.createElement("div", { className: "settings-section-title mb-2" }, "Select items"),
+          React.createElement("div", { className: "settings-row-desc mb-3" }, "Tap to toggle. Drag is not supported — items appear in catalog order."),
+          React.createElement("div", { className: "ribbon-catalog-grid" },
+            RIBBON_CATALOG.map(item => {
+              const active = ribbonItems.includes(item.key);
+              return React.createElement("button", {
+                key: item.key,
+                className: `ribbon-catalog-item ${active ? 'active' : ''}`,
+                onClick: () => {
+                  if (active) onSetRibbonItems(ribbonItems.filter(k => k !== item.key));
+                  else onSetRibbonItems([...ribbonItems, item.key]);
+                }
+              },
+                React.createElement("span", { className: "ribbon-catalog-short" }, item.short),
+                React.createElement("span", { className: "ribbon-catalog-name" }, item.label)
+              );
+            })
           )
         ),
         activeSection === 'fx' && React.createElement("div", { className: "settings-section" },
