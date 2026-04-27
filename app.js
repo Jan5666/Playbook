@@ -2258,19 +2258,33 @@ function DashboardView(_ref6) {
           fmtCcy(totalValue, displayCurrency)),
         React.createElement("div", { className: `stat-sub ${totalPnlPct >= 0 ? 'up' : 'down'}`, style: valueHidden ? { filter: 'blur(6px)', userSelect: 'none', WebkitUserSelect: 'none' } : {} },
           totalPnlPct >= 0 ? '+' : '', totalPnlPct.toFixed(2), "% \xB7 ",
-          fmtCcySigned(totalPnl, displayCurrency))),
-      marketGroups.length > 1 && React.createElement("div", { className: "market-alloc-row mb-4" },
-        marketGroups.map(g => {
-          const pct = totalValue > 0 ? g.value / totalValue * 100 : 0;
-          return React.createElement("div", { key: g.market, className: "market-alloc-box" },
-            React.createElement("div", { className: "market-alloc-label" }, g.market),
-            React.createElement("div", { className: "market-alloc-value" }, fmtCcy(g.value, displayCurrency)),
-            React.createElement("div", { className: `market-alloc-pct ${g.pnlPct >= 0 ? 'up' : 'down'}` },
-              g.pnlPct >= 0 ? '+' : '', g.pnlPct.toFixed(1), "%"));
-        })),
-      // FX summary
-      React.createElement(FxSummary, {
-        positions, contributions, prices, fxRates, displayCurrency, onSetDisplayCurrency }),
+          fmtCcySigned(totalPnl, displayCurrency)),
+        (() => {
+          const snap = computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency });
+          const hasRates = !!fxRates?.rates;
+          const totalContrib = contributions.reduce((s, c) => {
+            const v = convertCcy(c.amount, c.currency, displayCurrency, fxRates?.rates || null);
+            return s + (v || 0);
+          }, 0);
+          const overallProfit = totalValue - totalContrib;
+          const fxGain = snap.fxGainOnCost;
+          const hasFx = hasRates && Math.abs(fxGain) > 0.01;
+          const hasContrib = totalContrib > 0;
+          return (hasFx || hasContrib) ? React.createElement("div", {
+            className: "portfolio-summary-row",
+            style: valueHidden ? { filter: 'blur(6px)', userSelect: 'none', WebkitUserSelect: 'none' } : {}
+          },
+            hasFx && React.createElement("div", { className: "portfolio-summary-item" },
+              React.createElement("span", { className: "portfolio-summary-label" },
+                "Forex " + (fxGain >= 0 ? "gain" : "loss")),
+              React.createElement("span", { className: `portfolio-summary-val ${fxGain >= 0 ? 'up' : 'down'}` },
+                fmtCcySigned(fxGain, displayCurrency))),
+            hasContrib && React.createElement("div", { className: "portfolio-summary-item" },
+              React.createElement("span", { className: "portfolio-summary-label" }, "Overall profit"),
+              React.createElement("span", { className: `portfolio-summary-val ${overallProfit >= 0 ? 'up' : 'down'}` },
+                fmtCcySigned(overallProfit, displayCurrency)))
+          ) : null;
+        })()),
       // Portfolio growth chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Portfolio Growth"),
