@@ -4,7 +4,8 @@
       "Bash(npx -y serve -l 3000)",
       "Bash(start:*)",
       "Bash(node -e ':*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(awk \"/id:'nasdaq100'/,/id:'dow'/\" data.js)"
     ]
   }
 }

@@ -126,11 +126,13 @@ function useSwipeDownToClose(panelRef, onClose) {
       velocity = 0;
       lastT = Date.now();
     };
+    const DRAG_THRESHOLD = 18;
     const onTouchMove = (e) => {
       const y = e.touches[0].clientY;
       const dy = y - startY;
       if (!dragging) {
-        if (startScroll > 0 || dy <= 0) { lastY = y; return; }
+        if (panel.scrollTop > 0 || dy <= 0) { lastY = y; return; }
+        if (dy < DRAG_THRESHOLD) { lastY = y; return; }
         dragging = true;
         panel.classList.add('swiping');
       }
@@ -149,7 +151,7 @@ function useSwipeDownToClose(panelRef, onClose) {
       dragging = false;
       const dy = lastY - startY;
       panel.classList.remove('swiping');
-      const shouldClose = dy > 110 || (dy > 40 && velocity > 0.4);
+      const shouldClose = dy > 140 || (dy > 60 && velocity > 0.5);
       if (shouldClose) {
         panel.style.transition = 'transform 0.24s cubic-bezier(0.4, 0, 1, 1)';
         panel.style.transform = 'translateY(100%)';
@@ -181,17 +183,19 @@ function useSwipeDownToClose(panelRef, onClose) {
   }, [panelRef]);
 }
 const MARKET_CURRENCY = {
-  US:  { sym: '$',   code: 'USD', label: 'USD' },
-  JSE: { sym: 'R',   code: 'ZAR', label: 'ZAR' },
-  LSE: { sym: '\u00a3',  code: 'GBP', label: 'GBP' },
-  ASX: { sym: 'A$',  code: 'AUD', label: 'AUD' },
-  FRA: { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
-  PAR: { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
-  AMS: { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
+  US:   { sym: '$',   code: 'USD', label: 'USD' },
+  JSE:  { sym: 'R',   code: 'ZAR', label: 'ZAR' },
+  TFSA: { sym: 'R',   code: 'ZAR', label: 'ZAR' },
+  LSE:  { sym: '\u00a3',  code: 'GBP', label: 'GBP' },
+  ASX:  { sym: 'A$',  code: 'AUD', label: 'AUD' },
+  FRA:  { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
+  PAR:  { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
+  AMS:  { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
 };
 const MARKETS = [
-  { value: 'US',  label: 'US',  country: 'USA',         exchange: 'NYSE / NASDAQ' },
-  { value: 'JSE', label: 'JSE', country: 'South Africa', exchange: 'JSE' },
+  { value: 'US',   label: 'US',   country: 'USA',          exchange: 'NYSE / NASDAQ' },
+  { value: 'JSE',  label: 'JSE',  country: 'South Africa',  exchange: 'JSE' },
+  { value: 'TFSA', label: 'TFSA', country: 'South Africa',  exchange: 'JSE (Tax-Free)' },
   { value: 'LSE', label: 'LSE', country: 'UK',          exchange: 'London (LSE)' },
   { value: 'ASX', label: 'ASX', country: 'Australia',   exchange: 'ASX' },
   { value: 'FRA', label: 'FRA', country: 'Germany',     exchange: 'XETRA Frankfurt' },
@@ -227,17 +231,69 @@ const RIBBON_CATALOG = [
 const RIBBON_CATALOG_MAP = Object.fromEntries(RIBBON_CATALOG.map(r => [r.key, r]));
 const DEFAULT_RIBBON_ITEMS = ['US:^SPX', 'US:^VIX'];
 // CORS proxies for endpoints that don't allow direct browser fetches
-// (Yahoo Finance, Stooq). Tried in order; first 200 wins. The ordering
-// reflects observed reliability — corsproxy.io is the most stable.
+// (Yahoo Finance, Stooq). Tried in order; first valid response wins. Ordering
+// is by observed reliability when called from a deployed origin (not localhost).
+// Each entry has an `unwrap` so proxies that wrap the upstream body in JSON
+// (allorigins /get → {contents:"..."}) can still be parsed by callers that
+// expect raw upstream text.
+//
+// The list is intentionally diverse: corsmirror is fastest and most stable in
+// production; cors.lol is fast but rate-limits aggressively; allorigins is
+// reliable when its edge isn't 5xx-flapping; corsproxy.io blocks deployed
+// origins on its free tier (still useful for localhost dev). `lastGoodProxy`
+// floats the most-recently-successful proxy to the front of the next call so
+// we don't waste the user's latency budget on a known-failing edge.
 const CORS_PROXIES = [
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+  { name: 'corsmirror',     build: url => `https://corsmirror.com/v1?url=${encodeURIComponent(url)}`,     unwrap: t => t },
+  { name: 'cors.lol',       build: url => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,         unwrap: t => t },
+  { name: 'allorigins-get', build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, unwrap: t => {
+      try { const d = JSON.parse(t); return typeof d.contents === 'string' ? d.contents : t; } catch { return t; }
+    } },
+  { name: 'allorigins-raw', build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, unwrap: t => t },
+  { name: 'corsproxy.io',   build: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,             unwrap: t => t },
+  { name: 'codetabs',       build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, unwrap: t => t }
 ];
+let lastGoodProxy = null;
+function orderedProxies() {
+  if (!lastGoodProxy) return CORS_PROXIES;
+  const idx = CORS_PROXIES.findIndex(p => p.name === lastGoodProxy);
+  return idx <= 0 ? CORS_PROXIES : [CORS_PROXIES[idx], ...CORS_PROXIES.slice(0, idx), ...CORS_PROXIES.slice(idx + 1)];
+}
+// Detect proxy responses that returned 200 but contain an upstream error or
+// rate-limit message. Treating these as success would silently propagate
+// stale/wrong data to the UI — better to fall through to the next proxy.
+function looksLikeProxyError(body) {
+  if (!body || body.length < 20) return true;
+  const head = body.slice(0, 200);
+  if (head.startsWith('<!DOCTYPE') || head.startsWith('<html') || head.startsWith('<HTML')) return true;
+  if (/Too Many Requests|Rate limit exceeded|Server-side requests are not allowed|Free usage is limited|domain_not_registered|"error"\s*:/i.test(head)) return true;
+  return false;
+}
+// Fetch `url` through the proxy chain and return the upstream body as text.
+// Returns null if every proxy fails. Updates `lastGoodProxy` so subsequent
+// calls start with the working proxy.
+async function fetchViaProxies(url, { timeoutMs = 8000 } = {}) {
+  for (const px of orderedProxies()) {
+    try {
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+      const res = await fetch(px.build(url), { cache: 'no-store', signal: ctrl?.signal });
+      if (t) clearTimeout(t);
+      if (!res.ok) continue;
+      const text = await res.text();
+      const body = px.unwrap(text);
+      if (looksLikeProxyError(body)) continue;
+      lastGoodProxy = px.name;
+      return body;
+    } catch (e) {}
+  }
+  return null;
+}
 // FX endpoints often allow direct CORS; fall back to proxies only on failure.
 const FX_PROXIES = [
   url => url,
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://corsmirror.com/v1?url=${encodeURIComponent(url)}`,
+  url => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
 ];
 // Yahoo reports JSE in cents (ZAc) and LSE in pence (GBp / GBX) for some
@@ -250,7 +306,7 @@ function priceKey(market, ticker) {
 function centDivisor(market, currency) {
   const raw = currency || '';
   const c = raw.toUpperCase();
-  const isJseCent = market === 'JSE' && (c === 'ZAC' || c === 'ZAR' && /[cC]$/.test(raw));
+  const isJseCent = (market === 'JSE' || market === 'TFSA') && (c === 'ZAC' || c === 'ZAR' && /[cC]$/.test(raw));
   const isLseGBX = market === 'LSE' && c === 'GBX';
   // Yahoo sometimes returns "GBp" (mixed case) for pence-denominated LSE
   // instruments, but also plain "GBP" for pound-denominated ones. Treat any
@@ -262,7 +318,7 @@ function centDivisor(market, currency) {
   return (isJseCent || isLseGBX || isLseGBp || isLseBareGBP) ? 100 : 1;
 }
 function yahooSymbol(ticker, market) {
-  if (market === 'JSE') return ticker + '.JO';
+  if (market === 'JSE' || market === 'TFSA') return ticker + '.JO';
   if (market === 'LSE') return ticker + '.L';
   if (market === 'ASX') return ticker + '.AX';
   if (market === 'FRA') return ticker + '.F';
@@ -274,7 +330,7 @@ function yahooSymbol(ticker, market) {
   return encodeURIComponent(ticker);
 }
 function stooqSymbol(ticker, market) {
-  if (market === 'JSE') return ticker.toLowerCase() + '.jo';
+  if (market === 'JSE' || market === 'TFSA') return ticker.toLowerCase() + '.jo';
   if (ticker === '^SPX' || ticker === '^GSPC') return '%5Espx';
   if (ticker === '^VIX') return '%5Evix';
   return ticker.toLowerCase().replace('-', '.') + '.us';
@@ -397,6 +453,10 @@ function parseYahooQuote(result, market) {
     marketState: meta.marketState || 'UNKNOWN',
     shortName: meta.shortName || meta.longName || null,
     longName: meta.longName || meta.shortName || null,
+    // Upstream timestamp (in ms) of the most recent price tick. Callers use
+    // this to detect stale data — fetchedAt only tracks when WE saw it, which
+    // can drift far from the actual market clock when an upstream feed lags.
+    regularMarketTime: typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null,
     fetchedAt: Date.now(),
     source: 'yahoo'
   };
@@ -424,31 +484,77 @@ function parseStooqCsv(text, market) {
   };
 }
 async function fetchQuote(ticker, market) {
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol(ticker, market)}?interval=1d&range=5d&includePrePost=true`;
-  for (const buildProxy of CORS_PROXIES) {
+  // Two ranges in parallel-of-attempts: 5d for daily prevClose context, 1d/1m
+  // for intraday freshness on actively-traded sessions. We try 5d first because
+  // its daily bars feed derivePrevClose; if Yahoo's regularMarketTime on that
+  // response is suspiciously old, we re-shoot with the 1m chart which carries
+  // a fresher tick on extended-hours sessions.
+  const sym = yahooSymbol(ticker, market);
+  const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d&includePrePost=true`;
+  const dailyText = await fetchViaProxies(dailyUrl);
+  let quote = null;
+  if (dailyText) {
     try {
-      const res = await fetch(buildProxy(yahooUrl), { cache: 'no-store' });
-      if (!res.ok) continue;
-      const data = await res.json();
+      const data = JSON.parse(dailyText);
       const result = data?.chart?.result?.[0];
-      if (!result) continue;
-      const quote = parseYahooQuote(result, market);
-      if (quote) return quote;
-    } catch (e) {}
+      if (result) quote = parseYahooQuote(result, market);
+    } catch (_e) {}
   }
+  // If the regular-session price is older than ~30 minutes, ask Yahoo for the
+  // 1-minute intraday chart and prefer its most recent bar — futures and
+  // crypto trade nearly 24h, and the 5d-daily endpoint sometimes lags by an
+  // hour or more after a session boundary. We keep the prevClose / 52w / etc.
+  // from the daily quote since the intraday endpoint doesn't carry those.
+  const PRICE_FRESH_MS = 30 * 60 * 1000;
+  const ageMs = quote && quote.fetchedAt ? Date.now() - (quote.regularMarketTime || quote.fetchedAt) : Infinity;
+  const looksStale = !quote || ageMs > PRICE_FRESH_MS;
+  if (looksStale) {
+    const intraUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1m&range=1d&includePrePost=true`;
+    const intraText = await fetchViaProxies(intraUrl);
+    if (intraText) {
+      try {
+        const data = JSON.parse(intraText);
+        const result = data?.chart?.result?.[0];
+        const fresh = result ? parseYahooQuote(result, market) : null;
+        if (fresh && fresh.price > 0) {
+          if (quote) {
+            // Splice fresher price/change/extended-hours onto the daily quote.
+            quote = {
+              ...quote,
+              price: fresh.price,
+              change: fresh.price - quote.prevClose,
+              changePct: quote.prevClose > 0 ? (fresh.price - quote.prevClose) / quote.prevClose * 100 : 0,
+              dayHigh: fresh.dayHigh || quote.dayHigh,
+              dayLow: fresh.dayLow || quote.dayLow,
+              preMarketPrice: fresh.preMarketPrice || quote.preMarketPrice,
+              postMarketPrice: fresh.postMarketPrice || quote.postMarketPrice,
+              extPrice: fresh.extPrice || quote.extPrice,
+              extChange: fresh.extChange != null ? fresh.extChange : quote.extChange,
+              extChangePct: fresh.extChangePct != null ? fresh.extChangePct : quote.extChangePct,
+              extKind: fresh.extKind || quote.extKind,
+              regularMarketTime: fresh.regularMarketTime || quote.regularMarketTime,
+              marketState: fresh.marketState || quote.marketState,
+              fetchedAt: Date.now(),
+              source: 'yahoo+intraday'
+            };
+          } else {
+            quote = fresh;
+          }
+        }
+      } catch (_e) {}
+    }
+  }
+  if (quote) return quote;
   // Stooq fallback only covers US and JSE; other markets just fail here.
   if (market !== 'US' && market !== 'JSE') {
     console.warn(`Price fetch failed for ${ticker} (${market})`);
     return null;
   }
   const stooqUrl = `https://stooq.com/q/d/l/?s=${stooqSymbol(ticker, market)}&i=d`;
-  for (const buildProxy of CORS_PROXIES) {
-    try {
-      const res = await fetch(buildProxy(stooqUrl), { cache: 'no-store' });
-      const text = await res.text();
-      const quote = parseStooqCsv(text, market);
-      if (quote) return quote;
-    } catch (e) {}
+  const stooqText = await fetchViaProxies(stooqUrl);
+  if (stooqText) {
+    const stooqQuote = parseStooqCsv(stooqText, market);
+    if (stooqQuote) return stooqQuote;
   }
   console.warn(`Price fetch failed for ${ticker} (${market})`);
   return null;
@@ -476,37 +582,69 @@ async function fetchQuoteBatch(items) {
   }
   return results;
 }
+async function fetchQuoteLight(ticker, market) {
+  const sym = yahooSymbol(ticker, market);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d&includePrePost=true`;
+  const text = await fetchViaProxies(url, { timeoutMs: 6000 });
+  if (!text) return null;
+  try {
+    const data = JSON.parse(text);
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const meta = result?.meta;
+    if (!meta || typeof meta.regularMarketPrice !== 'number') return null;
+    const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+    const divisor = centDivisor(market, currency);
+    const price = meta.regularMarketPrice / divisor;
+    const bars = buildDailyBars(result, divisor);
+    const prevClose = derivePrevClose(bars, price, meta.chartPreviousClose / divisor);
+    const changePct = prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0;
+    return { price, changePct, fetchedAt: Date.now() };
+  } catch (_e) { return null; }
+}
+async function fetchQuoteBatchLight(items, onProgress) {
+  const results = {};
+  const batchSize = 12;
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const settled = await Promise.allSettled(batch.map(it => fetchQuoteLight(it.ticker, it.market)));
+    settled.forEach((r, idx) => {
+      const { market, ticker } = batch[idx];
+      const key = priceKey(market, ticker);
+      if (r.status === 'fulfilled' && r.value) results[key] = r.value;
+    });
+    if (onProgress) onProgress(Math.min(i + batchSize, items.length), items.length);
+  }
+  return results;
+}
 async function fetchHistory(ticker, market, range) {
   const sym = yahooSymbol(ticker, market);
   const r = range || '1y';
-  const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === '1y') ? '1d' : (r === '2y' || r === '5y') ? '1wk' : '1mo');
+  const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === '1y') ? '1d' : '1wk');
   const includePrePost = r === '1d' || r === '5d' ? '&includePrePost=true' : '';
   const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=${interval}&range=${r}${includePrePost}`;
-  for (const buildProxy of CORS_PROXIES) {
-    try {
-      const res = await fetch(buildProxy(yahooUrl), { cache: 'no-store' });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const result = data?.chart?.result?.[0];
-      if (!result) continue;
-      const ts = result.timestamp;
-      const closes = result?.indicators?.quote?.[0]?.close;
-      if (!Array.isArray(ts) || !Array.isArray(closes)) continue;
-      let currency = result.meta?.currency || (MARKET_CURRENCY[market]?.code || 'USD');
-      const divisor = centDivisor(market, currency);
-      const points = [];
-      for (let i = 0; i < ts.length; i++) {
-        const c = closes[i];
-        if (c == null || !isFinite(c)) continue;
-        points.push({ t: ts[i] * 1000, p: c / divisor });
-      }
-      if (points.length < 2) continue;
-      return { points, range: r, fetchedAt: Date.now() };
-    } catch (e) {
-      continue;
+  const text = await fetchViaProxies(yahooUrl);
+  if (!text) return null;
+  try {
+    const data = JSON.parse(text);
+    const result = data?.chart?.result?.[0];
+    if (!result) return null;
+    const ts = result.timestamp;
+    const closes = result?.indicators?.quote?.[0]?.close;
+    if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
+    const currency = result.meta?.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+    const divisor = centDivisor(market, currency);
+    const points = [];
+    for (let i = 0; i < ts.length; i++) {
+      const c = closes[i];
+      if (c == null || !isFinite(c)) continue;
+      points.push({ t: ts[i] * 1000, p: c / divisor });
     }
+    if (points.length < 2) return null;
+    return { points, range: r, fetchedAt: Date.now() };
+  } catch (_e) {
+    return null;
   }
-  return null;
 }
 async function fetchNewsForTicker(ticker, market) {
   const yahooSym = yahooSymbol(ticker, market);
@@ -532,13 +670,16 @@ async function fetchFundamentalsYahoo(ticker, market) {
   const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
   const yahooUrls = hosts.map(h => `https://${h}/v10/finance/quoteSummary/${sym}?modules=${modules}`);
   let divisor = 1;
-  for (const yahooUrl of yahooUrls) for (const buildProxy of CORS_PROXIES) {
+  for (const yahooUrl of yahooUrls) {
+    const text = await fetchViaProxies(yahooUrl);
+    if (!text) continue;
+    let r;
     try {
-      const res = await fetch(buildProxy(yahooUrl), { cache: 'no-store' });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const r = data?.quoteSummary?.result?.[0];
-      if (!r) continue;
+      const data = JSON.parse(text);
+      r = data?.quoteSummary?.result?.[0];
+    } catch (_e) { continue; }
+    if (!r) continue;
+    try {
       const sd = r.summaryDetail || {};
       const ks = r.defaultKeyStatistics || {};
       const fd = r.financialData || {};
@@ -1213,23 +1354,39 @@ function usePriceFeed(tickersToFetch, toast) {
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
   const [lastUpdate, setLastUpdate] = useState(null);
+  // Number of consecutive refreshes where every ticker came back null. Used by
+  // the header dot so users see "all proxies down" instead of a silent freeze.
+  const [failStreak, setFailStreak] = useState(0);
   const refresh = useCallback(async () => {
     if (loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
     try {
       const newPrices = await fetchQuoteBatch(tickersToFetch);
-      setPrices(prev => ({ ...prev, ...newPrices }));
-      setLastUpdate(new Date());
+      const gotAny = Object.keys(newPrices).length > 0;
+      if (gotAny) {
+        setPrices(prev => ({ ...prev, ...newPrices }));
+        setLastUpdate(new Date());
+        setFailStreak(0);
+      } else if (tickersToFetch.length > 0) {
+        // Every proxy returned null — surface the failure once we've seen
+        // enough consecutive misses to rule out a transient hiccup.
+        setFailStreak(prev => {
+          const next = prev + 1;
+          if (next === 2 && toast) toast('Price feed unreachable — using last known prices');
+          return next;
+        });
+      }
     } catch (e) {
       console.error('Refresh failed:', e);
       if (toast) toast('Price refresh failed');
+      setFailStreak(prev => prev + 1);
     }
     loadingRef.current = false;
     setLoading(false);
   }, [tickersToFetch, toast]);
   usePolledRefresh(refresh, 90000, 60000, tickersToFetch);
-  return { prices, loading, lastUpdate, refresh };
+  return { prices, loading, lastUpdate, failStreak, refresh };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
 // price/alert change. fireNotification is injected because its closure (toast,
@@ -1259,6 +1416,27 @@ function usePortfolio(fxRates, toast) {
   const [watchlist, setWatchlist] = usePersistedState('pb.watchlist.v2', []);
   const [alerts, setAlerts] = usePersistedState('pb.alerts.v2', []);
   const [contributions, setContributions] = usePersistedState('pb.contributions.v1', []);
+  const [transactions, setTransactions] = usePersistedState('pb.transactions.v1', []);
+  useEffect(() => {
+    setPositions(prev => {
+      const merged = [];
+      const seen = {};
+      for (const p of prev) {
+        const key = p.ticker + ':' + p.market;
+        if (seen[key] != null) {
+          const e = merged[seen[key]];
+          const totalShares = e.shares + p.shares;
+          const avgCost = (e.shares * e.costBasis + p.shares * p.costBasis) / totalShares;
+          merged[seen[key]] = { ...e, shares: totalShares, costBasis: avgCost,
+            notes: p.notes ? (e.notes ? e.notes + '; ' + p.notes : p.notes) : e.notes };
+        } else {
+          seen[key] = merged.length;
+          merged.push(p);
+        }
+      }
+      return merged.length === prev.length ? prev : merged;
+    });
+  }, []);
   const addPosition = async (ticker, market, shares, costBasis, notes, purchaseDate) => {
     const nativeCode = marketCurrency(market);
     const today = new Date().toISOString().slice(0, 10);
@@ -1268,20 +1446,52 @@ function usePortfolio(fxRates, toast) {
       const hist = await fetchHistoricalFx(dateKey, nativeCode);
       if (hist != null) rateAtCost = hist;
     }
-    const p = {
-      id: uid(),
-      ticker: ticker.toUpperCase(),
-      market,
-      shares: parseFloat(shares),
-      costBasis: parseFloat(costBasis),
-      notes: notes || '',
-      addedAt: new Date().toISOString(),
-      purchaseDate: purchaseDate || today,
-      fxRateAtCost: rateAtCost,
-      fxBase: 'USD'
-    };
-    setPositions(prev => [...prev, p]);
-    toast('Position added');
+    const newShares = parseFloat(shares);
+    const newCost = parseFloat(costBasis);
+    const tickerUp = ticker.toUpperCase();
+    setPositions(prev => {
+      const existing = prev.find(p => p.ticker === tickerUp && p.market === market);
+      if (existing) {
+        const totalShares = existing.shares + newShares;
+        const avgCost = (existing.shares * existing.costBasis + newShares * newCost) / totalShares;
+        return prev.map(p => p.id === existing.id ? {
+          ...p, shares: totalShares, costBasis: avgCost,
+          notes: notes ? (p.notes ? p.notes + '; ' + notes : notes) : p.notes,
+          fxRateAtCost: rateAtCost || p.fxRateAtCost
+        } : p);
+      }
+      return [...prev, {
+        id: uid(), ticker: tickerUp, market,
+        shares: newShares, costBasis: newCost,
+        notes: notes || '', addedAt: new Date().toISOString(),
+        purchaseDate: purchaseDate || today,
+        fxRateAtCost: rateAtCost, fxBase: 'USD'
+      }];
+    });
+    setTransactions(prev => [...prev, {
+      id: uid(), type: 'buy', ticker: tickerUp, market,
+      shares: newShares, price: newCost, notes: notes || '',
+      date: purchaseDate || today, createdAt: new Date().toISOString()
+    }]);
+    toast(positions.find(p => p.ticker === tickerUp && p.market === market) ? 'Shares added to existing position' : 'Position added');
+  };
+  const sellPosition = (ticker, market, shares, sellPrice, date, notes) => {
+    const tickerUp = ticker.toUpperCase();
+    const numShares = parseFloat(shares);
+    const price = parseFloat(sellPrice);
+    const today = new Date().toISOString().slice(0, 10);
+    setPositions(prev => prev.map(p => {
+      if (p.ticker !== tickerUp || p.market !== market) return p;
+      const remaining = p.shares - numShares;
+      if (remaining <= 0.0001) return null;
+      return { ...p, shares: remaining };
+    }).filter(Boolean));
+    setTransactions(prev => [...prev, {
+      id: uid(), type: 'sell', ticker: tickerUp, market,
+      shares: numShares, price, notes: notes || '',
+      date: date || today, createdAt: new Date().toISOString()
+    }]);
+    toast('Sale recorded');
   };
   const updatePosition = async (id, updates) => {
     const existing = positions.find(p => p.id === id);
@@ -1357,7 +1567,8 @@ function usePortfolio(fxRates, toast) {
     watchlist, setWatchlist,
     alerts, setAlerts,
     contributions, setContributions,
-    addPosition, updatePosition, removePosition,
+    transactions, setTransactions,
+    addPosition, updatePosition, removePosition, sellPosition,
     addContribution, removeContribution,
     addWatch, removeWatch,
     addAlert, removeAlert
@@ -1388,7 +1599,23 @@ function App() {
   const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
   const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
   const [showSettings, setShowSettings] = useState(false);
+  const TAB_LIST = [['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'], ['heatmap', 'Heatmap'], ['picks', 'New picks'], ['hedges', 'Hedges'], ['tfsa', 'TFSA'], ['rules', 'Rules'], ['overview', 'Thesis']];
   const [view, setView] = useState('dashboard');
+  const [viewTransDir, setViewTransDir] = useState(null);
+  const navRef = useRef(null);
+  const mainRef = useRef(null);
+  const swipeRef = useRef({ startX: 0, startY: 0, swiping: false });
+  const changeView = useCallback((newView, direction) => {
+    if (newView === view) return;
+    setViewTransDir(direction || null);
+    setView(newView);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    requestAnimationFrame(() => {
+      const btn = navRef.current?.querySelector(`[data-tab="${newView}"]`);
+      if (btn) btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    });
+    setTimeout(() => setViewTransDir(null), 350);
+  }, [view]);
   const [newsByTicker, loadNewsRaw] = useTtlCache(15 * 60 * 1000);
   const [historyByTicker, loadHistoryRaw] = useTtlCache(15 * 60 * 1000);
   const [fundamentalsByTicker, loadFundamentalsRaw] = useTtlCache(6 * 60 * 60 * 1000);
@@ -1396,6 +1623,7 @@ function App() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [posModalEditId, setPosModalEditId] = useState(null);
   const [posModalOpen, setPosModalOpen] = useState(false);
+  const [sellModalPos, setSellModalPos] = useState(null);
   const [notifPerm, setNotifPerm] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
   const [installEvent, setInstallEvent] = useState(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
@@ -1406,7 +1634,8 @@ function App() {
     watchlist, setWatchlist,
     alerts, setAlerts,
     contributions, setContributions,
-    addPosition, updatePosition, removePosition,
+    transactions, setTransactions,
+    addPosition, updatePosition, removePosition, sellPosition,
     addContribution, removeContribution,
     addWatch, removeWatch,
     addAlert, removeAlert
@@ -1456,9 +1685,9 @@ function App() {
       };
     });
   }, [positions, watchlist, alerts, ribbonItems]);
-  const { prices, loading, lastUpdate, refresh: refreshPrices } = usePriceFeed(tickersToFetch, toast);
+  const { prices, loading, lastUpdate, failStreak, refresh: refreshPrices } = usePriceFeed(tickersToFetch, toast);
   const fireNotification = useCallback(async trig => {
-    const sym = trig.market === 'JSE' ? 'R' : '$';
+    const sym = (trig.market === 'JSE' || trig.market === 'TFSA') ? 'R' : '$';
     const title = `${trig.ticker} ${trig.direction} ${sym}${trig.targetPrice.toFixed(2)}`;
     const body = `Now at ${sym}${trig.triggerPrice.toFixed(2)}${trig.note ? ` — ${trig.note}` : ''}`;
     try {
@@ -1580,8 +1809,9 @@ function App() {
       alerts,
       triggered,
       contributions,
+      transactions,
       exportedAt: new Date().toISOString(),
-      version: 2
+      version: 3
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], {
       type: 'application/json'
@@ -1604,6 +1834,7 @@ function App() {
         if (data.alerts) setAlerts(data.alerts);
         if (data.triggered) setTriggered(data.triggered);
         if (data.contributions) setContributions(data.contributions);
+        if (data.transactions) setTransactions(data.transactions);
         toast('Backup restored');
       } catch (err) {
         toast('Invalid backup file');
@@ -1616,10 +1847,11 @@ function App() {
     const info = DATA.findInfo(ticker, market);
     return loadFundamentalsRaw(`${market}:${ticker}`, () => fetchFundamentals(ticker, market, info?.name, perplexityKey));
   }, [loadFundamentalsRaw, perplexityKey]);
-  const openDetail = (ticker, market) => {
+  const openDetail = (ticker, market, opts) => {
     setSelected({
       ticker,
-      market: market || 'US'
+      market: market || 'US',
+      openAlerts: !!(opts && opts.openAlerts)
     });
     loadNews(ticker, market || 'US');
     loadHistory(ticker, market || 'US', '1y');
@@ -1633,6 +1865,7 @@ function App() {
       contributions: contributions,
       onAddContribution: addContribution,
       onRemoveContribution: removeContribution,
+      transactions: transactions,
       displayCurrency: displayCurrency,
       onSetDisplayCurrency: setDisplayCurrency,
       fxRates: fxRates
@@ -1646,15 +1879,19 @@ function App() {
       onAddPosition: () => {
         setPosModalEditId(null);
         setPosModalOpen(true);
-      }
+      },
+      onSellPosition: pos => setSellModalPos(pos)
     }),
     watchlist: React.createElement(WatchlistView, {
       watchlist: watchlist,
       prices: prices,
+      alerts: alerts,
       onAdd: addWatch,
       onRemove: removeWatch,
       onReorder: setWatchlist,
-      onOpenDetail: openDetail
+      onOpenDetail: openDetail,
+      onAddAlert: addAlert,
+      onRemoveAlert: removeAlert
     }),
     heatmap: React.createElement(HeatmapView, {
       positions: positions,
@@ -1669,7 +1906,13 @@ function App() {
       prices: prices,
       onOpenDetail: openDetail
     }),
-    deployment: React.createElement(DeploymentView, { prices, onOpenDetail: openDetail }),
+    tfsa: React.createElement(TFSAView, {
+      positions: positions.filter(p => p.market === 'TFSA'),
+      prices: prices,
+      onOpenDetail: openDetail,
+      onAddPosition: () => { setPosModalEditId(null); setPosModalOpen(true); },
+      onSellPosition: pos => setSellModalPos(pos)
+    }),
     rules: React.createElement(RulesView, null),
     overview: React.createElement(OverviewView, {
       prices: prices
@@ -1687,9 +1930,12 @@ function App() {
   }, React.createElement("div", {
     className: "brand-title"
   }, "Playbook")), React.createElement("div", {
-    className: "status-chip"
+    className: "status-chip",
+    title: failStreak >= 2
+      ? 'Price feed failing — last successful update shown'
+      : (lastUpdate ? 'Last refresh ' + lastUpdate.toLocaleTimeString() : 'Loading…')
   }, React.createElement("span", {
-    className: `dot ${loading ? 'loading' : lastUpdate ? 'live' : 'loading'}`
+    className: `dot ${loading ? 'loading' : failStreak >= 2 ? 'stale' : lastUpdate ? 'live' : 'loading'}`
   }), React.createElement("span", null, lastUpdate ? lastUpdate.toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit'
@@ -1726,25 +1972,46 @@ function App() {
     ribbonItems: ribbonItems,
     ribbonMode: ribbonMode
   }), React.createElement("nav", {
-    className: "nav"
+    className: "nav",
+    ref: navRef
   }, React.createElement("div", {
     className: "nav-inner"
-  }, [['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'], ['heatmap', 'Heatmap'], ['picks', 'New picks'], ['hedges', 'Hedges'], ['deployment', 'Deployment'], ['rules', 'Rules'], ['overview', 'Thesis']].map(_ref3 => {
+  }, TAB_LIST.map(_ref3 => {
     let [k, label] = _ref3;
     return React.createElement("button", {
       key: k,
+      'data-tab': k,
       className: `nav-btn ${view === k ? 'active' : ''}`,
       onClick: () => {
-        setView(k);
-        window.scrollTo({
-          top: 0,
-          behavior: 'smooth'
-        });
+        const oldIdx = TAB_LIST.findIndex(t => t[0] === view);
+        const newIdx = TAB_LIST.findIndex(t => t[0] === k);
+        changeView(k, newIdx > oldIdx ? 'left' : 'right');
       }
     }, label);
-  }))), React.createElement("main", null, views[view]), selected && React.createElement(DetailModal, {
+  }))), React.createElement("main", {
+    ref: mainRef,
+    className: viewTransDir ? `view-slide-${viewTransDir}` : '',
+    onTouchStart: e => {
+      if (e.touches.length !== 1) return;
+      swipeRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, swiping: false };
+    },
+    onTouchMove: e => {
+      const s = swipeRef.current;
+      if (s.swiping) return;
+      const dx = e.touches[0].clientX - s.startX;
+      const dy = e.touches[0].clientY - s.startY;
+      if (Math.abs(dy) > Math.abs(dx)) { s.swiping = true; return; }
+      if (Math.abs(dx) > 50) {
+        s.swiping = true;
+        const idx = TAB_LIST.findIndex(t => t[0] === view);
+        if (dx < 0 && idx < TAB_LIST.length - 1) changeView(TAB_LIST[idx + 1][0], 'left');
+        else if (dx > 0 && idx > 0) changeView(TAB_LIST[idx - 1][0], 'right');
+      }
+    }
+  }, views[view]), selected && React.createElement(DetailModal, {
     selected: selected,
     prices: prices,
+    positions: positions,
     alerts: alerts.filter(a => a.ticker === selected.ticker && a.market === selected.market),
     news: newsByTicker[priceKey(selected.market, selected.ticker)],
     historyByTicker: historyByTicker,
@@ -1787,6 +2054,14 @@ function App() {
       if (posModalEditId) updatePosition(posModalEditId, data);
       else addPosition(data.ticker, data.market, data.shares, data.costBasis, data.notes, data.purchaseDate);
       setPosModalOpen(false);
+    }
+  }), sellModalPos && React.createElement(SellModal, {
+    position: sellModalPos,
+    prices: prices,
+    onClose: () => setSellModalPos(null),
+    onSell: (ticker, market, shares, price, date, notes) => {
+      sellPosition(ticker, market, shares, price, date, notes);
+      setSellModalPos(null);
     }
   }), showInstallBanner && React.createElement(InstallBanner, {
     isIOS: /iphone|ipad|ipod/i.test(navigator.userAgent),
@@ -1924,67 +2199,158 @@ function PriceBlock(_ref5) {
 }
 // SVG-based line chart for portfolio growth over time
 function PortfolioLineChart({ positions, prices, contributions, displayCurrency, fxRates }) {
-  const [range, setRange] = useState('all');
+  const [range, setRange] = useState('1y');
+  const [historyCache, setHistoryCache] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const svgRef = useRef(null);
   const ranges = [
-    { key: '1d', label: '1D' }, { key: '1w', label: '1W' }, { key: '1mo', label: '1M' },
-    { key: '3mo', label: '3M' }, { key: '6mo', label: '6M' },
-    { key: '1y', label: '1Y' }, { key: '2y', label: '2Y' }, { key: 'all', label: 'All' }
+    { key: '1mo', label: '1M' }, { key: '3mo', label: '3M' }, { key: '6mo', label: '6M' },
+    { key: '1y', label: '1Y' }, { key: '2y', label: '2Y' }, { key: '5y', label: '5Y' }, { key: 'all', label: 'All' }
   ];
   const rates = fxRates?.rates || null;
-  const contribSorted = contributions.slice().sort((a, b) => a.date.localeCompare(b.date));
-  let currentValue = 0;
-  positions.forEach(p => {
-    const q = prices[priceKey(p.market, p.ticker)];
-    if (!q) return;
-    const native = marketCurrency(p.market);
-    const val = convertCcy(p.shares * q.price, native, displayCurrency, rates);
-    if (val != null) currentValue += val;
-  });
   const today = new Date().toISOString().slice(0, 10);
-  // Compute range cutoff date
-  const cutoff = (() => {
+
+  const positionKeys = positions.map(p => priceKey(p.market, p.ticker)).sort().join(',');
+  useEffect(() => {
+    if (positions.length === 0) return;
+    let cancelled = false;
+    setLoading(true);
+    const fetchAll = async () => {
+      const needed = positions.filter(p => !historyCache[priceKey(p.market, p.ticker)]);
+      if (needed.length === 0) { setLoading(false); return; }
+      const results = {};
+      await Promise.all(needed.map(async p => {
+        const key = priceKey(p.market, p.ticker);
+        const data = await fetchHistory(p.ticker, p.market, 'max');
+        if (data && data.points.length > 0) results[key] = data.points;
+      }));
+      if (cancelled) return;
+      setHistoryCache(prev => ({ ...prev, ...results }));
+      setLoading(false);
+    };
+    fetchAll();
+    return () => { cancelled = true; };
+  }, [positionKeys]);
+
+  const cutoff = useMemo(() => {
     const d = new Date();
-    if (range === '1d') d.setDate(d.getDate() - 1);
-    else if (range === '1w') d.setDate(d.getDate() - 7);
-    else if (range === '1mo') d.setMonth(d.getMonth() - 1);
+    if (range === '1mo') d.setMonth(d.getMonth() - 1);
     else if (range === '3mo') d.setMonth(d.getMonth() - 3);
     else if (range === '6mo') d.setMonth(d.getMonth() - 6);
     else if (range === '1y') d.setFullYear(d.getFullYear() - 1);
     else if (range === '2y') d.setFullYear(d.getFullYear() - 2);
+    else if (range === '5y') d.setFullYear(d.getFullYear() - 5);
     else return null;
     return d.toISOString().slice(0, 10);
-  })();
-  const allPoints = [];
-  let cumContrib = 0;
-  contribSorted.forEach(c => {
-    const conv = convertCcy(c.amount, c.currency, displayCurrency, rates);
-    if (conv != null) cumContrib += conv;
-    allPoints.push({ date: c.date, contributed: cumContrib, value: null });
-  });
-  if (allPoints.length > 0) {
-    const totalContrib = cumContrib;
-    const growthRatio = totalContrib > 0 ? currentValue / totalContrib : 1;
-    allPoints.forEach((pt, i) => {
-      const progress = allPoints.length > 1 ? i / (allPoints.length - 1) : 1;
-      pt.value = pt.contributed * (1 + (growthRatio - 1) * progress);
-    });
-    allPoints.push({ date: today, contributed: cumContrib, value: currentValue });
-  } else if (positions.length > 0) {
-    let totalCost = 0;
+  }, [range]);
+
+  const points = useMemo(() => {
+    if (positions.length === 0) return [];
+    const dateMap = {};
+    const contribSorted = contributions.slice().sort((a, b) => a.date.localeCompare(b.date));
+
     positions.forEach(p => {
+      const key = priceKey(p.market, p.ticker);
+      const hist = historyCache[key];
+      if (!hist || hist.length === 0) return;
       const native = marketCurrency(p.market);
-      const cost = convertCcy(p.shares * p.costBasis, native, displayCurrency, rates);
-      if (cost != null) totalCost += cost;
+      const entryDate = p.purchaseDate || p.addedAt?.slice(0, 10) || today;
+      hist.forEach(pt => {
+        const d = new Date(pt.t).toISOString().slice(0, 10);
+        if (d < entryDate) return;
+        if (!dateMap[d]) dateMap[d] = { date: d, value: 0, contributed: 0 };
+        const val = convertCcy(p.shares * pt.p, native, displayCurrency, rates);
+        if (val != null) dateMap[d].value += val;
+      });
     });
-    const startDate = positions.reduce((min, p) => {
-      const d = p.purchaseDate || p.addedAt?.slice(0, 10) || today;
-      return d < min ? d : min;
-    }, today);
-    allPoints.push({ date: startDate, contributed: totalCost, value: totalCost });
-    allPoints.push({ date: today, contributed: totalCost, value: currentValue });
-  }
-  // Filter to range
-  const points = cutoff ? allPoints.filter(p => p.date >= cutoff) : allPoints;
+
+    positions.forEach(p => {
+      const key = priceKey(p.market, p.ticker);
+      const hist = historyCache[key];
+      if (hist && hist.length > 0) return;
+      const q = prices[key];
+      if (!q) return;
+      const native = marketCurrency(p.market);
+      const entryDate = p.purchaseDate || p.addedAt?.slice(0, 10) || today;
+      const costVal = convertCcy(p.shares * p.costBasis, native, displayCurrency, rates) || 0;
+      const curVal = convertCcy(p.shares * q.price, native, displayCurrency, rates) || 0;
+      if (!dateMap[entryDate]) dateMap[entryDate] = { date: entryDate, value: 0, contributed: 0 };
+      if (!dateMap[today]) dateMap[today] = { date: today, value: 0, contributed: 0 };
+      Object.keys(dateMap).forEach(d => {
+        if (d < entryDate) return;
+        dateMap[d].value += d >= today ? curVal : costVal;
+      });
+    });
+
+    let cumContrib = 0;
+    contribSorted.forEach(c => {
+      const conv = convertCcy(c.amount, c.currency, displayCurrency, rates);
+      if (conv != null) cumContrib += conv;
+    });
+    const totalContrib = cumContrib;
+
+    let runningContrib = 0;
+    let contribIdx = 0;
+    const sortedDates = Object.keys(dateMap).sort();
+    sortedDates.forEach(d => {
+      while (contribIdx < contribSorted.length && contribSorted[contribIdx].date <= d) {
+        const conv = convertCcy(contribSorted[contribIdx].amount, contribSorted[contribIdx].currency, displayCurrency, rates);
+        if (conv != null) runningContrib += conv;
+        contribIdx++;
+      }
+      dateMap[d].contributed = runningContrib;
+    });
+    while (contribIdx < contribSorted.length) {
+      const conv = convertCcy(contribSorted[contribIdx].amount, contribSorted[contribIdx].currency, displayCurrency, rates);
+      if (conv != null) runningContrib += conv;
+      contribIdx++;
+    }
+    if (sortedDates.length > 0) {
+      const lastDate = sortedDates[sortedDates.length - 1];
+      dateMap[lastDate].contributed = runningContrib;
+    }
+
+    if (dateMap[today]) {
+      let liveValue = 0;
+      positions.forEach(p => {
+        const q = prices[priceKey(p.market, p.ticker)];
+        if (!q) return;
+        const native = marketCurrency(p.market);
+        const val = convertCcy(p.shares * q.price, native, displayCurrency, rates);
+        if (val != null) liveValue += val;
+      });
+      dateMap[today].value = liveValue;
+      dateMap[today].contributed = totalContrib;
+    }
+
+    let all = Object.values(dateMap).sort((a, b) => a.date.localeCompare(b.date));
+    if (cutoff) all = all.filter(p => p.date >= cutoff);
+    if (all.length > 300) {
+      const step = Math.ceil(all.length / 300);
+      const sampled = [all[0]];
+      for (let i = step; i < all.length - 1; i += step) sampled.push(all[i]);
+      sampled.push(all[all.length - 1]);
+      return sampled;
+    }
+    return all;
+  }, [positions, historyCache, contributions, displayCurrency, rates, cutoff, prices, today]);
+
+  const W = 560, H = 220, PAD_L = 54, PAD_R = 16, PAD_T = 28, PAD_B = 32;
+  const chartW = W - PAD_L - PAD_R, chartH = H - PAD_T - PAD_B;
+
+  const getIdxFromEvent = useCallback((e) => {
+    const svg = svgRef.current;
+    if (!svg || points.length < 2) return null;
+    const rect = svg.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const pxRatio = rect.width / W;
+    const svgX = (clientX - rect.left) / pxRatio;
+    const idx = Math.round(((svgX - PAD_L) / chartW) * (points.length - 1));
+    return Math.max(0, Math.min(points.length - 1, idx));
+  }, [points.length]);
+
+  const emptyMsg = loading ? 'Loading historical prices…' : 'Add positions and log deposits to see portfolio growth.';
   if (points.length < 2) {
     return React.createElement("div", { className: "chart-line-wrap" },
       React.createElement("div", { className: "chart-ranges" },
@@ -1992,11 +2358,9 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
           key: r.key, className: `chart-range-btn ${range === r.key ? 'active' : ''}`,
           onClick: () => setRange(r.key) }, r.label))),
       React.createElement("div", { className: "chart-empty" },
-        React.createElement("div", { className: "text-dim text-sm" }, "Add positions and log deposits to see portfolio growth.")));
+        React.createElement("div", { className: "text-dim text-sm" }, emptyMsg)));
   }
-  const W = 560, H = 220, PAD_L = 54, PAD_R = 16, PAD_T = 16, PAD_B = 32;
-  const chartW = W - PAD_L - PAD_R, chartH = H - PAD_T - PAD_B;
-  const allVals = points.flatMap(p => [p.value, p.contributed].filter(v => v != null));
+  const allVals = points.flatMap(p => [p.value, p.contributed].filter(v => v != null && isFinite(v)));
   const minV = Math.min(...allVals) * 0.95;
   const maxV = Math.max(...allVals) * 1.05;
   const rangeV = maxV - minV || 1;
@@ -2017,12 +2381,51 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
     if (v >= 1e3) return sym + Math.round(v / 1e3).toLocaleString('en-US') + 'k';
     return sym + Math.round(v).toLocaleString('en-US');
   };
+  const fmtFull = v => sym + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const lastVal = points[points.length - 1];
   const firstVal = points[0];
   const gain = lastVal.value - firstVal.contributed;
   const gainPct = firstVal.contributed > 0 ? (gain / firstVal.contributed * 100) : 0;
+
+  const hoverPoint = hoverIdx != null ? points[hoverIdx] : null;
+  const hoverElements = [];
+  if (hoverPoint != null && hoverIdx != null) {
+    const hx = x(hoverIdx), hy = y(hoverPoint.value);
+    hoverElements.push(
+      React.createElement("line", { key: "hl", x1: hx, x2: hx, y1: PAD_T, y2: PAD_T + chartH,
+        stroke: "var(--text-dim)", strokeWidth: "0.8", strokeDasharray: "3,2", opacity: "0.5" }),
+      React.createElement("circle", { key: "hc", cx: hx, cy: hy, r: "5",
+        fill: "var(--blue)", stroke: "var(--bg)", strokeWidth: "2.5" })
+    );
+    const label = fmtFull(hoverPoint.value);
+    const estW = label.length * 7.5 + 16;
+    const estH = 22;
+    let lx = hx - estW / 2;
+    if (lx < PAD_L) lx = PAD_L;
+    if (lx + estW > W - PAD_R) lx = W - PAD_R - estW;
+    let ly = hy - estH - 10;
+    if (ly < 2) ly = hy + 12;
+    hoverElements.push(
+      React.createElement("rect", { key: "hr", x: lx, y: ly, width: estW, height: estH,
+        rx: "6", fill: "var(--bg-raised)", stroke: "var(--border)", strokeWidth: "1" }),
+      React.createElement("text", { key: "ht", x: lx + estW / 2, y: ly + estH / 2 + 4,
+        textAnchor: "middle", fill: "var(--text)", fontSize: "11", fontFamily: "var(--mono)", fontWeight: "600" },
+        label)
+    );
+    const dateLabel = hoverPoint.date.slice(5);
+    hoverElements.push(
+      React.createElement("text", { key: "hd", x: hx, y: PAD_T + chartH + 14,
+        textAnchor: "middle", fill: "var(--text)", fontSize: "10", fontFamily: "var(--mono)", fontWeight: "600" },
+        dateLabel)
+    );
+  }
+
+  const onInteract = (e) => {
+    const idx = getIdxFromEvent(e);
+    if (idx != null) setHoverIdx(idx);
+  };
+
   return React.createElement("div", { className: "chart-line-wrap" },
-    // Range toggle + legend in one row
     React.createElement("div", { className: "chart-line-header" },
       React.createElement("div", { className: "chart-ranges" },
         ranges.map(r => React.createElement("button", {
@@ -2033,10 +2436,20 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
           React.createElement("span", { className: "chart-legend-dot", style: { background: 'var(--blue)' } }), "Value"),
         React.createElement("span", { className: "chart-legend-item" },
           React.createElement("span", { className: "chart-legend-dot chart-legend-dot--dashed" }), "Cost"),
-        React.createElement("span", { className: `chart-legend-gain ${gain >= 0 ? 'up' : 'down'}` },
+        loading ? React.createElement("span", { className: "text-dim text-xs" }, "Loading…")
+          : React.createElement("span", { className: `chart-legend-gain ${gain >= 0 ? 'up' : 'down'}` },
           (gain >= 0 ? '+' : '') + gainPct.toFixed(1) + '%'))
     ),
-    React.createElement("svg", { viewBox: `0 0 ${W} ${H}`, className: "chart-line-svg", preserveAspectRatio: "none" },
+    React.createElement("svg", {
+      ref: svgRef,
+      viewBox: `0 0 ${W} ${H}`, className: "chart-line-svg", preserveAspectRatio: "xMidYMid meet",
+      style: { touchAction: 'none' },
+      onMouseMove: onInteract,
+      onMouseLeave: () => setHoverIdx(null),
+      onTouchStart: onInteract,
+      onTouchMove: onInteract,
+      onTouchEnd: () => setHoverIdx(null)
+    },
       React.createElement("defs", null,
         React.createElement("linearGradient", { id: "areaGrad", x1: "0", y1: "0", x2: "0", y2: "1" },
           React.createElement("stop", { offset: "0%", stopColor: "var(--blue)", stopOpacity: "0.25" }),
@@ -2048,21 +2461,24 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
         key: 'yl' + i, x: PAD_L - 6, y: l.y + 3.5,
         textAnchor: "end", fill: "var(--text-dim)", fontSize: "10", fontFamily: "var(--mono)" },
         fmtShort(l.val))),
-      React.createElement("text", {
+      hoverIdx == null && React.createElement("text", {
         x: PAD_L, y: H - 6, fill: "var(--text-dim)", fontSize: "10", fontFamily: "var(--mono)" },
         points[0].date.slice(5)),
-      React.createElement("text", {
+      hoverIdx == null && React.createElement("text", {
         x: W - PAD_R, y: H - 6, textAnchor: "end", fill: "var(--text-dim)", fontSize: "10", fontFamily: "var(--mono)" },
         points[points.length - 1].date.slice(5)),
       React.createElement("path", { d: areaPath, fill: "url(#areaGrad)" }),
       React.createElement("path", { d: contribPath, fill: "none", stroke: "var(--text-dim)", strokeWidth: "1.5", strokeDasharray: "4,3", opacity: "0.4" }),
       React.createElement("path", { d: valuePath, fill: "none", stroke: "var(--blue)", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" }),
-      React.createElement("circle", { cx: x(points.length - 1), cy: y(lastVal.value), r: "4", fill: "var(--blue)", stroke: "var(--bg-raised)", strokeWidth: "2" })
+      hoverIdx == null && React.createElement("circle", { cx: x(points.length - 1), cy: y(lastVal.value), r: "4", fill: "var(--blue)", stroke: "var(--bg-raised)", strokeWidth: "2" }),
+      ...hoverElements,
+      React.createElement("rect", { x: PAD_L, y: PAD_T, width: chartW, height: chartH,
+        fill: "transparent", style: { cursor: 'crosshair' } })
     )
   );
 }
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
-const MARKET_LABELS = { US: 'USA', JSE: 'SA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
+const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
 function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
@@ -2176,6 +2592,7 @@ function DashboardView(_ref6) {
     contributions,
     onAddContribution,
     onRemoveContribution,
+    transactions,
     displayCurrency,
     onSetDisplayCurrency,
     fxRates
@@ -2226,18 +2643,17 @@ function DashboardView(_ref6) {
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = totalCost > 0 ? totalPnl / totalCost * 100 : 0;
   const [contribModalOpen, setContribModalOpen] = useState(false);
+  const [showContribHistory, setShowContribHistory] = useState(false);
+  const [showTxHistory, setShowTxHistory] = useState(false);
+  const [txFilter, setTxFilter] = useState('all');
   const [valueHidden, setValueHidden] = usePersistedState('pb.valueHidden.v1', false);
-  const contributed = contributions.reduce((map, c) => { map[c.currency] = (map[c.currency] || 0) + c.amount; return map; }, {});
-  const overallReturnGroups = currencyGroups.filter(g => (contributed[g.code] || 0) > 0).map(g => ({
-    ...g, contrib: contributed[g.code],
-    ret: g.value - contributed[g.code],
-    retPct: (g.value - contributed[g.code]) / contributed[g.code] * 100
-  }));
+  const totalContribDisplay = contributions.reduce((sum, c) => {
+    const conv = convertCcy(c.amount, c.currency, displayCurrency, rates);
+    return sum + (conv || 0);
+  }, 0);
+  const overallReturn = totalValue - totalContribDisplay;
+  const overallReturnPct = totalContribDisplay > 0 ? (overallReturn / totalContribDisplay * 100) : 0;
   return React.createElement("div", { className: "dashboard-page" },
-    // Header
-    React.createElement("div", { className: "mb-4" },
-      React.createElement("h1", { className: "section-title" }, "Dashboard"),
-      React.createElement("div", { className: "section-desc", style: { marginBottom: 0 } }, "Portfolio overview and growth.")),
     // Empty state
     positions.length === 0 ? React.createElement("div", { className: "empty" },
       React.createElement(Icon, { name: "briefcase", size: 40 }),
@@ -2294,30 +2710,118 @@ function DashboardView(_ref6) {
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
         React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail })),
       // Growth tracker
-      React.createElement("div", { className: "card mb-4" },
-        React.createElement("div", { className: "flex justify-between items-center mb-3" },
-          React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Growth Tracker"),
-          React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: () => setContribModalOpen(true) },
-            React.createElement(Icon, { name: "plus", size: 12 }), " Log deposit")),
+      React.createElement("div", { className: "card mb-4 growth-tracker-card" },
+        React.createElement("div", { className: "growth-tracker-header" },
+          React.createElement("div", null,
+            React.createElement("div", { className: "growth-tracker-title" }, "Growth Tracker"),
+            React.createElement("div", { className: "growth-tracker-subtitle" }, "Performance & returns")),
+          React.createElement("button", { className: "growth-deposit-btn", onClick: () => setContribModalOpen(true) },
+            React.createElement(Icon, { name: "plus", size: 11 }), "Log deposit")),
         React.createElement("div", { className: "growth-stats-grid" },
           React.createElement("div", { className: "growth-stat" },
-            React.createElement("div", { className: "growth-stat-label" }, "Overall Return"),
-            React.createElement("div", { className: "growth-stat-sub" }, "vs. total contributions"),
-            overallReturnGroups.length > 0
-              ? overallReturnGroups.map(g => React.createElement("div", { key: g.code, className: "growth-currency-row" },
-                  React.createElement("span", { className: "market-badge" }, g.label),
-                  React.createElement("span", { className: `growth-val ${g.ret >= 0 ? 'up' : 'down'}` }, g.ret >= 0 ? '+' : '\u2212', fmt(Math.abs(g.ret), g.fmtMarket)),
-                  React.createElement("span", { className: `growth-pct ${g.retPct >= 0 ? 'up' : 'down'}` }, g.retPct >= 0 ? '+' : '', g.retPct.toFixed(1), "%")))
-              : React.createElement("div", { className: "text-dim text-sm" }, "Log a deposit to track overall return.")),
+            React.createElement("div", { className: "growth-stat-header" },
+              React.createElement("div", { className: "growth-stat-label" }, "Overall Return"),
+              React.createElement("div", { className: "growth-stat-sub" }, "vs. contributions")),
+            totalContribDisplay > 0
+              ? React.createElement("div", { className: "growth-currency-row" },
+                  React.createElement("span", { className: "market-badge" }, displayCurrency),
+                  React.createElement("span", { className: `growth-val ${overallReturn >= 0 ? 'up' : 'down'}` },
+                    overallReturn >= 0 ? '+' : '\u2212',
+                    fmtCcy(Math.abs(overallReturn), displayCurrency)),
+                  React.createElement("span", { className: `growth-pct ${overallReturnPct >= 0 ? 'up' : 'down'}` },
+                    overallReturnPct >= 0 ? '+' : '', overallReturnPct.toFixed(1), "%"))
+              : React.createElement("div", { className: "text-dim text-sm", style: { padding: '10px 14px', background: 'var(--bg-elev)', borderRadius: 10 } }, "Log a deposit to track overall return."),
+            totalContribDisplay > 0 && React.createElement("button", {
+              className: "growth-contrib-total",
+              onClick: () => setShowContribHistory(true)
+            }, React.createElement("span", { className: "text-dim" }, "Total contributions"),
+              React.createElement("span", { className: "mono" }, fmtCcy(totalContribDisplay, displayCurrency)),
+              React.createElement(Icon, { name: "chevron", size: 12 }))),
           React.createElement("div", { className: "growth-stat" },
-            React.createElement("div", { className: "growth-stat-label" }, "Position P&L"),
-            React.createElement("div", { className: "growth-stat-sub" }, "vs. cost basis"),
+            React.createElement("div", { className: "growth-stat-header" },
+              React.createElement("div", { className: "growth-stat-label" }, "Position P&L"),
+              React.createElement("div", { className: "growth-stat-sub" }, "vs. cost basis")),
             currencyGroups.length > 0
               ? currencyGroups.map(g => React.createElement("div", { key: g.code, className: "growth-currency-row" },
                   React.createElement("span", { className: "market-badge" }, g.label),
                   React.createElement("span", { className: `growth-val ${g.pnl >= 0 ? 'up' : 'down'}` }, g.pnl >= 0 ? '+' : '\u2212', fmt(Math.abs(g.pnl), g.fmtMarket)),
                   React.createElement("span", { className: `growth-pct ${g.pnlPct >= 0 ? 'up' : 'down'}` }, g.pnlPct >= 0 ? '+' : '', g.pnlPct.toFixed(1), "%")))
-              : React.createElement("div", { className: "text-dim text-sm" }, "Add positions to see P&L.")))),
+              : React.createElement("div", { className: "text-dim text-sm", style: { padding: '10px 14px', background: 'var(--bg-elev)', borderRadius: 10 } }, "Add positions to see P&L."),
+            (positions.length > 0 || transactions.length > 0) && React.createElement("button", {
+              className: "growth-contrib-total",
+              onClick: () => setShowTxHistory(true)
+            }, React.createElement("span", { className: "text-dim" }, "Transaction history"),
+              React.createElement(Icon, { name: "chevron", size: 12 }))))),
+      // Contribution history modal
+      showContribHistory && React.createElement("div", { className: "modal", onClick: e => { if (e.target.classList.contains('modal-backdrop')) setShowContribHistory(false); } },
+        React.createElement("div", { className: "modal-backdrop", onClick: () => setShowContribHistory(false) }),
+        React.createElement("div", { className: "modal-panel", style: { maxWidth: 480 } },
+          React.createElement("div", { className: "modal-handle" }),
+          React.createElement("div", { className: "modal-header" },
+            React.createElement("div", null,
+              React.createElement("div", { className: "modal-title" }, "Transaction History"),
+              React.createElement("div", { className: "modal-subtitle" }, "All deposits and withdrawals")),
+            React.createElement("button", { className: "modal-close", onClick: () => setShowContribHistory(false) },
+              React.createElement(Icon, { name: "x" }))),
+          React.createElement("div", { className: "modal-body" },
+            contributions.length === 0
+              ? React.createElement("div", { className: "text-dim text-sm", style: { textAlign: 'center', padding: 20 } }, "No transactions logged yet.")
+              : contributions.slice().sort((a, b) => b.date.localeCompare(a.date)).map((c, i) =>
+                React.createElement("div", { key: c.id || i, className: "transaction-row" },
+                  React.createElement("div", { className: "transaction-info" },
+                    React.createElement("div", { className: "transaction-date" }, new Date(c.date + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })),
+                    c.note && React.createElement("div", { className: "transaction-note" }, c.note)),
+                  React.createElement("div", { className: `transaction-amount ${c.amount >= 0 ? 'up' : 'down'}` },
+                    (c.amount >= 0 ? '+' : '\u2212') + (CURRENCY_SYMBOLS[c.currency] || '') + Math.abs(c.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })),
+                  React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: () => { onRemoveContribution(c.id); } },
+                    React.createElement(Icon, { name: "x", size: 10 })))),
+            React.createElement("div", { className: "transaction-summary" },
+              React.createElement("span", null, "Total: "),
+              React.createElement("span", { className: "mono" }, fmtCcy(totalContribDisplay, displayCurrency)))))),
+      // Transaction history modal
+      showTxHistory && (() => {
+        const txMarkets = ['all', ...Array.from(new Set(transactions.map(t => t.market)))];
+        const filtered = txFilter === 'all' ? transactions : transactions.filter(t => t.market === txFilter);
+        const sorted = filtered.slice().sort((a, b) => (b.date || b.createdAt).localeCompare(a.date || a.createdAt));
+        return React.createElement("div", { className: "modal", onClick: e => { if (e.target.classList.contains('modal-backdrop')) setShowTxHistory(false); } },
+          React.createElement("div", { className: "modal-backdrop", onClick: () => setShowTxHistory(false) }),
+          React.createElement("div", { className: "modal-panel", style: { maxWidth: 520 } },
+            React.createElement("div", { className: "modal-handle" }),
+            React.createElement("div", { className: "modal-header" },
+              React.createElement("div", null,
+                React.createElement("div", { className: "modal-title" }, "Transaction History"),
+                React.createElement("div", { className: "modal-subtitle" }, sorted.length, " transactions")),
+              React.createElement("button", { className: "modal-close", onClick: () => setShowTxHistory(false) },
+                React.createElement(Icon, { name: "x" }))),
+            React.createElement("div", { className: "modal-body" },
+              React.createElement("div", { className: "tx-filter-row" },
+                txMarkets.map(m => React.createElement("button", {
+                  key: m,
+                  className: `tx-filter-btn ${txFilter === m ? 'active' : ''}`,
+                  onClick: () => setTxFilter(m)
+                }, m === 'all' ? 'All' : m))),
+              sorted.length === 0
+                ? React.createElement("div", { className: "text-dim text-sm", style: { textAlign: 'center', padding: 20 } }, "No transactions recorded yet.")
+                : sorted.map(tx => {
+                  const isBuy = tx.type === 'buy';
+                  const total = tx.shares * tx.price;
+                  const ccy = (MARKET_CURRENCY[tx.market] || MARKET_CURRENCY.US).sym;
+                  return React.createElement("div", { key: tx.id, className: "transaction-row" },
+                    React.createElement("div", { className: "transaction-info" },
+                      React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                        React.createElement("span", { className: `tx-type-badge ${isBuy ? 'buy' : 'sell'}` }, isBuy ? 'BUY' : 'SELL'),
+                        React.createElement("span", { style: { fontWeight: 600, fontSize: 13 } }, tx.ticker),
+                        React.createElement("span", { className: "market-badge" }, tx.market)),
+                      React.createElement("div", { className: "text-xs text-dim" },
+                        tx.shares, " shares @ ", ccy, tx.price.toFixed(2),
+                        tx.notes ? ' \xB7 ' + tx.notes : '')),
+                    React.createElement("div", { style: { textAlign: 'right' } },
+                      React.createElement("div", { className: `transaction-amount ${isBuy ? '' : 'up'}` },
+                        (isBuy ? '-' : '+') + ccy + total.toFixed(2)),
+                      React.createElement("div", { className: "text-xs text-dim" },
+                        new Date(tx.date + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }))));
+                }))));
+      })(),
       // Contribution modal
       contribModalOpen ? React.createElement(ContributionModal, {
         onClose: () => setContribModalOpen(false),
@@ -2332,10 +2836,12 @@ function CurrentView(_ref7) {
     marketFilter,
     setMarketFilter,
     onOpenDetail,
-    onAddPosition
+    onAddPosition,
+    onSellPosition
   } = _ref7;
   const usdPositions = positions.filter(p => p.market === 'US');
   const zarPositions = positions.filter(p => p.market === 'JSE');
+  const tfsaPositions = positions.filter(p => p.market === 'TFSA');
   const renderUS = () => {
     if (usdPositions.length === 0) {
       return React.createElement("div", { className: "empty" },
@@ -2369,7 +2875,11 @@ function CurrentView(_ref7) {
         className: "row-meta"
       }, p.shares, " \xD7 ", fmt(p.costBasis, 'US'), pnlPct != null && React.createElement("span", {
         className: `mono ${pnlPct >= 0 ? 'text-up' : 'text-down'}`
-      }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"))), React.createElement("div", {
+      }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"),
+        React.createElement("button", {
+          className: "btn-sell-inline",
+          onClick: e => { e.stopPropagation(); onSellPosition(p); }
+        }, "Sell"))), React.createElement("div", {
         className: "row-right"
       }, React.createElement(PriceBlock, {
         quote: q
@@ -2411,7 +2921,11 @@ function CurrentView(_ref7) {
         className: "row-meta"
       }, p.shares, " \xD7 ", fmt(p.costBasis, 'JSE'), pnlPct != null && React.createElement("span", {
         className: `mono ${pnlPct >= 0 ? 'text-up' : 'text-down'}`
-      }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"))), React.createElement("div", {
+      }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"),
+        React.createElement("button", {
+          className: "btn-sell-inline",
+          onClick: e => { e.stopPropagation(); onSellPosition(p); }
+        }, "Sell"))), React.createElement("div", {
         className: "row-right"
       }, React.createElement(PriceBlock, {
         quote: q
@@ -2420,19 +2934,51 @@ function CurrentView(_ref7) {
       }, fmt(marketValue, 'JSE'))));
     })));
   };
+  const renderTFSA = () => {
+    if (tfsaPositions.length === 0) {
+      return React.createElement("div", { className: "empty" },
+        React.createElement(Icon, { name: "briefcase", size: 40 }),
+        React.createElement("h3", null, "No TFSA positions yet"),
+        React.createElement("p", null, "Add your Tax-Free Savings Account holdings above."));
+    }
+    return React.createElement("div", null, React.createElement("div", {
+      className: "eyebrow"
+    }, "TFSA holdings"), React.createElement("div", {
+      className: "row-list"
+    }, tfsaPositions.map(p => {
+      const q = prices['TFSA:' + p.ticker];
+      const info = DATA.findInfo(p.ticker, 'TFSA');
+      const marketValue = q ? p.shares * q.price : null;
+      const cost = p.shares * p.costBasis;
+      const pnlPct = marketValue != null && cost > 0 ? (marketValue - cost) / cost * 100 : null;
+      return React.createElement("button", {
+        key: p.id, className: "row",
+        onClick: () => onOpenDetail(p.ticker, 'TFSA')
+      }, React.createElement("div", { className: "row-main" },
+        React.createElement("div", { className: "row-head" },
+          React.createElement("span", { className: "tkr" }, p.ticker),
+          React.createElement("span", { className: "text-sm text-dim" }, info.name || p.ticker)),
+        React.createElement("div", { className: "row-meta" },
+          p.shares, " \xD7 ", fmt(p.costBasis, 'TFSA'), pnlPct != null && React.createElement("span", {
+            className: `mono ${pnlPct >= 0 ? 'text-up' : 'text-down'}`
+          }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"),
+          React.createElement("button", {
+            className: "btn-sell-inline",
+            onClick: e => { e.stopPropagation(); onSellPosition(p); }
+          }, "Sell"))),
+        React.createElement("div", { className: "row-right" },
+          React.createElement(PriceBlock, { quote: q }),
+          marketValue != null && React.createElement("div", {
+            className: "text-xs text-dim mt-1 mono"
+          }, fmt(marketValue, 'TFSA'))));
+    })));
+  };
   return React.createElement("div", null, React.createElement("div", {
-    className: "flex justify-between items-start mb-3",
+    className: "flex justify-between items-center mb-3",
     style: {
       gap: 10
     }
-  }, React.createElement("div", null, React.createElement("h1", {
-    className: "section-title"
-  }, "Holdings"), React.createElement("div", {
-    className: "section-desc",
-    style: {
-      marginBottom: 0
-    }
-  }, "Live prices for your holdings.")), React.createElement("div", { className: "flex gap-2 items-center" },
+  }, React.createElement("div", { className: "flex gap-2 items-center" },
     React.createElement("div", {
     className: "toggle-group"
   }, React.createElement("button", {
@@ -2441,10 +2987,13 @@ function CurrentView(_ref7) {
   }, "US (", usdPositions.length, ")"), React.createElement("button", {
     className: `toggle-opt ${marketFilter === 'JSE' ? 'active' : ''}`,
     onClick: () => setMarketFilter('JSE')
-  }, "JSE (", zarPositions.length, ")")),
+  }, "JSE (", zarPositions.length, ")"), React.createElement("button", {
+    className: `toggle-opt ${marketFilter === 'TFSA' ? 'active' : ''}`,
+    onClick: () => setMarketFilter('TFSA')
+  }, "TFSA (", tfsaPositions.length, ")")),
     React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
       React.createElement(Icon, { name: "plus", size: 13 }), " Add"))),
-    marketFilter === 'US' ? renderUS() : renderJSE());
+    marketFilter === 'US' ? renderUS() : marketFilter === 'JSE' ? renderJSE() : renderTFSA());
 }
 const ALL_TICKERS = (() => {
   const seen = new Set();
@@ -2457,6 +3006,7 @@ const ALL_TICKERS = (() => {
   DATA.NEW_PICKS.forEach(p => add(p.ticker, p.name, 'US'));
   DATA.HEDGES.forEach(h => add(h.ticker, h.name, 'US'));
   DATA.JSE_SUGGESTIONS.forEach(s => add(s.ticker, s.name, 'JSE'));
+  (DATA.TFSA_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, 'TFSA'));
   (DATA.LSE_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, 'LSE'));
   (DATA.ASX_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, 'ASX'));
   (DATA.EU_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, s.exchange || 'FRA'));
@@ -2560,6 +3110,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
   const remoteReqId = useRef(0);
+  const justSelected = useRef(false);
 
   useEffect(() => { setQuery(value || ''); }, [value]);
 
@@ -2583,6 +3134,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
   };
 
   useEffect(() => {
+    if (justSelected.current) { justSelected.current = false; setRemoteLoading(false); return; }
     if (!query || query.length < 2) { setRemoteLoading(false); return; }
     const reqId = ++remoteReqId.current;
     setRemoteLoading(true);
@@ -2610,6 +3162,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
   };
 
   const selectSuggestion = (s) => {
+    justSelected.current = true;
     remoteReqId.current++;
     setQuery(s.ticker);
     onChange(s.ticker);
@@ -2637,7 +3190,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
     React.createElement('input', {
       type: 'text',
       className: 'ticker-search-input',
-      placeholder: 'Search ticker\u2026',
+      placeholder: 'Search ticker or company\u2026',
       value: query,
       onChange: handleInput,
       onKeyDown: handleKeyDown,
@@ -2693,6 +3246,7 @@ function buildSuggestions(watchlist) {
   DATA.NEW_PICKS.forEach(p => popular.push({ ticker: p.ticker, name: p.name, market: 'US', sector: p.sector }));
   DATA.HEDGES.forEach(h => popular.push({ ticker: h.ticker, name: h.name, market: 'US' }));
   (DATA.JSE_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'JSE' }));
+  (DATA.TFSA_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'TFSA' }));
   (DATA.LSE_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'LSE' }));
   (DATA.ASX_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'ASX' }));
   (DATA.EU_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: s.exchange || 'FRA' }));
@@ -2716,10 +3270,13 @@ function WatchlistView(_ref8) {
   let {
     watchlist,
     prices,
+    alerts,
     onAdd,
     onRemove,
     onReorder,
-    onOpenDetail
+    onOpenDetail,
+    onAddAlert,
+    onRemoveAlert
   } = _ref8;
   const [newTicker, setNewTicker] = useState('');
   const [newMarket, setNewMarket] = useState('US');
@@ -2727,6 +3284,33 @@ function WatchlistView(_ref8) {
   const [verifyError, setVerifyError] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [showSuggestions, setShowSuggestions] = usePersistedState('pb.watchlist.showSuggestions.v1', true);
+
+  // Alert popup state
+  const [alertPopup, setAlertPopup] = useState(null);
+  const [alertDir, setAlertDir] = useState('above');
+  const [alertTarget, setAlertTarget] = useState('');
+  const [alertNote, setAlertNote] = useState('');
+  const openAlertPopup = (ticker, market) => {
+    const q = prices[priceKey(market, ticker)];
+    setAlertPopup({ ticker, market });
+    setAlertDir('above');
+    setAlertTarget(q ? q.price.toFixed(2) : '');
+    setAlertNote('');
+  };
+  const submitAlertPopup = () => {
+    if (!alertPopup) return;
+    const t = parseFloat(alertTarget);
+    if (!isFinite(t) || t <= 0) return;
+    onAddAlert(alertPopup.ticker, alertPopup.market, alertDir, t, alertNote);
+    setAlertNote('');
+  };
+  const popupAlerts = alertPopup ? alerts.filter(a => a.ticker === alertPopup.ticker && a.market === alertPopup.market) : [];
+  const popupCcy = alertPopup ? (alertPopup.market === 'JSE' ? 'ZAR' : 'USD') : 'USD';
+
+  // Swipe-to-delete state
+  const [swipedId, setSwipedId] = useState(null);
+  const swipeRefs = useRef(new Map());
+  const swipeState = useRef(null);
 
   // Freeform long-press drag-to-reorder. We use pointer events with capture so that
   // the dragged card keeps receiving move events even when the pointer leaves it.
@@ -2782,21 +3366,34 @@ function WatchlistView(_ref8) {
     }
   };
 
-  const cardHeightCache = useRef(0);
+  const naturalRectsRef = useRef(new Map());
 
   const displaceNeighbours = (originIdx, targetIdx) => {
-    const h = cardHeightCache.current;
+    const rects = naturalRectsRef.current;
+    const originRect = rects.get(watchlist[originIdx].id);
+    if (!originRect) return;
     watchlist.forEach((w, i) => {
       if (i === originIdx) return;
       const el = cardRefsRef.current.get(w.id);
       if (!el) return;
-      let shift = 0;
-      if (originIdx < targetIdx) {
-        if (i > originIdx && i <= targetIdx) shift = -h;
-      } else if (originIdx > targetIdx) {
-        if (i >= targetIdx && i < originIdx) shift = h;
+      const naturalPos = rects.get(w.id);
+      if (!naturalPos) { el.style.transform = ''; return; }
+      const reordered = [...watchlist];
+      const [moved] = reordered.splice(originIdx, 1);
+      reordered.splice(targetIdx, 0, moved);
+      const newLogicalIdx = reordered.findIndex(x => x.id === w.id);
+      const origLogicalIdx = watchlist.findIndex(x => x.id === w.id);
+      if (newLogicalIdx === origLogicalIdx) {
+        el.style.transform = '';
+      } else {
+        const targetRect = rects.get(reordered[origLogicalIdx]?.id);
+        if (targetRect) {
+          const dy = targetRect.top - naturalPos.top;
+          el.style.transform = dy ? `translateY(${dy}px)` : '';
+        } else {
+          el.style.transform = '';
+        }
       }
-      el.style.transform = shift ? `translateY(${shift}px)` : '';
     });
   };
 
@@ -2806,22 +3403,33 @@ function WatchlistView(_ref8) {
     triggerHaptic();
     const originIdx = watchlist.findIndex(w => w.id === id);
     if (originIdx < 0) return;
-    const rect = card.getBoundingClientRect();
-    cardHeightCache.current = rect.height + 8;
+    naturalRectsRef.current.clear();
+    watchlist.forEach(w => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el) {
+        el.style.transition = 'none';
+        el.style.transform = '';
+      }
+    });
+    watchlist.forEach(w => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el) naturalRectsRef.current.set(w.id, el.getBoundingClientRect());
+    });
+    watchlist.forEach((w, i) => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el && i !== originIdx) {
+        el.style.transition = 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1)';
+      }
+    });
     dragRef.current = {
       id, pointerId,
       pointerStartY: startY,
       originIdx, targetIdx: originIdx,
       moved: false,
     };
-    card.style.transition = 'transform 140ms cubic-bezier(0.22, 1, 0.36, 1)';
-    card.style.transform = 'translateY(0) scale(1.05)';
+    card.style.transition = 'none';
+    card.style.transform = 'scale(1.04)';
     card.style.zIndex = '50';
-    setTimeout(() => {
-      if (dragRef.current && dragRef.current.id === id) {
-        card.style.transition = 'none';
-      }
-    }, 150);
     try { card.setPointerCapture(pointerId); } catch (_) {}
     setDraggingId(id);
   };
@@ -2830,6 +3438,7 @@ function WatchlistView(_ref8) {
     if (e.target.closest('button,a,input,[data-no-drag]')) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (dragRef.current) return;
+    if (swipeState.current) return;
     clearLongPress();
     if (!hapticCtxRef.current) {
       try { hapticCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
@@ -2853,24 +3462,18 @@ function WatchlistView(_ref8) {
       if (e.cancelable) e.preventDefault();
       const dy = e.clientY - drag.pointerStartY;
       const card = cardRefsRef.current.get(drag.id);
-      if (card) card.style.transform = `translateY(${dy}px) scale(1.05)`;
+      if (card) card.style.transform = `translateY(${dy}px) scale(1.04)`;
       drag.moved = true;
       const pointerY = e.clientY;
       let targetIdx = drag.originIdx;
+      const rects = naturalRectsRef.current;
       for (let i = 0; i < watchlist.length; i++) {
         if (i === drag.originIdx) continue;
-        const sibEl = cardRefsRef.current.get(watchlist[i].id);
-        if (!sibEl) continue;
-        const baseTop = sibEl.getBoundingClientRect().top;
-        const currentTransform = sibEl.style.transform;
-        let appliedShift = 0;
-        if (currentTransform) {
-          const m = currentTransform.match(/translateY\(([-\d.]+)px\)/);
-          if (m) appliedShift = parseFloat(m[1]);
-        }
-        const naturalCenter = baseTop - appliedShift + sibEl.offsetHeight / 2;
-        if (i < drag.originIdx && pointerY < naturalCenter) { targetIdx = i; break; }
-        if (i > drag.originIdx && pointerY > naturalCenter) { targetIdx = i; }
+        const r = rects.get(watchlist[i].id);
+        if (!r) continue;
+        const center = r.top + r.height / 2;
+        if (i < drag.originIdx && pointerY < center) { targetIdx = i; break; }
+        if (i > drag.originIdx && pointerY > center) { targetIdx = i; }
       }
       if (targetIdx !== drag.targetIdx) {
         drag.targetIdx = targetIdx;
@@ -2891,17 +3494,18 @@ function WatchlistView(_ref8) {
   const finishDrag = (commit) => {
     const drag = dragRef.current;
     if (!drag) return;
-    const card = cardRefsRef.current.get(drag.id);
-    if (card) {
-      card.style.transition = '';
-      card.style.transform = '';
-      card.style.zIndex = '';
-      try { card.releasePointerCapture(drag.pointerId); } catch (_) {}
-    }
     watchlist.forEach(w => {
       const el = cardRefsRef.current.get(w.id);
-      if (el) el.style.transform = '';
+      if (el) {
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.zIndex = '';
+      }
     });
+    try {
+      const card = cardRefsRef.current.get(drag.id);
+      if (card) card.releasePointerCapture(drag.pointerId);
+    } catch (_) {}
     if (commit && drag.moved && drag.targetIdx !== drag.originIdx) {
       const arr = [...watchlist];
       const [m] = arr.splice(drag.originIdx, 1);
@@ -2924,6 +3528,72 @@ function WatchlistView(_ref8) {
     pressOriginRef.current = null;
     if (dragRef.current) finishDrag(false);
   };
+
+  const closeSwipe = useCallback((id) => {
+    const inner = swipeRefs.current.get(id);
+    if (inner) {
+      inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+      inner.style.transform = '';
+    }
+    setSwipedId(prev => prev === id ? null : prev);
+  }, []);
+
+  const onSwipeTouchStart = (e, id) => {
+    if (dragRef.current) return;
+    const t = e.touches[0];
+    swipeState.current = { id, startX: t.clientX, startY: t.clientY, dx: 0, locked: false, direction: null };
+    if (swipedId && swipedId !== id) closeSwipe(swipedId);
+  };
+
+  const onSwipeTouchMove = (e, id) => {
+    const s = swipeState.current;
+    if (!s || s.id !== id) return;
+    const t = e.touches[0];
+    const dx = t.clientX - s.startX;
+    const dy = t.clientY - s.startY;
+    if (!s.direction) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      s.direction = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+    }
+    if (s.direction !== 'h') { swipeState.current = null; return; }
+    if (e.cancelable) e.preventDefault();
+    clearLongPress();
+    s.locked = true;
+    s.dx = dx;
+    const inner = swipeRefs.current.get(id);
+    if (inner) {
+      const clamped = Math.max(-80, Math.min(dx > 0 ? 0 : dx, 0));
+      inner.style.transition = 'none';
+      inner.style.transform = `translateX(${clamped}px)`;
+    }
+  };
+
+  const onSwipeTouchEnd = (id) => {
+    const s = swipeState.current;
+    swipeState.current = null;
+    if (!s || s.id !== id || !s.locked) return;
+    const inner = swipeRefs.current.get(id);
+    if (!inner) return;
+    if (s.dx < -50) {
+      inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+      inner.style.transform = 'translateX(-80px)';
+      setSwipedId(id);
+    } else {
+      inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+      inner.style.transform = '';
+      setSwipedId(prev => prev === id ? null : prev);
+    }
+  };
+
+  const confirmDelete = (id) => {
+    const inner = swipeRefs.current.get(id);
+    if (inner) {
+      inner.style.transition = 'transform 200ms ease-out';
+      inner.style.transform = 'translateX(-100vw)';
+    }
+    setTimeout(() => onRemove(id), 220);
+  };
+
   const submit = async () => {
     const t = newTicker.trim();
     if (!t) return;
@@ -2942,8 +3612,7 @@ function WatchlistView(_ref8) {
   };
   const suggestions = useMemo(() => buildSuggestions(watchlist), [watchlist]);
   return React.createElement("div", null,
-    React.createElement("div", { className: "flex justify-between items-center mb-4" },
-      React.createElement("h1", { className: "section-title", style: { marginBottom: 0 } }, "Watchlist"),
+    React.createElement("div", { className: "flex justify-end mb-4" },
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: () => setShowAddForm(true) },
         React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
     showAddForm && React.createElement("div", { className: "card mb-4 watchlist-add" },
@@ -2980,7 +3649,7 @@ function WatchlistView(_ref8) {
       React.createElement(Icon, { name: "eye", size: 40 }),
       React.createElement("h3", null, "Empty watchlist"),
       React.createElement("p", null, "Tap Add to track your first ticker."))
-    : React.createElement("div", { className: "grid grid-2 mb-6 watchlist-grid" },
+    : React.createElement("div", { className: "watchlist-list mb-6" },
       watchlist.map((w) => {
         const q = prices[priceKey(w.market, w.ticker)];
         const displayName = w.name || resolveTickerName(w.ticker, w.market, q) || w.ticker;
@@ -2994,36 +3663,107 @@ function WatchlistView(_ref8) {
           }, React.createElement("span", { className: "ath-badge-label" }, "52W Hi"),
              React.createElement("span", { className: "ath-badge-val" }, atAth ? 'ATH' : pct.toFixed(1) + '%'));
         }
+        const ac = alerts.filter(a => a.ticker === w.ticker && a.market === w.market).length;
         return React.createElement("div", {
           key: w.id,
           ref: setCardRef(w.id),
-          className: "pos-card" + (isDragging ? " dragging" : ""),
-          onClick: () => {
-            if (suppressClickRef.current) { suppressClickRef.current = false; return; }
-            if (dragRef.current) return;
-            onOpenDetail(w.ticker, w.market);
-          },
+          className: "swipe-card-outer" + (isDragging ? " dragging" : ""),
           onPointerDown: (e) => onCardPointerDown(e, w.id),
           onPointerMove: onCardPointerMove,
           onPointerUp: onCardPointerUp,
           onPointerCancel: onCardPointerCancel,
           onContextMenu: e => e.preventDefault()
         },
-          React.createElement("div", { className: "pos-head" },
-            React.createElement("div", { className: "flex-1" },
+          React.createElement("div", { className: "swipe-delete-bg", onClick: () => confirmDelete(w.id) }, "Delete"),
+          React.createElement("div", {
+            className: "swipe-card-inner pos-card",
+            ref: el => { if (el) swipeRefs.current.set(w.id, el); else swipeRefs.current.delete(w.id); },
+            onClick: () => {
+              if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+              if (dragRef.current || swipeState.current) return;
+              if (swipedId === w.id) { closeSwipe(w.id); return; }
+              onOpenDetail(w.ticker, w.market);
+            },
+            onTouchStart: e => onSwipeTouchStart(e, w.id),
+            onTouchMove: e => onSwipeTouchMove(e, w.id),
+            onTouchEnd: () => onSwipeTouchEnd(w.id)
+          },
+            React.createElement("div", { className: "pos-head" },
+              React.createElement("div", { className: "flex-1" },
+                React.createElement("div", { className: "flex items-center gap-2" },
+                  React.createElement("span", { className: "tkr" }, w.ticker),
+                  React.createElement("span", { className: "market-badge" }, w.market)),
+                React.createElement("div", { className: "tkr-name" }, displayName)),
               React.createElement("div", { className: "flex items-center gap-2" },
-                React.createElement("span", { className: "tkr" }, w.ticker),
-                React.createElement("span", { className: "market-badge" }, w.market)),
-              React.createElement("div", { className: "tkr-name" }, displayName)),
-            React.createElement("div", { className: "flex items-center gap-2" },
-              athBadge,
+                athBadge)),
+            React.createElement("div", { style: { position: 'relative' } },
+              React.createElement(PriceBlock, { quote: q, size: "lg", showDailyRow: true }),
               React.createElement("button", {
-                className: "btn btn-ghost btn-xs",
-                onClick: e => { e.stopPropagation(); onRemove(w.id); },
-                'aria-label': "Remove"
-              }, React.createElement(Icon, { name: "x", size: 13 })))),
-          React.createElement(PriceBlock, { quote: q, size: "lg", showDailyRow: true }));
+                className: "card-alert-bell",
+                "data-no-drag": true,
+                onClick: e => { e.stopPropagation(); openAlertPopup(w.ticker, w.market); },
+                "aria-label": "Alerts"
+              }, React.createElement(Icon, { name: "bell", size: 13 }),
+                ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)))));
       })),
+
+    alertPopup && React.createElement("div", { className: "alert-popup-overlay" },
+      React.createElement("div", { className: "alert-popup-backdrop", onClick: () => setAlertPopup(null) }),
+      React.createElement("div", { className: "alert-popup-panel" },
+        React.createElement("div", { className: "alert-popup-header" },
+          React.createElement("div", null,
+            React.createElement("div", { className: "modal-title" }, alertPopup.ticker),
+            React.createElement("div", { className: "modal-subtitle" }, "Price alerts \xB7 ", React.createElement("span", { className: "market-badge" }, alertPopup.market))),
+          React.createElement("button", { className: "modal-close", onClick: () => setAlertPopup(null), "aria-label": "Close" },
+            React.createElement(Icon, { name: "x" }))),
+        popupAlerts.length > 0 && React.createElement("div", {
+          style: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }
+        }, popupAlerts.map(a => React.createElement("div", {
+          key: a.id, className: "alert-item"
+        }, React.createElement("div", null,
+          React.createElement("div", { className: "mono text-sm" },
+            a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, alertPopup.market)),
+          a.note && React.createElement("div", { className: "text-xs text-dim mt-1" }, a.note)),
+          React.createElement("button", {
+            className: "btn btn-ghost btn-xs",
+            onClick: () => onRemoveAlert(a.id), "aria-label": "Remove"
+          }, React.createElement(Icon, { name: "x", size: 12 }))))),
+        React.createElement("div", { className: "alert-form" },
+          React.createElement("div", { className: "alert-dir-group", role: "radiogroup", "aria-label": "Trigger direction" },
+            React.createElement("button", {
+              type: "button", role: "radio", "aria-checked": alertDir === 'above',
+              className: `alert-dir-btn up ${alertDir === 'above' ? 'active' : ''}`,
+              onClick: () => setAlertDir('above')
+            }, React.createElement("span", { className: "alert-dir-arrow" }, "↑"),
+              React.createElement("span", { className: "alert-dir-label" }, "Above")),
+            React.createElement("button", {
+              type: "button", role: "radio", "aria-checked": alertDir === 'below',
+              className: `alert-dir-btn down ${alertDir === 'below' ? 'active' : ''}`,
+              onClick: () => setAlertDir('below')
+            }, React.createElement("span", { className: "alert-dir-arrow" }, "↓"),
+              React.createElement("span", { className: "alert-dir-label" }, "Below"))
+          ),
+          React.createElement("div", { className: "alert-target-row" },
+            React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
+              React.createElement("span", { className: "prefix" }, popupCcy === 'ZAR' ? 'R' : '$'),
+              React.createElement("input", {
+                type: "number", inputMode: "decimal", step: "0.01",
+                placeholder: "Target price", value: alertTarget,
+                onChange: e => setAlertTarget(e.target.value),
+                className: "alert-target-input"
+              }))),
+          React.createElement("input", {
+            type: "text", placeholder: "Note (optional)",
+            value: alertNote, onChange: e => setAlertNote(e.target.value),
+            maxLength: "80", className: "alert-note-input"
+          }),
+          React.createElement("button", {
+            className: `btn btn-block mt-3 alert-submit ${alertDir === 'above' ? 'up' : 'down'}`,
+            onClick: submitAlertPopup
+          }, React.createElement(Icon, { name: "plus" }),
+            " Alert when ", alertDir === 'above' ? 'above ' : 'below ',
+            alertTarget && isFinite(parseFloat(alertTarget)) ? (popupCcy === 'ZAR' ? 'R' : '$') + parseFloat(alertTarget).toFixed(2) : 'target')))),
+
     React.createElement("div", { className: "eyebrow suggestions-head" },
       React.createElement("span", null, "Suggested for you"),
       React.createElement("button", {
@@ -3038,7 +3778,7 @@ function WatchlistView(_ref8) {
             key: priceKey(s.market, s.ticker),
             className: "chip",
             onClick: () => onAdd(s.ticker, s.market, s.name)
-          }, s.ticker, React.createElement("span", { className: "chip-sub" }, s.name, " · ", s.market)))))
+          }, s.ticker, React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market)))))
   );
 }
 
@@ -3241,21 +3981,26 @@ function HeatmapView(_ref8b) {
   const exchanges = DATA.HEATMAPS;
   const [mode, setMode] = usePersistedState('pb.heatmap.mode.v1', 'market');
   const [selectedId, setSelectedId] = usePersistedState('pb.heatmap.exchange.v1', exchanges[0].id);
+  const [portfolioFilter, setPortfolioFilter] = usePersistedState('pb.heatmap.pf.v1', 'all');
   const exchange = exchanges.find(e => e.id === selectedId) || exchanges[0];
   const [cache, setCache] = useState({});
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
   const cacheKey = exchange.id;
   const cached = cache[cacheKey];
+  const loadRef = useRef(false);
   const load = useCallback(async (force) => {
-    if (loading) return;
-    if (!force && cache[cacheKey] && Date.now() - cache[cacheKey].fetchedAt < 60_000) return;
+    if (loadRef.current) return;
+    if (!force && cache[cacheKey] && Date.now() - cache[cacheKey].fetchedAt < 300_000) return;
+    loadRef.current = true;
     setLoading(true);
     setError(null);
+    setProgress({ done: 0, total: exchange.constituents.length });
     try {
       const items = exchange.constituents.map(c => ({ ticker: c.t, market: exchange.market }));
-      const quotes = await fetchQuoteBatch(items);
+      const quotes = await fetchQuoteBatchLight(items, (done, total) => setProgress({ done, total }));
       const rows = exchange.constituents.map(c => {
         const q = quotes[priceKey(exchange.market, c.t)];
         return q ? { ticker: c.t, market: exchange.market, sector: c.s, industry: c.i, value: c.m, price: q.price, changePct: q.changePct } : null;
@@ -3269,15 +4014,22 @@ function HeatmapView(_ref8b) {
     } catch (e) {
       setError('Failed to load heatmap. Check your connection.');
     } finally {
+      loadRef.current = false;
       setLoading(false);
+      setProgress(null);
     }
-  }, [cacheKey, exchange, loading, cache]);
+  }, [cacheKey, exchange, cache]);
   useEffect(() => {
     if (mode === 'market') load(false);
   }, [cacheKey, mode]);
+  const portfolioMarkets = useMemo(() => {
+    const mkts = new Set();
+    positions.forEach(p => mkts.add(p.market));
+    return Array.from(mkts).sort();
+  }, [positions]);
   const portfolioRows = useMemo(() => {
     if (mode !== 'portfolio') return [];
-    return positions.map(p => {
+    return positions.filter(p => portfolioFilter === 'all' || p.market === portfolioFilter).map(p => {
       const q = prices[priceKey(p.market, p.ticker)];
       if (!q || q.changePct == null) return null;
       const sec = DATA.findSector(p.ticker, p.market);
@@ -3285,7 +4037,7 @@ function HeatmapView(_ref8b) {
       if (positionValue <= 0) return null;
       return { ticker: p.ticker, market: p.market, sector: sec.sector, industry: sec.industry, value: positionValue, price: q.price, changePct: q.changePct };
     }).filter(Boolean);
-  }, [mode, positions, prices]);
+  }, [mode, positions, prices, portfolioFilter]);
   const activeRows = mode === 'market' ? (cached ? cached.rows : []) : portfolioRows;
   const stats = useMemo(() => {
     if (!activeRows || activeRows.length === 0) return null;
@@ -3298,11 +4050,8 @@ function HeatmapView(_ref8b) {
   }, [activeRows]);
   const aspectRatio = mode === 'market' ? 0.62 : 0.5;
   const minHeight = mode === 'market' ? 480 : 360;
+  const progressPct = progress ? Math.round(progress.done / progress.total * 100) : 0;
   return React.createElement("div", null,
-    React.createElement("h1", { className: "section-title" }, "Heatmap"),
-    React.createElement("div", { className: "section-desc" },
-      "Live daily performance, sized by ", mode === 'market' ? 'market cap' : 'position value', ". Tap a ticker for details."
-    ),
     React.createElement("div", { className: "heatmap-mode-toggle" },
       React.createElement("button", {
         className: `heatmap-mode-btn ${mode === 'portfolio' ? 'active' : ''}`,
@@ -3320,6 +4069,17 @@ function HeatmapView(_ref8b) {
         onClick: () => setSelectedId(ex.id)
       }, ex.label))
     ) : null,
+    mode === 'portfolio' && portfolioMarkets.length > 1 ? React.createElement("div", { className: "heatmap-toggle" },
+      React.createElement("button", {
+        className: `heatmap-toggle-btn ${portfolioFilter === 'all' ? 'active' : ''}`,
+        onClick: () => setPortfolioFilter('all')
+      }, "All"),
+      portfolioMarkets.map(m => React.createElement("button", {
+        key: m,
+        className: `heatmap-toggle-btn ${portfolioFilter === m ? 'active' : ''}`,
+        onClick: () => setPortfolioFilter(m)
+      }, m))
+    ) : null,
     React.createElement("div", { className: "heatmap-meta" },
       React.createElement("div", { className: "heatmap-meta-left" },
         stats ? React.createElement(React.Fragment, null,
@@ -3327,7 +4087,7 @@ function HeatmapView(_ref8b) {
           React.createElement("span", { className: "stat-down" }, "▼ ", stats.down),
           stats.flat > 0 ? React.createElement("span", { className: "stat-flat" }, "● ", stats.flat) : null,
           React.createElement("span", { className: `stat-avg ${stats.avg >= 0 ? 'up' : 'down'}` },
-            (mode === 'market' ? "weighted " : "weighted "), stats.avg >= 0 ? '+' : '', stats.avg.toFixed(2), '%'
+            "weighted ", stats.avg >= 0 ? '+' : '', stats.avg.toFixed(2), '%'
           )
         ) : React.createElement("span", { className: "text-dim text-sm" }, loading ? "Fetching live quotes…" : (mode === 'portfolio' && positions.length === 0 ? "Add positions to see your portfolio heatmap." : ""))
       ),
@@ -3344,13 +4104,18 @@ function HeatmapView(_ref8b) {
       )
     ),
     error && mode === 'market' ? React.createElement("div", { className: "verify-error" }, error) : null,
-    mode === 'market' && !cached && loading ? React.createElement("div", { className: "heatmap-loading" }, "Loading ", exchange.label, "…") : null,
+    mode === 'market' && loading ? React.createElement("div", { className: "heatmap-progress" },
+      React.createElement("div", { className: "heatmap-progress-bar" },
+        React.createElement("div", { className: "heatmap-progress-fill", style: { width: progressPct + '%' } })),
+      React.createElement("span", { className: "heatmap-progress-text" },
+        progress ? progress.done + " / " + progress.total + " quotes" : "Loading " + exchange.label + "…")
+    ) : null,
     activeRows.length > 0 ? React.createElement(HeatmapTreemap, {
       rows: activeRows,
       aspectRatio: aspectRatio,
       minHeight: minHeight,
       onOpenDetail: onOpenDetail
-    }) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : "Waiting for live quotes…") : null)
+    }) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null)
   );
 }
 function PicksView(_ref9) {
@@ -3358,11 +4123,7 @@ function PicksView(_ref9) {
     prices,
     onOpenDetail
   } = _ref9;
-  return React.createElement("div", null, React.createElement("h1", {
-    className: "section-title"
-  }, "New Picks"), React.createElement("div", {
-    className: "section-desc"
-  }, "Nine positions targeting weighted 27-31% return. Diversified across healthcare, nuclear, defense, cyber, and semi-ADRs."), React.createElement("div", {
+  return React.createElement("div", null, React.createElement("div", {
     className: "grid grid-2"
   }, DATA.NEW_PICKS.map(p => {
     const q = prices['US:' + p.ticker];
@@ -3423,11 +4184,7 @@ function HedgesView(_ref0) {
     prices,
     onOpenDetail
   } = _ref0;
-  return React.createElement("div", null, React.createElement("h1", {
-    className: "section-title"
-  }, "Hedges"), React.createElement("div", {
-    className: "section-desc"
-  }, "18% allocation to gold, duration, defensive equity, and low-vol. True diversification beats false signal."), React.createElement("div", {
+  return React.createElement("div", null, React.createElement("div", {
     className: "grid grid-2"
   }, DATA.HEDGES.map(h => {
     const q = prices['US:' + h.ticker];
@@ -3469,48 +4226,83 @@ function HedgesView(_ref0) {
     className: "bullet-list"
   }, React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "TLT"), " \u2014 17-yr duration too sensitive to Fed error. IEF covers it with less drawdown risk.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "VIXY / UVXY"), " \u2014 constant contango decay. Structural money-loser for retail holders.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "SH / SPXS"), " \u2014 inverse equity erodes via compounding. Cash beats inverse ETFs over any holding period >1 month.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "GDXJ"), " \u2014 too correlated with tech beta. IAU alone delivers the gold exposure cleanly."))))));
 }
-function DeploymentView({ prices, onOpenDetail }) {
+function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onSellPosition }) {
+  const TFSA_ANNUAL_LIMIT = 46000;
+  const TFSA_LIFETIME_LIMIT = 500000;
+  const totalValue = positions.reduce((s, p) => {
+    const q = prices['TFSA:' + p.ticker];
+    return s + (q ? p.shares * q.price : p.shares * p.costBasis);
+  }, 0);
+  const totalCost = positions.reduce((s, p) => s + p.shares * p.costBasis, 0);
+  const pnl = totalValue - totalCost;
+  const pnlPct = totalCost > 0 ? pnl / totalCost * 100 : 0;
   return React.createElement("div", null,
-    React.createElement("h1", { className: "section-title" }, "Deployment"),
-    React.createElement("div", { className: "section-desc" }, "Four-phase plan through July 2027. Monthly DCA anchored on VOO buy-zone signals."),
-    React.createElement("div", { className: "timeline" },
-      DATA.DEPLOYMENT_PHASES.map(p => React.createElement("div", {
-        key: p.order, className: "timeline-item"
-      },
-        React.createElement("div", { className: "timeline-dot" }, p.order),
-        React.createElement("div", { className: "timeline-content" },
-          React.createElement("div", { className: "phase-label" }, p.phase),
-          React.createElement("div", { className: "phase-title" }, p.title),
-          React.createElement("div", { className: "card" },
-            React.createElement("ul", { className: "bullet-list" },
-              p.actions.map((a, i) => React.createElement("li", { key: i },
-                React.createElement("span", null, a))))))))),
-    React.createElement("div", { className: "eyebrow", style: { marginTop: 28 } }, "Playbook Reference"),
-    React.createElement("div", { className: "row-list" },
-      DATA.HOLDINGS.map(h => {
-        const q = prices ? prices['US:' + h.ticker] : null;
-        return React.createElement("button", {
-          key: h.ticker, className: "row",
-          onClick: () => onOpenDetail && onOpenDetail(h.ticker, 'US')
-        },
-          React.createElement("div", { className: "row-main" },
-            React.createElement("div", { className: "row-head" },
-              React.createElement("span", { className: "tkr" }, h.ticker),
-              React.createElement("span", { className: "text-sm text-dim" }, h.name)),
-            React.createElement("div", { className: "row-meta" }, h.sector)),
-          React.createElement("div", { className: "row-right" },
-            React.createElement(PriceBlock, { quote: q }),
-            React.createElement("div", { className: "mt-1" },
-              React.createElement("span", { className: `pill pill-${h.actionType}` }, h.action))));
-      }))
-  );
+    React.createElement("div", { className: "card mb-4" },
+      React.createElement("div", { className: "eyebrow", style: { marginBottom: 8 } }, "TFSA Overview"),
+      React.createElement("div", { className: "kv-row" },
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "Value"),
+          React.createElement("div", { className: "kv-val mono" }, "R", totalValue.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))),
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "Cost"),
+          React.createElement("div", { className: "kv-val mono" }, "R", totalCost.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))),
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "P&L"),
+          React.createElement("div", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
+            (pnl >= 0 ? '+' : '') + "R" + Math.abs(pnl).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            " (", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(1), "%)"))),
+      React.createElement("div", { className: "text-xs text-dim", style: { marginTop: 10 } },
+        "Annual limit: R", TFSA_ANNUAL_LIMIT.toLocaleString(), " \xB7 Lifetime limit: R", TFSA_LIFETIME_LIMIT.toLocaleString())),
+    React.createElement("div", { className: "flex justify-between items-center mb-3" },
+      React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Holdings"),
+      React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
+        React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
+    positions.length === 0
+      ? React.createElement("div", { className: "empty" },
+          React.createElement(Icon, { name: "briefcase", size: 40 }),
+          React.createElement("h3", null, "No TFSA holdings"),
+          React.createElement("p", null, "Add JSE-listed ETFs and equities to your Tax-Free Savings Account."))
+      : React.createElement("div", { className: "row-list" },
+          positions.map(p => {
+            const q = prices['TFSA:' + p.ticker];
+            const info = DATA.findInfo(p.ticker, 'TFSA');
+            const mv = q ? p.shares * q.price : null;
+            const cost = p.shares * p.costBasis;
+            const pp = mv != null && cost > 0 ? (mv - cost) / cost * 100 : null;
+            return React.createElement("button", {
+              key: p.id, className: "row",
+              onClick: () => onOpenDetail(p.ticker, 'TFSA')
+            }, React.createElement("div", { className: "row-main" },
+              React.createElement("div", { className: "row-head" },
+                React.createElement("span", { className: "tkr" }, p.ticker),
+                React.createElement("span", { className: "text-sm text-dim" }, info.name || p.ticker)),
+              React.createElement("div", { className: "row-meta" },
+                p.shares, " \xD7 ", fmt(p.costBasis, 'TFSA'),
+                pp != null && React.createElement("span", {
+                  className: `mono ${pp >= 0 ? 'text-up' : 'text-down'}`
+                }, " \xB7 ", pp >= 0 ? '+' : '', pp.toFixed(2), "%"),
+                React.createElement("button", {
+                  className: "btn-sell-inline",
+                  onClick: e => { e.stopPropagation(); onSellPosition(p); }
+                }, "Sell"))),
+              React.createElement("div", { className: "row-right" },
+                React.createElement(PriceBlock, { quote: q }),
+                mv != null && React.createElement("div", {
+                  className: "text-xs text-dim mt-1 mono"
+                }, fmt(mv, 'TFSA'))));
+          })),
+    React.createElement("div", { className: "card mt-4" },
+      React.createElement("div", { className: "eyebrow", style: { marginBottom: 6 } }, "TFSA Rules"),
+      React.createElement("ul", { className: "bullet-list" },
+        React.createElement("li", null, React.createElement("span", null, "R", TFSA_ANNUAL_LIMIT.toLocaleString(), " annual contribution limit")),
+        React.createElement("li", null, React.createElement("span", null, "R", TFSA_LIFETIME_LIMIT.toLocaleString(), " lifetime contribution limit")),
+        React.createElement("li", null, React.createElement("span", null, "All gains, dividends, and interest are ", React.createElement("strong", null, "tax-free"))),
+        React.createElement("li", null, React.createElement("span", null, "Only JSE-listed equities, ETFs, and unit trusts are eligible")),
+        React.createElement("li", null, React.createElement("span", null, "Withdrawals reduce available contribution room permanently")),
+        React.createElement("li", null, React.createElement("span", null, "40% penalty on contributions exceeding the annual limit")))));
 }
 function RulesView() {
-  return React.createElement("div", null, React.createElement("h1", {
-    className: "section-title"
-  }, "Rules & Risks"), React.createElement("div", {
-    className: "section-desc"
-  }, "Pre-written discipline beats in-the-moment emotion."), React.createElement("div", {
+  return React.createElement("div", null, React.createElement("div", {
     className: "eyebrow"
   }, "Trim rules"), React.createElement("div", {
     className: "card mb-4"
@@ -3556,15 +4348,7 @@ function OverviewView(_ref1) {
   let {
     prices
   } = _ref1;
-  return React.createElement("div", null, React.createElement("h1", {
-    className: "section-title"
-  }, "Thesis"), React.createElement("p", {
-    className: "section-desc",
-    style: {
-      fontSize: 16,
-      lineHeight: 1.5
-    }
-  }, "The next 12-16 months are not about finding the next NVDA. They are about ", React.createElement("strong", null, "defending existing gains"), " while redeploying into under-owned, fundamentally-strong sectors."), React.createElement("div", {
+  return React.createElement("div", null, React.createElement("div", {
     className: "grid grid-3"
   }, DATA.PILLARS.map(p => React.createElement("div", {
     key: p.num,
@@ -3885,6 +4669,7 @@ function DetailModal(_ref10) {
   let {
     selected,
     prices,
+    positions,
     alerts,
     news,
     historyByTicker,
@@ -3902,10 +4687,12 @@ function DetailModal(_ref10) {
   const info = DATA.findInfo(ticker, market);
   const quote = prices[priceKey(market, ticker)];
   const ccy = market === 'JSE' ? 'ZAR' : 'USD';
+  const pos = positions ? positions.find(p => p.ticker === ticker && p.market === market) : null;
   const [dir, setDir] = useState('above');
   const [target, setTarget] = useState(quote ? quote.price.toFixed(2) : '');
   const [note, setNote] = useState('');
   const [range, setRange] = useState('1y');
+  const [showAlertForm, setShowAlertForm] = useState(!!selected.openAlerts);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   const history = historyByTicker ? historyByTicker[priceKey(market, ticker) + ':' + range] : null;
@@ -3950,180 +4737,146 @@ function DetailModal(_ref10) {
     name: "x"
   }))), React.createElement("div", {
     className: "modal-body"
-  }, React.createElement(PriceBlock, {
-    quote: quote,
-    size: "xl",
-    showDailyRow: true
-  }), quote && quote.yearHigh ? React.createElement("div", {
-    className: "ath-strip"
-  }, React.createElement("span", {
-    className: "eyebrow"
-  }, "52W High"), React.createElement("span", {
-    className: "mono"
-  }, fmt(quote.yearHigh, market)), React.createElement("span", {
-    className: `mono ${quote.price >= quote.yearHigh * 0.995 ? 'text-up' : 'text-muted'}`
-  }, quote.price >= quote.yearHigh * 0.995 ? 'At high' : ((quote.price - quote.yearHigh) / quote.yearHigh * 100).toFixed(2) + '%')) : null,
-    React.createElement(EarningsBadge, { fundamentals: fundamentals }),
-    React.createElement(PriceChart, {
-    history: history,
-    loading: history?.loading,
-    range: range,
-    onRangeChange: setRange,
-    currency: quote?.currency || ccy
-  }),
-    React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market }),
-    info.entryPrice && React.createElement("div", {
-    className: "kv-row"
-  }, React.createElement("div", {
-    className: "kv"
-  }, React.createElement("div", {
-    className: "kv-label"
-  }, "Entry"), React.createElement("div", {
-    className: "kv-val"
-  }, fmt(info.entryPrice, market))), info.targetPrice && React.createElement("div", {
-    className: "kv"
-  }, React.createElement("div", {
-    className: "kv-label"
-  }, "Target"), React.createElement("div", {
-    className: "kv-val"
-  }, fmt(info.targetPrice, market))), info.upside != null && React.createElement("div", {
-    className: "kv"
-  }, React.createElement("div", {
-    className: "kv-label"
-  }, "Upside"), React.createElement("div", {
-    className: "kv-val up"
-  }, "+", info.upside, "%"))), info.action && React.createElement("div", null, React.createElement("span", {
-    className: `pill pill-lg pill-${info.actionType || 'hold'}`
-  }, info.action)), info.thesis && React.createElement("div", null, React.createElement("div", {
-    className: "eyebrow"
-  }, "Thesis"), React.createElement("div", {
-    className: "thesis-text text-sm text-muted",
-    style: {
-      lineHeight: 1.6
-    }
-  }, info.thesis)), info.catalysts && info.catalysts.length > 0 && React.createElement("div", null, React.createElement("div", {
-    className: "eyebrow"
-  }, "Catalysts"), React.createElement("ul", {
-    className: "bullet-list"
-  }, info.catalysts.map((c, i) => React.createElement("li", {
-    key: i
-  }, React.createElement("span", null, c))))), info.risks && info.risks.length > 0 && React.createElement("div", null, React.createElement("div", {
-    className: "eyebrow"
-  }, "Risks"), React.createElement("ul", {
-    className: "bullet-list"
-  }, info.risks.map((r, i) => React.createElement("li", {
-    key: i
-  }, React.createElement("span", null, r))))), info.trimLevels && info.trimLevels.length > 0 && React.createElement("div", null, React.createElement("div", {
-    className: "eyebrow"
-  }, "Trim ladder"), React.createElement("ul", {
-    className: "bullet-list"
-  }, info.trimLevels.map((t, i) => React.createElement("li", {
-    key: i
-  }, React.createElement("span", null, t))))), React.createElement("div", null, React.createElement("div", {
-    className: "eyebrow",
-    style: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center'
-    }
-  }, React.createElement("span", null, "Price alerts"), React.createElement("span", {
-    className: "text-xs"
-  }, alerts.length, " active")), alerts.length > 0 && React.createElement("div", {
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 6,
-      marginBottom: 12
-    }
-  }, alerts.map(a => React.createElement("div", {
-    key: a.id,
-    className: "alert-item"
-  }, React.createElement("div", null, React.createElement("div", {
-    className: "mono text-sm"
-  }, a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, market)), a.note && React.createElement("div", {
-    className: "text-xs text-dim mt-1"
-  }, a.note)), React.createElement("button", {
-    className: "btn btn-ghost btn-xs",
-    onClick: () => onRemoveAlert(a.id),
-    "aria-label": "Remove"
-  }, React.createElement(Icon, {
-    name: "x",
-    size: 12
-  }))))),
-    React.createElement("div", { className: "card alert-form" },
-      React.createElement("div", { className: "alert-dir-group", role: "radiogroup", "aria-label": "Trigger direction" },
-        React.createElement("button", {
-          type: "button",
-          role: "radio",
-          "aria-checked": dir === 'above',
-          className: `alert-dir-btn up ${dir === 'above' ? 'active' : ''}`,
-          onClick: () => setDir('above')
-        }, React.createElement("span", { className: "alert-dir-arrow" }, "\u2191"),
-           React.createElement("span", { className: "alert-dir-label" }, "Above")),
-        React.createElement("button", {
-          type: "button",
-          role: "radio",
-          "aria-checked": dir === 'below',
-          className: `alert-dir-btn down ${dir === 'below' ? 'active' : ''}`,
-          onClick: () => setDir('below')
-        }, React.createElement("span", { className: "alert-dir-arrow" }, "\u2193"),
-           React.createElement("span", { className: "alert-dir-label" }, "Below"))
-      ),
-      React.createElement("div", { className: "alert-target-row" },
-        React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
-          React.createElement("span", { className: "prefix" }, ccy === 'ZAR' ? 'R' : '$'),
-          React.createElement("input", {
-            type: "number",
-            inputMode: "decimal",
-            step: "0.01",
-            placeholder: "Target price",
-            value: target,
-            onChange: e => setTarget(e.target.value),
-            className: "alert-target-input"
-          })
+  }, 
+    React.createElement("div", { style: { position: 'relative' } },
+      React.createElement(PriceBlock, { quote: quote, size: "xl", showDailyRow: true }),
+      React.createElement("button", {
+        className: "detail-alert-bell",
+        onClick: () => setShowAlertForm(f => !f),
+        "aria-label": "Price alerts"
+      }, React.createElement(Icon, { name: "bell", size: 16 }),
+        alerts.length > 0 && React.createElement("span", { className: "detail-alert-count" }, alerts.length))
+    ),
+
+    pos && quote && React.createElement("div", { className: "holding-card" },
+      React.createElement("div", { className: "eyebrow" }, "Your position"),
+      React.createElement("div", { className: "kv-row" },
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "Shares"),
+          React.createElement("div", { className: "kv-val mono" }, pos.shares)
+        ),
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "Avg price"),
+          React.createElement("div", { className: "kv-val mono" }, fmt(pos.costBasis, market))
+        ),
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "Current"),
+          React.createElement("div", { className: "kv-val mono" }, fmt(quote.price, market))
         )
       ),
-      React.createElement("input", {
-        type: "text",
-        placeholder: "Note (optional)",
-        value: note,
-        onChange: e => setNote(e.target.value),
-        maxLength: "80",
-        className: "alert-note-input"
-      }),
-      React.createElement("button", {
-        className: `btn btn-block mt-3 alert-submit ${dir === 'above' ? 'up' : 'down'}`,
-        onClick: submitAlert
-      }, React.createElement(Icon, { name: "plus" }),
-         " Alert when ", dir === 'above' ? 'above ' : 'below ',
-         target && isFinite(parseFloat(target)) ? (ccy === 'ZAR' ? 'R' : '$') + parseFloat(target).toFixed(2) : 'target')
-    )), React.createElement("div", null, React.createElement("div", {
-    className: "eyebrow",
-    style: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center'
-    }
-  }, React.createElement("span", null, "News"), news?.loading && React.createElement("span", {
-    className: "text-xs"
-  }, "Loading\u2026")), news && news.data && news.data.length > 0 ? React.createElement("div", null, news.data.map((n, i) => React.createElement("a", {
-    key: i,
-    href: n.link && n.link !== '#' ? n.link : undefined,
-    target: "_blank",
-    rel: "noopener",
-    className: `news-item${n.ai ? ' news-item-ai' : ''}`
-  }, React.createElement("div", {
-    className: "news-title"
-  }, n.ai && React.createElement("span", { className: "news-ai-badge" }, "AI"), n.title), n.summary && React.createElement("div", {
-    className: "news-summary"
-  }, n.summary), React.createElement("div", {
-    className: "news-meta"
-  }, React.createElement("span", null, n.source), n.pubDate && React.createElement(React.Fragment, null, React.createElement("span", null, "\xB7"), React.createElement("span", null, timeAgo(n.pubDate))), React.createElement(Icon, {
-    name: "external",
-    size: 11
-  }))))) : React.createElement("div", {
-    className: "text-sm text-dim"
-  }, news?.loading ? 'Fetching headlines…' : 'No recent headlines found. Yahoo Finance RSS may be rate-limited — try again later.')))));
+      React.createElement("div", { className: "kv-row" },
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "Market value"),
+          React.createElement("div", { className: "kv-val mono" }, fmt(pos.shares * quote.price, market))
+        ),
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "Cost basis"),
+          React.createElement("div", { className: "kv-val mono" }, fmt(pos.shares * pos.costBasis, market))
+        ),
+        React.createElement("div", { className: "kv" },
+          React.createElement("div", { className: "kv-label" }, "P&L"),
+          (() => {
+            const pl = (quote.price - pos.costBasis) * pos.shares;
+            const plPct = pos.costBasis > 0 ? ((quote.price - pos.costBasis) / pos.costBasis * 100) : 0;
+            return React.createElement("div", { className: `kv-val mono ${pl >= 0 ? 'text-up' : 'text-down'}` },
+              fmtCcySigned(pl, ccy), " (", plPct >= 0 ? '+' : '', plPct.toFixed(1), "%)");
+          })()
+        )
+      )
+    ),
+
+    quote && quote.yearHigh ? React.createElement("div", {
+      className: "ath-strip"
+    }, React.createElement("span", { className: "eyebrow" }, "52W High"),
+      React.createElement("span", { className: "mono" }, fmt(quote.yearHigh, market)),
+      React.createElement("span", {
+        className: `mono ${quote.price >= quote.yearHigh * 0.995 ? 'text-up' : 'text-muted'}`
+      }, quote.price >= quote.yearHigh * 0.995 ? 'At high' : ((quote.price - quote.yearHigh) / quote.yearHigh * 100).toFixed(2) + '%')) : null,
+    React.createElement(EarningsBadge, { fundamentals: fundamentals }),
+    React.createElement(PriceChart, {
+      history: history, loading: history?.loading,
+      range: range, onRangeChange: setRange,
+      currency: quote?.currency || ccy
+    }),
+    React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market }),
+
+    showAlertForm && React.createElement("div", null,
+      React.createElement("div", { className: "eyebrow", style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        React.createElement("span", null, "Price alerts"),
+        React.createElement("span", { className: "text-xs" }, alerts.length, " active")),
+      alerts.length > 0 && React.createElement("div", {
+        style: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }
+      }, alerts.map(a => React.createElement("div", {
+        key: a.id, className: "alert-item"
+      }, React.createElement("div", null,
+        React.createElement("div", { className: "mono text-sm" },
+          a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, market)),
+        a.note && React.createElement("div", { className: "text-xs text-dim mt-1" }, a.note)),
+        React.createElement("button", {
+          className: "btn btn-ghost btn-xs",
+          onClick: () => onRemoveAlert(a.id), "aria-label": "Remove"
+        }, React.createElement(Icon, { name: "x", size: 12 }))))),
+      React.createElement("div", { className: "card alert-form" },
+        React.createElement("div", { className: "alert-dir-group", role: "radiogroup", "aria-label": "Trigger direction" },
+          React.createElement("button", {
+            type: "button", role: "radio", "aria-checked": dir === 'above',
+            className: `alert-dir-btn up ${dir === 'above' ? 'active' : ''}`,
+            onClick: () => setDir('above')
+          }, React.createElement("span", { className: "alert-dir-arrow" }, "↑"),
+            React.createElement("span", { className: "alert-dir-label" }, "Above")),
+          React.createElement("button", {
+            type: "button", role: "radio", "aria-checked": dir === 'below',
+            className: `alert-dir-btn down ${dir === 'below' ? 'active' : ''}`,
+            onClick: () => setDir('below')
+          }, React.createElement("span", { className: "alert-dir-arrow" }, "↓"),
+            React.createElement("span", { className: "alert-dir-label" }, "Below"))
+        ),
+        React.createElement("div", { className: "alert-target-row" },
+          React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
+            React.createElement("span", { className: "prefix" }, ccy === 'ZAR' ? 'R' : '$'),
+            React.createElement("input", {
+              type: "number", inputMode: "decimal", step: "0.01",
+              placeholder: "Target price", value: target,
+              onChange: e => setTarget(e.target.value),
+              className: "alert-target-input"
+            })
+          )
+        ),
+        React.createElement("input", {
+          type: "text", placeholder: "Note (optional)",
+          value: note, onChange: e => setNote(e.target.value),
+          maxLength: "80", className: "alert-note-input"
+        }),
+        React.createElement("button", {
+          className: `btn btn-block mt-3 alert-submit ${dir === 'above' ? 'up' : 'down'}`,
+          onClick: submitAlert
+        }, React.createElement(Icon, { name: "plus" }),
+          " Alert when ", dir === 'above' ? 'above ' : 'below ',
+          target && isFinite(parseFloat(target)) ? (ccy === 'ZAR' ? 'R' : '$') + parseFloat(target).toFixed(2) : 'target')
+      )
+    ),
+
+    React.createElement("div", null, React.createElement("div", {
+      className: "eyebrow",
+      style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' }
+    }, React.createElement("span", null, "News"), news?.loading && React.createElement("span", {
+      className: "text-xs"
+    }, "Loading…")), news && news.data && news.data.length > 0 ? React.createElement("div", null, news.data.map((n, i) => React.createElement("a", {
+      key: i,
+      href: n.link && n.link !== '#' ? n.link : undefined,
+      target: "_blank", rel: "noopener",
+      className: `news-item${n.ai ? ' news-item-ai' : ''}`
+    }, React.createElement("div", { className: "news-title" },
+      n.ai && React.createElement("span", { className: "news-ai-badge" }, "AI"), n.title),
+      n.summary && React.createElement("div", { className: "news-summary" }, n.summary),
+      React.createElement("div", { className: "news-meta" },
+        React.createElement("span", null, n.source),
+        n.pubDate && React.createElement(React.Fragment, null,
+          React.createElement("span", null, "·"),
+          React.createElement("span", null, timeAgo(n.pubDate))),
+        React.createElement(Icon, { name: "external", size: 11 }))))) : React.createElement("div", {
+      className: "text-sm text-dim"
+    }, news?.loading ? 'Fetching headlines…' : 'No recent headlines found. Yahoo Finance RSS may be rate-limited — try again later.')))));
 }
 function AlertsModal(_ref11) {
   let {
@@ -4550,6 +5303,85 @@ function PositionModal(_ref12) {
     disabled: verifying
   }, verifying ? 'Verifying…' : isEdit ? 'Save changes' : 'Add position')))));
 }
+function SellModal({ position, prices, onClose, onSell }) {
+  const [shares, setShares] = useState('');
+  const [sellPrice, setSellPrice] = useState('');
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const [sellDate, setSellDate] = useState(todayISO);
+  const [notes, setNotes] = useState('');
+  const panelRef = useRef(null);
+  useSwipeDownToClose(panelRef, onClose);
+  const q = prices[priceKey(position.market, position.ticker)];
+  useEffect(() => {
+    if (q && !sellPrice) setSellPrice(q.price.toFixed(2));
+  }, [q]);
+  const ccy = (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
+  const numShares = parseFloat(shares);
+  const numPrice = parseFloat(sellPrice);
+  const valid = isFinite(numShares) && numShares > 0 && numShares <= position.shares && isFinite(numPrice) && numPrice > 0;
+  const pnl = valid ? (numPrice - position.costBasis) * numShares : null;
+  const submit = () => {
+    if (!valid) return;
+    onSell(position.ticker, position.market, numShares, numPrice, sellDate, notes);
+    onClose();
+  };
+  return React.createElement("div", { className: "modal" },
+    React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 480 } },
+      React.createElement("div", { className: "modal-handle" }),
+      React.createElement("div", { className: "modal-header" },
+        React.createElement("div", null,
+          React.createElement("div", { className: "modal-title" }, "Sell ", position.ticker),
+          React.createElement("div", { className: "modal-subtitle" },
+            position.shares, " shares held \xB7 avg ", ccy, position.costBasis.toFixed(2))),
+        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
+          React.createElement(Icon, { name: "x" }))),
+      React.createElement("div", { className: "modal-body" },
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Shares to sell"),
+          React.createElement("input", {
+            type: "number", inputMode: "decimal", step: "0.0001",
+            min: "0", max: position.shares.toString(),
+            placeholder: position.shares.toString(),
+            value: shares, onChange: e => setShares(e.target.value)
+          }),
+          React.createElement("div", { className: "form-help" },
+            "Max: ", position.shares,
+            numShares > position.shares && React.createElement("span", { className: "text-down" }, " — exceeds your holding"))),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Sell price per share"),
+          React.createElement("div", { className: "input-prefix-wrap" },
+            React.createElement("span", { className: "prefix" }, ccy),
+            React.createElement("input", {
+              type: "number", inputMode: "decimal", step: "0.01", min: "0",
+              placeholder: q ? q.price.toFixed(2) : '0.00',
+              value: sellPrice, onChange: e => setSellPrice(e.target.value)
+            }))),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Sale date"),
+          React.createElement("input", {
+            type: "date", value: sellDate, max: todayISO,
+            onChange: e => setSellDate(e.target.value)
+          })),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Notes (optional)"),
+          React.createElement("input", {
+            type: "text", maxLength: "200", placeholder: "e.g. Trimmed after earnings",
+            value: notes, onChange: e => setNotes(e.target.value)
+          })),
+        pnl != null && React.createElement("div", {
+          className: `card ${pnl >= 0 ? 'sell-pnl-up' : 'sell-pnl-down'}`,
+          style: { padding: '10px 14px', textAlign: 'center' }
+        },
+          React.createElement("div", { className: "text-xs text-dim" }, "Estimated P&L"),
+          React.createElement("div", { className: `mono font-semibold ${pnl >= 0 ? 'text-up' : 'text-down'}`, style: { fontSize: 18 } },
+            (pnl >= 0 ? '+' : '') + ccy + Math.abs(pnl).toFixed(2))),
+        React.createElement("div", { className: "form-actions" },
+          React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
+          React.createElement("button", {
+            className: "btn btn-danger", onClick: submit, disabled: !valid
+          }, "Record sale")))));
+}
 function computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency }) {
   const rates = fxRates?.rates || null;
   let combinedValue = 0;
@@ -4720,12 +5552,6 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               key: c.code, value: c.code
             }, c.sym + " " + c.code)))
           ),
-          fxRates && snap.combinedValue > 0 && React.createElement("div", { className: "settings-stat-card" },
-            React.createElement("div", { className: "settings-stat-label" }, "Combined portfolio (" + displayCurrency + ")"),
-            React.createElement("div", { className: "settings-stat-value" }, fmtCcy(snap.combinedValue, displayCurrency)),
-            snap.combinedCostAtPurchase > 0 && React.createElement("div", { className: "settings-stat-sub" },
-              "Cost at purchase: " + fmtCcy(snap.combinedCostAtPurchase, displayCurrency))
-          ),
           React.createElement("div", { className: "settings-info-box" },
             React.createElement("div", { className: "settings-info-title" },
               React.createElement(Icon, { name: "globe", size: 12 }), " How FX gain/loss is calculated"),
@@ -4882,12 +5708,4 @@ class ErrorBoundary extends React.Component {
 }
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').then(reg => {
-      console.log('SW registered:', reg.scope);
-    }).catch(err => {
-      console.warn('SW registration failed:', err);
-    });
-  });
-}
+// SW registration handled in index.html with auto-update logic
