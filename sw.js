@@ -1,11 +1,7 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-// Bump CACHE_NAME on every deploy to invalidate the old shell and force
-// the browser to install the new worker and re-cache all assets.
-const CACHE_NAME = 'playbook-shell-v3';
-const CDN_CACHE  = 'playbook-cdn-v1';
+const CACHE_NAME   = 'playbook-shell-v6';
+const CDN_CACHE    = 'playbook-cdn-v1';
 
-// Every file that makes up the app shell. The SW will pre-fetch and store
-// all of these during install so the app boots from cache when offline.
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -23,7 +19,7 @@ self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => cache.addAll(SHELL_ASSETS))
-      .then(() => self.skipWaiting())   // activate immediately, don't wait for old tabs to close
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -36,7 +32,7 @@ self.addEventListener('activate', (e) => {
           .filter(k => k !== CACHE_NAME && k !== CDN_CACHE)
           .map(k => caches.delete(k))
       ))
-      .then(() => self.clients.claim())  // take control of open tabs immediately
+      .then(() => self.clients.claim())
   );
 });
 
@@ -47,16 +43,15 @@ self.addEventListener('fetch', (e) => {
 
   if (request.method !== 'GET') return;
 
-  // Same-origin assets (HTML, JS, CSS, icons) → Cache-First
-  // The shell is fully pre-cached at install time; cache.put() keeps it fresh
-  // on subsequent network hits so any asset missed at install is covered.
+  // Same-origin assets → Network-First
+  // Always try the network so deploys take effect immediately.
+  // Fall back to cache only when offline.
   if (url.origin === self.location.origin) {
-    e.respondWith(cacheFirst(request, CACHE_NAME));
+    e.respondWith(networkFirst(request, CACHE_NAME));
     return;
   }
 
   // CDN scripts (React/unpkg) and Google Fonts → Stale-While-Revalidate
-  // Serve the cached copy instantly; update the cache in the background.
   if (
     url.hostname === 'unpkg.com' ||
     url.hostname === 'fonts.googleapis.com' ||
@@ -66,23 +61,21 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Everything else (Yahoo Finance API calls, CORS proxies, etc.) → network-only.
-  // Live price data should never be served stale.
+  // Everything else (API calls) → network-only
 });
 
 // ─── Cache strategies ─────────────────────────────────────────────────────────
 
-function cacheFirst(request, cacheName) {
-  return caches.open(cacheName).then(cache =>
-    cache.match(request).then(cached => {
-      if (cached) return cached;
-      // Asset wasn't pre-cached (shouldn't normally happen) — fetch and store it.
-      return fetch(request).then(response => {
-        if (response.ok) cache.put(request, response.clone());
-        return response;
-      });
+function networkFirst(request, cacheName) {
+  return fetch(request)
+    .then(response => {
+      if (response.ok) {
+        const clone = response.clone();
+        caches.open(cacheName).then(cache => cache.put(request, clone));
+      }
+      return response;
     })
-  );
+    .catch(() => caches.open(cacheName).then(cache => cache.match(request)));
 }
 
 function staleWhileRevalidate(request, cacheName) {
@@ -93,15 +86,19 @@ function staleWhileRevalidate(request, cacheName) {
           if (response.ok) cache.put(request, response.clone());
           return response;
         })
-        .catch(() => cached);   // network failed → fall back to whatever we have
+        .catch(() => cached);
       return cached || revalidate;
     })
   );
 }
 
-// ─── Notifications ────────────────────────────────────────────────────────────
-
+// ─── Update messaging ─────────────────────────────────────────────────────────
+// When the app calls postMessage({ type: 'SKIP_WAITING' }), activate immediately.
 self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
   if (e.data && e.data.type === 'notify') {
     self.registration.showNotification(e.data.title || 'Playbook', {
       body: e.data.body || '',
@@ -114,6 +111,8 @@ self.addEventListener('message', (e) => {
     });
   }
 });
+
+// ─── Notifications ────────────────────────────────────────────────────────────
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();

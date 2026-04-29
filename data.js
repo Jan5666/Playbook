@@ -96,6 +96,29 @@ window.PB_DATA = {
     { ticker:'XLV', name:'Health Care Select Sector', allocation:4, role:'Defensive equity', rationale:'Underowned, undervalued. Aging demographic plus GLP-1 tailwind.' },
     { ticker:'USMV', name:'iShares MSCI USA Min Vol', allocation:3, role:'Low-vol equity', rationale:'0.15% fee beats SPLV. Stays invested with lower drawdown.' }
   ],
+  TFSA_SUGGESTIONS: [
+    {ticker:'STX40',name:'Satrix 40 ETF'},{ticker:'STX500',name:'Satrix 500 ETF'},
+    {ticker:'STXNDQ',name:'Satrix Nasdaq 100 ETF'},{ticker:'STXWDM',name:'Satrix World ETF'},
+    {ticker:'STXEMG',name:'Satrix Emerging Markets ETF'},{ticker:'STXSWX',name:'Satrix SWIX 40 ETF'},
+    {ticker:'STXDIV',name:'Satrix Divi Plus ETF'},{ticker:'STXPRO',name:'Satrix Property ETF'},
+    {ticker:'STXIND',name:'Satrix Industrial 25 ETF'},{ticker:'STXFIN',name:'Satrix Financial 15 ETF'},
+    {ticker:'STXRES',name:'Satrix Resource 10 ETF'},{ticker:'STXRAF',name:'Satrix RAFI 40 ETF'},
+    {ticker:'CSEW40',name:'CoreShares Equal Weight 40 ETF'},{ticker:'CSTOP50',name:'CoreShares Top 50 ETF'},
+    {ticker:'CSNDQ',name:'CoreShares Nasdaq 100 ETF'},{ticker:'CSPROP',name:'CoreShares SA Property ETF'},
+    {ticker:'CSP500',name:'CoreShares S&P 500 ETF'},{ticker:'GLODIV',name:'CoreShares Global Dividend ETF'},
+    {ticker:'NFEMOM',name:'Newfunds Equity Momentum ETF'},{ticker:'NFSWIX',name:'Newfunds SWIX 40 ETF'},
+    {ticker:'NFEDEF',name:'Newfunds Equity Defence ETF'},{ticker:'SYG500',name:'Sygnia S&P 500 ETF'},
+    {ticker:'SYGSW4',name:'Sygnia SWIX 40 ETF'},{ticker:'SYG4IR',name:'Sygnia 4th Industrial Rev ETF'},
+    {ticker:'SYGP',name:'Sygnia Property ETF'},{ticker:'ETFWLD',name:'1nvest World ETF'},
+    {ticker:'ETFGRE',name:'1nvest Gold ETF'},{ticker:'ASHT40',name:'Ashburton 1200 ETF'},
+    {ticker:'NPN',name:'Naspers'},{ticker:'PRX',name:'Prosus'},{ticker:'CPI',name:'Capitec'},
+    {ticker:'FSR',name:'FirstRand'},{ticker:'SBK',name:'Standard Bank'},{ticker:'SHP',name:'Shoprite'},
+    {ticker:'CFR',name:'Richemont'},{ticker:'DSY',name:'Discovery'},{ticker:'SLM',name:'Sanlam'},
+    {ticker:'GFI',name:'Gold Fields'},{ticker:'ANG',name:'AngloGold Ashanti'},
+    {ticker:'NED',name:'Nedbank'},{ticker:'ABG',name:'Absa Group'},{ticker:'MTN',name:'MTN Group'},
+    {ticker:'VOD',name:'Vodacom'},{ticker:'SOL',name:'Sasol'},{ticker:'BID',name:'Bid Corp'},
+    {ticker:'APN',name:'Aspen Pharmacare'},{ticker:'WHL',name:'Woolworths Holdings'}
+  ],
   JSE_SUGGESTIONS: [
     {ticker:'NPN',name:'Naspers'},{ticker:'PRX',name:'Prosus'},{ticker:'BHG',name:'BHP Group'},
     {ticker:'AGL',name:'Anglo American'},{ticker:'GLN',name:'Glencore'},{ticker:'CPI',name:'Capitec'},
@@ -634,6 +657,7 @@ window.PB_DATA = {
 
 // Known tickers for sector/name lookups (all exchanges)
 window.PB_DATA.findInfo = function(ticker, market) {
+  if (market === 'TFSA') return window.PB_DATA.TFSA_SUGGESTIONS.find(s => s.ticker === ticker) || window.PB_DATA.JSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
   if (market === 'JSE') return window.PB_DATA.JSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
   if (market === 'LSE') return window.PB_DATA.LSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
   if (market === 'ASX') return window.PB_DATA.ASX_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
