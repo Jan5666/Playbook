@@ -109,31 +109,35 @@ function useSwipeDownToClose(panelRef, onClose) {
     const panel = panelRef.current;
     if (!panel) return;
     const isMobileLayout = () => window.matchMedia('(max-width: 639px)').matches;
-    let startY = 0;
-    let lastY = 0;
+    const getBackdrop = () => panel.parentElement && panel.parentElement.querySelector('.modal-backdrop');
+    // iOS-sheet easing — quick, decelerating, no overshoot.
+    const EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+    let startY = 0;       // y where the actual drag began (transform anchor)
+    let originY = 0;      // y where the finger first touched
     let prevY = 0;
-    let startScroll = 0;
     let dragging = false;
     let velocity = 0;
     let lastT = 0;
+    let panelH = 0;
+    const DRAG_THRESHOLD = 6;
     const onTouchStart = (e) => {
       if (!isMobileLayout() || e.touches.length !== 1) return;
-      startY = e.touches[0].clientY;
-      lastY = startY;
-      prevY = startY;
-      startScroll = panel.scrollTop;
+      originY = prevY = e.touches[0].clientY;
       dragging = false;
       velocity = 0;
       lastT = Date.now();
+      panelH = panel.offsetHeight || window.innerHeight;
     };
-    const DRAG_THRESHOLD = 18;
     const onTouchMove = (e) => {
+      if (!isMobileLayout()) return;
       const y = e.touches[0].clientY;
-      const dy = y - startY;
       if (!dragging) {
-        if (panel.scrollTop > 0 || dy <= 0) { lastY = y; return; }
-        if (dy < DRAG_THRESHOLD) { lastY = y; return; }
+        // Only start a close-drag from the top of the panel pulling down.
+        if (panel.scrollTop > 0 || y - originY <= 0) { originY = y; prevY = y; return; }
+        if (y - originY < DRAG_THRESHOLD) return;
         dragging = true;
+        // Anchor the drag here so the panel tracks the finger 1:1 with no jump.
+        startY = y;
         panel.classList.add('swiping');
       }
       const now = Date.now();
@@ -141,33 +145,37 @@ function useSwipeDownToClose(panelRef, onClose) {
       if (dt > 0) velocity = (y - prevY) / dt;
       prevY = y;
       lastT = now;
-      lastY = y;
-      const dampened = dy > 0 ? dy * 0.85 : 0;
-      panel.style.transform = `translateY(${dampened}px)`;
+      const drag = Math.max(0, y - startY);
+      panel.style.transform = `translateY(${drag}px)`;
+      const bd = getBackdrop();
+      if (bd) bd.style.opacity = String(1 - Math.min(1, drag / panelH) * 0.7);
       if (e.cancelable) e.preventDefault();
     };
     const finish = () => {
       if (!dragging) return;
       dragging = false;
-      const dy = lastY - startY;
+      const drag = Math.max(0, prevY - startY);
       panel.classList.remove('swiping');
-      const shouldClose = dy > 140 || (dy > 60 && velocity > 0.5);
+      const bd = getBackdrop();
+      const shouldClose = drag > panelH * 0.28 || (drag > 48 && velocity > 0.45);
       if (shouldClose) {
-        panel.style.transition = 'transform 0.24s cubic-bezier(0.4, 0, 1, 1)';
+        panel.style.transition = `transform 0.26s ${EASE}`;
         panel.style.transform = 'translateY(100%)';
+        if (bd) { bd.style.transition = 'opacity 0.26s ease'; bd.style.opacity = '0'; }
         const cb = () => {
-          panel.style.transition = '';
-          panel.style.transform = '';
+          panel.style.transition = ''; panel.style.transform = '';
+          if (bd) { bd.style.transition = ''; bd.style.opacity = ''; }
           closeRef.current();
         };
         panel.addEventListener('transitionend', cb, { once: true });
-        setTimeout(cb, 300);
+        setTimeout(cb, 320);
       } else {
-        panel.style.transition = 'transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)';
+        panel.style.transition = `transform 0.4s ${EASE}`;
         panel.style.transform = '';
-        const clear = () => { panel.style.transition = ''; };
+        if (bd) { bd.style.transition = 'opacity 0.3s ease'; bd.style.opacity = ''; }
+        const clear = () => { panel.style.transition = ''; if (bd) bd.style.transition = ''; };
         panel.addEventListener('transitionend', clear, { once: true });
-        setTimeout(clear, 320);
+        setTimeout(clear, 440);
       }
     };
     panel.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -730,8 +738,12 @@ async function fetchFundamentalsYahoo(ticker, market) {
         currentRatio: v(fd.currentRatio),
         totalCash: v(fd.totalCash),
         totalDebt: v(fd.totalDebt),
+        freeCashflow: v(fd.freeCashflow),
+        operatingCashflow: v(fd.operatingCashflow),
         revenue: v(fd.totalRevenue),
         ebitda: v(fd.ebitda),
+        mostRecentQuarter: v(ks.mostRecentQuarter) ? v(ks.mostRecentQuarter) * 1000 : null,
+        lastFiscalYearEnd: v(ks.lastFiscalYearEnd) ? v(ks.lastFiscalYearEnd) * 1000 : null,
         targetMean: v(fd.targetMeanPrice),
         targetHigh: v(fd.targetHighPrice),
         targetLow: v(fd.targetLowPrice),
@@ -787,6 +799,8 @@ Shape (null for unknown values):
   "debtToEquity": number (ratio, e.g. 1.87 not 187),
   "currentRatio": number,
   "revenue": number (absolute TTM), "ebitda": number (absolute TTM),
+  "freeCashflow": number (absolute TTM free cash flow),
+  "mostRecentQuarter": "YYYY-MM-DD" (end date of most recently reported quarter),
   "avgVolume": number,
   "yearHigh": number, "yearLow": number,
   "targetMean": number, "targetHigh": number, "targetLow": number,
@@ -848,6 +862,8 @@ Shape (null for unknown values):
       currentRatio: num(p.currentRatio),
       revenue: num(p.revenue),
       ebitda: num(p.ebitda),
+      freeCashflow: num(p.freeCashflow),
+      mostRecentQuarter: (() => { if (!p.mostRecentQuarter) return null; const d = new Date(p.mostRecentQuarter); return isNaN(d.getTime()) ? null : d.getTime(); })(),
       avgVolume: num(p.avgVolume),
       yearHigh: num(p.yearHigh),
       yearLow: num(p.yearLow),
@@ -1248,6 +1264,11 @@ const Icon = _ref => {
     }), React.createElement("path", {
       d: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"
     })),
+    maximize: React.createElement("g", null,
+      React.createElement("path", { d: "M8 3H5a2 2 0 0 0-2 2v3" }),
+      React.createElement("path", { d: "M21 8V5a2 2 0 0 0-2-2h-3" }),
+      React.createElement("path", { d: "M3 16v3a2 2 0 0 0 2 2h3" }),
+      React.createElement("path", { d: "M16 21h3a2 2 0 0 0 2-2v-3" })),
     briefcase: React.createElement("g", null, React.createElement("path", {
       d: "M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"
     }), React.createElement("rect", {
@@ -1698,8 +1719,8 @@ function App() {
   const [view, setView] = useState('dashboard');
   const [viewTransDir, setViewTransDir] = useState(null);
   const navRef = useRef(null);
+  const navPillRef = useRef(null);
   const mainRef = useRef(null);
-  const swipeRef = useRef({ startX: 0, startY: 0, swiping: false });
   const childSwipeLockRef = useRef(false);
   const changeView = useCallback((newView, direction) => {
     if (newView === view) return;
@@ -1712,6 +1733,21 @@ function App() {
     });
     setTimeout(() => setViewTransDir(null), 350);
   }, [view]);
+  // Slide the glassy iOS-style pill behind the active tab.
+  const positionNavPill = useCallback(() => {
+    const nav = navRef.current, pill = navPillRef.current;
+    if (!nav || !pill) return;
+    const btn = nav.querySelector(`[data-tab="${view}"]`);
+    if (!btn) return;
+    pill.style.transform = `translateX(${btn.offsetLeft}px)`;
+    pill.style.width = btn.offsetWidth + 'px';
+    pill.style.opacity = '1';
+  }, [view]);
+  useEffect(() => {
+    const r = requestAnimationFrame(positionNavPill);
+    window.addEventListener('resize', positionNavPill);
+    return () => { cancelAnimationFrame(r); window.removeEventListener('resize', positionNavPill); };
+  }, [positionNavPill]);
   const [newsByTicker, loadNewsRaw] = useTtlCache(15 * 60 * 1000);
   const [historyByTicker, loadHistoryRaw] = useTtlCache(15 * 60 * 1000);
   const [fundamentalsByTicker, loadFundamentalsRaw] = useTtlCache(6 * 60 * 60 * 1000);
@@ -2083,7 +2119,7 @@ function App() {
     ref: navRef
   }, React.createElement("div", {
     className: "nav-inner"
-  }, TAB_LIST.map(_ref3 => {
+  }, React.createElement("div", { className: "nav-pill", ref: navPillRef }), TAB_LIST.map(_ref3 => {
     let [k, label] = _ref3;
     return React.createElement("button", {
       key: k,
@@ -2097,25 +2133,7 @@ function App() {
     }, label);
   }))), React.createElement("main", {
     ref: mainRef,
-    className: viewTransDir ? `view-slide-${viewTransDir}` : '',
-    onTouchStart: e => {
-      if (e.touches.length !== 1) return;
-      swipeRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, swiping: false };
-    },
-    onTouchMove: e => {
-      if (childSwipeLockRef.current) return;
-      const s = swipeRef.current;
-      if (s.swiping) return;
-      const dx = e.touches[0].clientX - s.startX;
-      const dy = e.touches[0].clientY - s.startY;
-      if (Math.abs(dy) > Math.abs(dx)) { s.swiping = true; return; }
-      if (Math.abs(dx) > 50) {
-        s.swiping = true;
-        const idx = TAB_LIST.findIndex(t => t[0] === view);
-        if (dx < 0 && idx < TAB_LIST.length - 1) changeView(TAB_LIST[idx + 1][0], 'left');
-        else if (dx > 0 && idx > 0) changeView(TAB_LIST[idx - 1][0], 'right');
-      }
-    }
+    className: viewTransDir ? `view-slide-${viewTransDir}` : ''
   }, views[view]), selected && React.createElement(DetailModal, {
     selected: selected,
     prices: prices,
@@ -2124,6 +2142,7 @@ function App() {
     news: newsByTicker[priceKey(selected.market, selected.ticker)],
     historyByTicker: historyByTicker,
     fundamentals: fundamentalsByTicker[priceKey(selected.market, selected.ticker)],
+    fxRates: fxRates,
     onClose: () => setSelected(null),
     onAddAlert: addAlert,
     onRemoveAlert: removeAlert,
@@ -4369,10 +4388,10 @@ function useContainerWidth() {
   return [ref, width];
 }
 function HeatmapTreemap(_ref8c) {
-  let { rows, aspectRatio, minHeight, onOpenDetail, loading } = _ref8c;
+  let { rows, aspectRatio, minHeight, onOpenDetail, loading, height: fixedHeight } = _ref8c;
   const [containerRef, width] = useContainerWidth();
   const sectors = useMemo(() => buildSectorHierarchy(rows), [rows]);
-  const height = width > 0 ? Math.max(minHeight || 360, width * (aspectRatio || 0.7)) : (minHeight || 360);
+  const height = fixedHeight || (width > 0 ? Math.max(minHeight || 360, width * (aspectRatio || 0.7)) : (minHeight || 360));
   const cells = useMemo(() => width > 0 ? layoutTreemap(sectors, width, height) : [], [sectors, width, height]);
   return React.createElement("div", { ref: containerRef, className: "treemap", style: { height: height + 'px' } },
     cells.map((cell, idx) => {
@@ -4423,6 +4442,122 @@ function HeatmapTreemap(_ref8c) {
     })
   );
 }
+// Full-screen, pinch-to-zoom & pan heatmap. Lets you blow the map up to read
+// sector / industry labels on small cells (the inline map can't show them).
+function HeatmapFullscreen(_refFS) {
+  let { rows, title, loading, onOpenDetail, onClose } = _refFS;
+  const wrapRef = useRef(null);
+  const contentRef = useRef(null);
+  const [tf, setTf] = useState({ s: 1, x: 0, y: 0 });
+  const [contentH, setContentH] = useState(0);
+  const tfRef = useRef(tf); tfRef.current = tf;
+  const ptrs = useRef(new Map());
+  const pinch = useRef(null);
+  const pan = useRef(null);
+  const movedRef = useRef(false);
+  const MIN = 1, MAX = 6;
+  const clampScale = s => Math.max(MIN, Math.min(MAX, s));
+  const apply = (s, x, y) => {
+    const el = wrapRef.current;
+    if (el) {
+      const w = el.clientWidth, h = el.clientHeight;
+      x = Math.min(0, Math.max(w - w * s, x));
+      y = Math.min(0, Math.max(h - h * s, y));
+    }
+    setTf({ s, x, y });
+  };
+  const reset = () => { movedRef.current = false; setTf({ s: 1, x: 0, y: 0 }); };
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (el) setContentH(el.clientHeight);
+    const onResize = () => { if (wrapRef.current) setContentH(wrapRef.current.clientHeight); };
+    window.addEventListener('resize', onResize);
+    // lock background scroll while open
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('resize', onResize); document.body.style.overflow = prevOverflow; };
+  }, []);
+  useEffect(() => {
+    const el = wrapRef.current; if (!el) return;
+    const onDown = e => {
+      ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (ptrs.current.size === 2) {
+        const [a, b] = [...ptrs.current.values()];
+        pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), t: { ...tfRef.current }, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, rect: el.getBoundingClientRect() };
+        pan.current = null; movedRef.current = true;
+      } else if (ptrs.current.size === 1) {
+        pan.current = { x: e.clientX, y: e.clientY, t: { ...tfRef.current } };
+        movedRef.current = false;
+      }
+    };
+    const onMove = e => {
+      if (!ptrs.current.has(e.pointerId)) return;
+      ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (ptrs.current.size === 2 && pinch.current) {
+        const [a, b] = [...ptrs.current.values()];
+        const nd = Math.hypot(a.x - b.x, a.y - b.y);
+        const g = pinch.current;
+        const ns = clampScale(g.t.s * (nd / g.d));
+        const k = ns / g.t.s;
+        const fx = g.mx - g.rect.left, fy = g.my - g.rect.top;
+        apply(ns, fx - (fx - g.t.x) * k, fy - (fy - g.t.y) * k);
+        e.preventDefault();
+      } else if (ptrs.current.size === 1 && pan.current && tfRef.current.s > 1.01) {
+        const g = pan.current;
+        const dx = e.clientX - g.x, dy = e.clientY - g.y;
+        if (Math.abs(dx) + Math.abs(dy) > 5) movedRef.current = true;
+        apply(g.t.s, g.t.x + dx, g.t.y + dy);
+        e.preventDefault();
+      }
+    };
+    const onUp = e => {
+      ptrs.current.delete(e.pointerId);
+      if (ptrs.current.size < 2) pinch.current = null;
+      if (ptrs.current.size === 0) pan.current = null;
+    };
+    const onWheel = e => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const fx = e.clientX - rect.left, fy = e.clientY - rect.top;
+      const t = tfRef.current;
+      const ns = clampScale(t.s * (e.deltaY < 0 ? 1.15 : 0.87));
+      const k = ns / t.s;
+      apply(ns, fx - (fx - t.x) * k, fy - (fy - t.y) * k);
+    };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', onMove, { passive: false });
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
+      el.removeEventListener('wheel', onWheel);
+    };
+  }, []);
+  const handleOpen = (tk, mk) => { if (movedRef.current) return; onOpenDetail && onOpenDetail(tk, mk); };
+  return React.createElement("div", { className: "heatmap-fs" },
+    React.createElement("div", { className: "heatmap-fs-bar" },
+      React.createElement("div", { className: "heatmap-fs-title" }, title || 'Heatmap',
+        React.createElement("span", { className: "heatmap-fs-hint" }, "Pinch or scroll to zoom · drag to pan")),
+      React.createElement("div", { className: "heatmap-fs-actions" },
+        tf.s > 1.01 ? React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: reset }, "Reset") : null,
+        React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: onClose, "aria-label": "Close fullscreen" },
+          React.createElement(Icon, { name: "x", size: 16 }))
+      )
+    ),
+    React.createElement("div", { className: "heatmap-fs-stage", ref: wrapRef },
+      React.createElement("div", {
+        className: "heatmap-fs-content", ref: contentRef,
+        style: { transform: `translate(${tf.x}px, ${tf.y}px) scale(${tf.s})`, transformOrigin: '0 0' }
+      },
+        contentH > 0 ? React.createElement(HeatmapTreemap, { rows: rows, height: contentH, onOpenDetail: handleOpen, loading: loading }) : null
+      )
+    )
+  );
+}
 function HeatmapView(_ref8b) {
   let { positions, prices, onOpenDetail } = _ref8b;
   const exchanges = DATA.HEATMAPS;
@@ -4437,6 +4572,7 @@ function HeatmapView(_ref8b) {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(() => persisted[exchanges[0].id]?.fetchedAt ? new Date(persisted[exchanges[0].id].fetchedAt) : null);
   const cacheKey = exchange.id;
   const cached = cache[cacheKey];
@@ -4571,6 +4707,11 @@ function HeatmapView(_ref8b) {
         mode === 'market' && lastUpdate ? React.createElement("span", { className: "text-dim text-sm" },
           "Updated ", lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         ) : null,
+        activeRows.length > 0 ? React.createElement("button", {
+          className: "btn btn-ghost btn-xs",
+          onClick: () => setFullscreen(true),
+          "aria-label": "Open heatmap fullscreen"
+        }, React.createElement(Icon, { name: "maximize", size: 13 }), " Expand") : null,
         mode === 'market' ? React.createElement("button", {
           className: `btn btn-ghost btn-xs ${loading ? 'spin' : ''}`,
           onClick: () => load(true),
@@ -4592,7 +4733,14 @@ function HeatmapView(_ref8b) {
       minHeight: minHeight,
       onOpenDetail: onOpenDetail,
       loading: loading
-    }) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null)
+    }) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null),
+    fullscreen ? React.createElement(HeatmapFullscreen, {
+      rows: activeRows,
+      loading: loading,
+      title: mode === 'market' ? exchange.label : 'Your portfolio',
+      onOpenDetail: (tk, mk) => { setFullscreen(false); onOpenDetail && onOpenDetail(tk, mk); },
+      onClose: () => setFullscreen(false)
+    }) : null
   );
 }
 function PicksView(_ref9) {
@@ -4878,7 +5026,7 @@ function OverviewView(_ref1) {
   }))));
 }
 function PriceChart(_refChart) {
-  let { history, loading, range, onRangeChange, currency } = _refChart;
+  let { history, loading, range, onRangeChange, currency, quote } = _refChart;
   const [hover, setHover] = useState(null);
   const sym = ({ ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' })[currency] || '$';
   const ranges = [
@@ -4898,19 +5046,31 @@ function PriceChart(_refChart) {
       onClick: () => onRangeChange(r.key)
     }, r.label))
   );
-  const points = history && history.data && history.data.points ? history.data.points : null;
-  if (!points || points.length < 2) {
+  const rawPoints = history && history.data && history.data.points ? history.data.points : null;
+  if (!rawPoints || rawPoints.length < 2) {
     return React.createElement("div", { className: "chart-block" }, rangeBar,
       React.createElement("div", { className: "chart-empty" },
         loading ? 'Loading chart\u2026' : (history && !loading ? 'Chart data unavailable' : 'Loading chart\u2026')
       )
     );
   }
+  const is1d = range === '1d';
+  // For the intraday view, the daily % must agree with the header (which is
+  // measured from the previous close, not the first intraday bar). We draw a
+  // dashed prev-close baseline and report the live quote's change verbatim, and
+  // append the live price so the line ends exactly where the header sits.
+  const baseline = is1d && quote && typeof quote.prevClose === 'number' && quote.prevClose > 0 ? quote.prevClose : null;
+  let points = rawPoints;
+  if (is1d && quote && typeof quote.price === 'number' && quote.price > 0) {
+    const lastP = rawPoints[rawPoints.length - 1].p;
+    if (Math.abs(lastP - quote.price) / quote.price > 0.0005) points = [...rawPoints, { t: Date.now(), p: quote.price }];
+  }
   const W = 600, H = 180;
   const PL = 2, PR = 2, PT = 6, PB = 6;
   const prs = points.map(p => p.p);
-  const min = Math.min(...prs);
-  const max = Math.max(...prs);
+  let min = Math.min(...prs);
+  let max = Math.max(...prs);
+  if (baseline != null) { min = Math.min(min, baseline); max = Math.max(max, baseline); }
   const span = max - min || 1;
   const chartW = W - PL - PR;
   const chartH = H - PT - PB;
@@ -4920,10 +5080,13 @@ function PriceChart(_refChart) {
   const areaD = d + ` L${xFor(points.length - 1).toFixed(2)},${H - PB} L${PL},${H - PB} Z`;
   const first = points[0].p;
   const last = points[points.length - 1].p;
-  const up = last >= first;
+  // Daily move is anchored to prev close / live quote so it matches the header.
+  const retPct = (is1d && quote && typeof quote.changePct === 'number') ? quote.changePct
+    : (baseline != null ? (last - baseline) / baseline * 100
+    : (first > 0 ? (last - first) / first * 100 : 0));
+  const up = retPct >= 0;
   const color = up ? '#10b981' : '#f43f5e';
   const gradId = `grad-${up ? 'up' : 'down'}`;
-  const retPct = first > 0 ? (last - first) / first * 100 : 0;
   const onMove = e => {
     const svg = e.currentTarget;
     const rect = svg.getBoundingClientRect();
@@ -4954,6 +5117,11 @@ function PriceChart(_refChart) {
           )
         ),
         React.createElement("path", { d: areaD, fill: `url(#${gradId})` }),
+        baseline != null && React.createElement("line", {
+          x1: PL, y1: yFor(baseline), x2: W - PR, y2: yFor(baseline),
+          stroke: "#a1a1aa", strokeWidth: 0.5, strokeDasharray: "3,3", strokeOpacity: 0.6,
+          vectorEffect: "non-scaling-stroke"
+        }),
         React.createElement("path", { d, fill: "none", stroke: color, strokeWidth: 1.5, vectorEffect: "non-scaling-stroke" }),
         hover && React.createElement("g", null,
           React.createElement("line", { x1: hover.x, y1: PT, x2: hover.x, y2: H - PB, stroke: "#71717a", strokeWidth: 0.5, strokeDasharray: "2,2", vectorEffect: "non-scaling-stroke" }),
@@ -5043,24 +5211,59 @@ function EarningsBadge(_refEB) {
     )
   );
 }
+// Convert a Yahoo currency code (e.g. ZAc, GBp, USD) to its 3-letter base.
+function baseCurrency(code, market) {
+  const c = (code || '').toUpperCase();
+  if (c.startsWith('ZA')) return 'ZAR';
+  if (c.startsWith('GB')) return 'GBP';
+  if (c.startsWith('AU')) return 'AUD';
+  if (c.startsWith('EU') || c === 'EUR') return 'EUR';
+  if (c === 'USD' || c === 'USC') return 'USD';
+  if (c.length === 3) return c;
+  return (MARKET_CURRENCY[market]?.code) || 'USD';
+}
 function FundamentalsBlock(_refFB) {
-  let { fundamentals, quote, market } = _refFB;
+  let { fundamentals, quote, market, fxRates } = _refFB;
   const loading = fundamentals && fundamentals.loading && !fundamentals.data;
   const f = fundamentals?.data || {};
   const cur = quote?.price && quote.price > 0 ? quote.price : null;
   const ccySym = ({ ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' })[quote?.currency] || '$';
+  const nativeCode = baseCurrency(f.currency || quote?.currency, market);
+  // Market cap normalised to USD (FX base is USD: rates[code] = units per 1 USD).
+  let mcapUsd = null;
+  if (f.marketCap != null && isFinite(f.marketCap)) {
+    if (nativeCode === 'USD') mcapUsd = f.marketCap;
+    else { const rate = fxRates?.rates?.[nativeCode]; if (rate) mcapUsd = f.marketCap / rate; }
+  }
+  const quarterLabel = (() => {
+    const ms = f.mostRecentQuarter || f.lastFiscalYearEnd;
+    return ms ? new Date(ms).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : null;
+  })();
+  const signed = (n, d = 1) => (n >= 0 ? '+' : '') + n.toFixed(d) + '%';
+  const tone = (n) => n >= 0 ? 'text-up' : 'text-down';
+  // \u2500\u2500 Headline analytics (the metrics the user explicitly tracks) \u2500\u2500
+  const headline = [];
+  const hpush = (label, value, opts) => { if (value != null) headline.push({ label, value, ...(opts || {}) }); };
+  if (f.peTrailing != null) hpush('P/E (TTM)', f.peTrailing.toFixed(2), { sub: quarterLabel ? 'Q ended ' + quarterLabel : null });
+  if (f.peForward != null) hpush('Forward P/E', f.peForward.toFixed(2));
+  if (mcapUsd != null) { const m = fmtLarge(mcapUsd); if (m) hpush('Market cap', '$' + m, { sub: nativeCode !== 'USD' ? 'USD' : null }); }
+  if (f.debtToEquity != null) hpush('Debt / equity', (f.debtToEquity / 100).toFixed(2));
+  if (f.freeCashflow != null) { const v = fmtLarge(f.freeCashflow); if (v) hpush('Free cash flow', ccySym + v, { cls: f.freeCashflow >= 0 ? 'text-up' : 'text-down' }); }
+  if (f.profitMargin != null) hpush('Profit margin', f.profitMargin.toFixed(1) + '%', { cls: tone(f.profitMargin) });
+  if (f.earningsGrowth != null) hpush('Profit growth', signed(f.earningsGrowth), { cls: tone(f.earningsGrowth), sub: 'YoY net income' });
+  if (f.revenue != null) { const r = fmtLarge(f.revenue); if (r) hpush('Revenue', ccySym + r, { sub: 'TTM' }); }
+  if (f.revenueGrowth != null) hpush('Revenue growth', signed(f.revenueGrowth), { cls: tone(f.revenueGrowth), sub: 'YoY' });
+  const headlineKeys = new Set(['P/E (TTM)', 'Forward P/E', 'Market cap', 'Debt / equity', 'Free cash flow', 'Profit margin', 'Profit growth', 'Revenue', 'Revenue growth']);
   const stats = [];
   const push = (label, value, sub) => {
     if (value == null || value === '' || (typeof value === 'number' && !isFinite(value))) return;
+    if (headlineKeys.has(label)) return;
     stats.push({ label, value, sub });
   };
   const yearHigh = f.yearHigh || quote?.yearHigh;
   const yearLow = f.yearLow || quote?.yearLow;
-  if (f.peTrailing != null) push('P/E ratio', f.peTrailing.toFixed(2));
-  if (f.peForward != null) push('Earnings multiple (fwd)', f.peForward.toFixed(2));
   if (f.eps != null) push('EPS (TTM)', ccySym + f.eps.toFixed(2));
   if (f.dividendYield != null) push('Dividend yield', f.dividendYield.toFixed(2) + '%');
-  if (f.debtToEquity != null) push('Debt/Equity', (f.debtToEquity / 100).toFixed(2));
   if (f.bookValue != null) push('NAV / share', ccySym + f.bookValue.toFixed(2));
   if (f.bookValue != null && cur != null && f.bookValue > 0) {
     const diff = (cur - f.bookValue) / f.bookValue * 100;
@@ -5071,20 +5274,14 @@ function FundamentalsBlock(_refFB) {
     const prem = diff >= 0;
     push(prem ? 'NAV premium' : 'NAV discount', (prem ? '+' : '') + diff.toFixed(1) + '%');
   }
-  const mcap = fmtLarge(f.marketCap);
-  if (mcap) push('Market cap', mcap);
   if (f.pegRatio != null) push('PEG', f.pegRatio.toFixed(2));
   if (f.priceToBook != null) push('P/B', f.priceToBook.toFixed(2));
   if (f.priceToSales != null) push('P/S', f.priceToSales.toFixed(2));
   if (f.beta != null) push('Beta', f.beta.toFixed(2));
-  if (f.profitMargin != null) push('Profit margin', f.profitMargin.toFixed(1) + '%');
   if (f.operatingMargin != null) push('Op margin', f.operatingMargin.toFixed(1) + '%');
   if (f.roe != null) push('ROE', f.roe.toFixed(1) + '%');
-  if (f.revenueGrowth != null) push('Rev growth', f.revenueGrowth.toFixed(1) + '%');
-  if (f.earningsGrowth != null) push('EPS growth', f.earningsGrowth.toFixed(1) + '%');
   if (f.currentRatio != null) push('Current ratio', f.currentRatio.toFixed(2));
-  if (f.revenue != null) { const r = fmtLarge(f.revenue); if (r) push('Revenue', r); }
-  if (f.ebitda != null) { const e = fmtLarge(f.ebitda); if (e) push('EBITDA', e); }
+  if (f.ebitda != null) { const e = fmtLarge(f.ebitda); if (e) push('EBITDA', ccySym + e); }
   if (quote?.dayHigh != null && quote?.dayLow != null) {
     push("Day range", ccySym + quote.dayLow.toFixed(2) + ' – ' + ccySym + quote.dayHigh.toFixed(2));
   }
@@ -5121,8 +5318,7 @@ function FundamentalsBlock(_refFB) {
     f.industry && React.createElement("span", { className: "sector-chip muted" }, f.industry)
   ) : null;
   const ai = f.source === 'perplexity';
-  const hasFundamentals = Object.keys(f).length > 0;
-  const empty = !loading && stats.length === 0 && !targetSection && !sectorRow;
+  const empty = !loading && headline.length === 0 && stats.length === 0 && !targetSection && !sectorRow;
   return React.createElement("div", { className: "fundamentals-block" },
     React.createElement("div", { className: "eyebrow", style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
       React.createElement("span", null, "Key stats & ratios"),
@@ -5130,6 +5326,13 @@ function FundamentalsBlock(_refFB) {
       loading && React.createElement("span", { className: "text-xs" }, "Loading\u2026")
     ),
     sectorRow,
+    headline.length > 0 && React.createElement("div", { className: "fundamentals-grid headline" },
+      headline.map((s, i) => React.createElement("div", { key: 'h' + i, className: "fund-cell" },
+        React.createElement("div", { className: "fund-label" }, s.label),
+        React.createElement("div", { className: "fund-val mono" + (s.cls ? ' ' + s.cls : '') }, s.value),
+        s.sub ? React.createElement("div", { className: "fund-sub" }, s.sub) : null
+      ))
+    ),
     stats.length > 0 && React.createElement("div", { className: "fundamentals-grid" },
       stats.map((s, i) => React.createElement("div", { key: i, className: "fund-cell" },
         React.createElement("div", { className: "fund-label" }, s.label),
@@ -5151,6 +5354,7 @@ function DetailModal(_ref10) {
     news,
     historyByTicker,
     fundamentals,
+    fxRates,
     onClose,
     onAddAlert,
     onRemoveAlert,
@@ -5273,9 +5477,10 @@ function DetailModal(_ref10) {
     React.createElement(PriceChart, {
       history: history, loading: history?.loading,
       range: range, onRangeChange: setRange,
-      currency: quote?.currency || ccy
+      currency: quote?.currency || ccy,
+      quote: quote
     }),
-    React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market }),
+    React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market, fxRates: fxRates }),
 
     showAlertForm && React.createElement("div", null,
       React.createElement("div", { className: "eyebrow", style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },

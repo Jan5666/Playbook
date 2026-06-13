@@ -199,20 +199,29 @@ a { color: inherit; text-decoration: none; }
   -webkit-overflow-scrolling: touch;
 }
 .nav::-webkit-scrollbar { display: none; }
-.nav-inner { display: flex; gap: 0; padding: 0 8px; }
+.nav-inner { display: flex; gap: 0; padding: 7px 8px; position: relative; }
 .nav-btn {
-  padding: 12px 13px; font-size: 13px; font-weight: 500;
+  padding: 7px 14px; font-size: 13px; font-weight: 500;
   color: var(--text-dim); white-space: nowrap;
-  position: relative; transition: color 0.15s;
+  position: relative; z-index: 1;
+  transition: color 0.25s ease;
+  -webkit-tap-highlight-color: transparent;
 }
-.nav-btn.active { color: var(--text); }
-.nav-btn.active::after {
-  content: ''; position: absolute;
-  bottom: 0; left: 12px; right: 12px; height: 2px;
-  background: var(--blue); border-radius: 2px;
-  animation: nav-indicator 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+.nav-btn.active { color: var(--text); font-weight: 600; }
+/* Glassy iOS-style pill that slides between tabs */
+.nav-pill {
+  position: absolute; z-index: 0;
+  top: 7px; left: 0; height: calc(100% - 14px);
+  border-radius: 999px; opacity: 0;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.18), inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  transition: transform 0.38s cubic-bezier(0.32, 0.72, 0, 1),
+              width 0.38s cubic-bezier(0.32, 0.72, 0, 1),
+              opacity 0.2s ease;
+  pointer-events: none;
 }
-@keyframes nav-indicator { from { transform: scaleX(0); opacity: 0; } to { transform: scaleX(1); opacity: 1; } }
 
 /* Main content */
 main {
@@ -911,6 +920,13 @@ main.view-slide-right { animation: slide-in-right 0.3s cubic-bezier(0.22, 1, 0.3
   color: var(--text-dim); font-weight: 500;
 }
 .fund-val { font-size: 13px; color: var(--text); font-weight: 600; }
+.fund-val.text-up { color: var(--emerald); }
+.fund-val.text-down { color: var(--rose); }
+.fund-sub { font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.02em; margin-top: 1px; }
+/* Headline analytics get a touch more emphasis */
+.fundamentals-grid.headline { margin-bottom: 8px; }
+.fundamentals-grid.headline .fund-val { font-size: 15px; }
+.fundamentals-grid.headline .fund-cell { padding: 11px 11px 9px; }
 @media (max-width: 380px) {
   .fundamentals-grid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -1214,7 +1230,7 @@ main.view-slide-right { animation: slide-in-right 0.3s cubic-bezier(0.22, 1, 0.3
 @media screen and (max-width: 430px) {
   .hero-stat .value { font-size: 20px; }
   .section-title { font-size: 22px; }
-  .nav-btn { padding: 12px 11px; font-size: 12px; }
+  .nav-btn { padding: 7px 12px; font-size: 12px; }
   main { padding: 16px 12px calc(40px + var(--safe-bottom)); }
   .modal-body { padding: 16px; }
 }
@@ -1810,10 +1826,11 @@ main.view-slide-right { animation: slide-in-right 0.3s cubic-bezier(0.22, 1, 0.3
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 .tm-industry-label {
-  font-size: 10px; font-weight: 600;
-  color: rgba(255,255,255,0.85);
-  background: linear-gradient(180deg, rgba(0,0,0,0.35), rgba(0,0,0,0.05));
-  letter-spacing: 0.02em;
+  font-size: 10.5px; font-weight: 700;
+  color: rgba(255,255,255,0.95);
+  background: linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.12));
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.85);
 }
 .tm-label-name {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1826,10 +1843,44 @@ main.view-slide-right { animation: slide-in-right 0.3s cubic-bezier(0.22, 1, 0.3
 
 @media screen and (max-width: 430px) {
   .tm-sector-label { font-size: 11px; padding: 3px 6px; }
-  .tm-industry-label { font-size: 9px; padding: 2px 5px; }
+  .tm-industry-label { font-size: 9.5px; padding: 2px 5px; }
   .tm-label-chg { font-size: 10px; }
   .tm-industry-label .tm-label-chg { font-size: 8px; }
 }
+
+/* ── Fullscreen pinch-zoom heatmap ── */
+.heatmap-fs {
+  position: fixed; inset: 0; z-index: 80;
+  background: #050506; display: flex; flex-direction: column;
+  animation: fade 0.2s ease;
+  padding-top: var(--safe-top); padding-bottom: var(--safe-bottom);
+}
+.heatmap-fs-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 16px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+.heatmap-fs-title {
+  font-family: var(--serif); font-weight: 700; font-size: 17px;
+  display: flex; flex-direction: column; gap: 1px; min-width: 0;
+}
+.heatmap-fs-hint {
+  font-family: var(--mono); font-size: 10px; font-weight: 400;
+  color: var(--text-dim); letter-spacing: 0.02em;
+}
+.heatmap-fs-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.heatmap-fs-stage {
+  flex: 1; position: relative; overflow: hidden;
+  touch-action: none; -webkit-tap-highlight-color: transparent;
+  background: #07070a;
+}
+.heatmap-fs-content {
+  position: absolute; top: 0; left: 0; width: 100%;
+  will-change: transform;
+}
+.heatmap-fs-content .treemap { border-radius: 0; border: none; }
 
 /* ── Portfolio line chart ── */
 .chart-line-wrap { width: 100%; }
