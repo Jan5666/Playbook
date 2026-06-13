@@ -5,7 +5,8 @@
       "Bash(start:*)",
       "Bash(node -e ':*)",
       "Bash(node:*)",
-      "Bash(awk \"/id:'nasdaq100'/,/id:'dow'/\" data.js)"
+      "Bash(awk \"/id:'nasdaq100'/,/id:'dow'/\" data.js)",
+      "Bash(xargs echo \"tests passing:\")"
     ]
   }
 }

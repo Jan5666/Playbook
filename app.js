@@ -566,7 +566,7 @@ async function fetchQuote(ticker, market) {
 // treat absence as "no data"; the rejection reason is logged for diagnostics.
 async function fetchQuoteBatch(items) {
   const results = {};
-  const batchSize = 4;
+  const batchSize = 8;
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
     const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market)));
@@ -604,7 +604,10 @@ async function fetchQuoteLight(ticker, market) {
 }
 async function fetchQuoteBatchLight(items, onProgress) {
   const results = {};
-  const batchSize = 12;
+  // Larger batches finish the whole grid sooner; the light endpoint is a single
+  // request per symbol so this stays well within proxy limits. Partial results
+  // are streamed back via onProgress so callers can paint as data lands.
+  const batchSize = 16;
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
     const settled = await Promise.allSettled(batch.map(it => fetchQuoteLight(it.ticker, it.market)));
@@ -613,7 +616,7 @@ async function fetchQuoteBatchLight(items, onProgress) {
       const key = priceKey(market, ticker);
       if (r.status === 'fulfilled' && r.value) results[key] = r.value;
     });
-    if (onProgress) onProgress(Math.min(i + batchSize, items.length), items.length);
+    if (onProgress) onProgress(Math.min(i + batchSize, items.length), items.length, results);
   }
   return results;
 }
@@ -1038,6 +1041,47 @@ function uid() {
     : Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
   return ts + '-' + rand;
 }
+// Decimal input handling. `type="number"` inputs silently reject a typed
+// decimal point in locales whose number keypad emits a comma (common on
+// South-African / European devices), and the spinner/scroll-wheel can mutate
+// the value unexpectedly. We use `type="text" inputMode="decimal"` everywhere
+// numbers are entered and sanitize the raw string ourselves so a "." always
+// works regardless of locale, and a stray "," is treated as a decimal point.
+function sanitizeDecimalInput(raw) {
+  if (raw == null) return '';
+  // Normalise comma to dot, drop everything that isn't a digit or dot.
+  let s = String(raw).replace(/,/g, '.').replace(/[^0-9.]/g, '');
+  const firstDot = s.indexOf('.');
+  if (firstDot !== -1) {
+    // Collapse any additional dots after the first.
+    s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, '');
+  }
+  return s;
+}
+// Parse a possibly comma-decimalled / thousands-separated string to a number.
+// Returns NaN when there's no usable numeric content.
+function parseDecimal(raw) {
+  if (raw == null) return NaN;
+  let s = String(raw).trim();
+  if (!s) return NaN;
+  // Strip currency symbols / spaces / letters but keep separators and sign.
+  s = s.replace(/[^0-9.,\-]/g, '');
+  if (!s) return NaN;
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+  if (hasComma && hasDot) {
+    // Whichever separator appears last is the decimal separator.
+    if (s.lastIndexOf(',') > s.lastIndexOf('.')) s = s.replace(/\./g, '').replace(',', '.');
+    else s = s.replace(/,/g, '');
+  } else if (hasComma) {
+    // A lone comma: decimal if it looks like one (e.g. 12,50), else thousands.
+    const parts = s.split(',');
+    if (parts.length === 2 && parts[1].length !== 3) s = parts[0] + '.' + parts[1];
+    else s = s.replace(/,/g, '');
+  }
+  const n = parseFloat(s);
+  return isFinite(n) ? n : NaN;
+}
 const MAX_TRIGGER_HISTORY = 100;
 const TRIGGER_COOLDOWN_MS = 5 * 60 * 1000; // 5-minute cooldown per alert
 // Pure: given the current alerts, the latest prices, and the previously-seen
@@ -1123,7 +1167,8 @@ function evaluateTriggers(alerts, prices, seen) {
 const Icon = _ref => {
   let {
     name,
-    size = 15
+    size = 15,
+    className
   } = _ref;
   const paths = {
     refresh: React.createElement("g", null, React.createElement("path", {
@@ -1341,7 +1386,8 @@ const Icon = _ref => {
     stroke: "currentColor",
     strokeWidth: "2",
     strokeLinecap: "round",
-    strokeLinejoin: "round"
+    strokeLinejoin: "round",
+    className: className
   }, paths[name] || null);
 };
 // Owns prices/loading/lastUpdate and the 90s polling for a given ticker set.
@@ -1475,6 +1521,55 @@ function usePortfolio(fxRates, toast) {
     }]);
     toast(positions.find(p => p.ticker === tickerUp && p.market === market) ? 'Shares added to existing position' : 'Position added');
   };
+  // Bulk import (from file/paste). Resolves historical FX per dated row, then
+  // applies every row in a single state update so duplicates within the batch
+  // merge correctly and the UI only re-renders once. One summary toast.
+  const importPositions = async (list) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const prepared = [];
+    for (const r of list) {
+      const nativeCode = marketCurrency(r.market);
+      const dateKey = r.purchaseDate && r.purchaseDate !== today ? r.purchaseDate : null;
+      let rateAtCost = fxRates?.rates?.[nativeCode] || null;
+      if (dateKey) {
+        const h = await fetchHistoricalFx(dateKey, nativeCode);
+        if (h != null) rateAtCost = h;
+      }
+      prepared.push({ ...r, rateAtCost });
+    }
+    let added = 0, merged = 0;
+    setPositions(prev => {
+      const next = [...prev];
+      for (const r of prepared) {
+        const tickerUp = r.ticker.toUpperCase();
+        const idx = next.findIndex(p => p.ticker === tickerUp && p.market === r.market);
+        if (idx >= 0) {
+          const ex = next[idx];
+          const totalShares = ex.shares + r.shares;
+          const avgCost = totalShares > 0 ? (ex.shares * ex.costBasis + r.shares * r.costBasis) / totalShares : ex.costBasis;
+          next[idx] = { ...ex, shares: totalShares, costBasis: avgCost, fxRateAtCost: r.rateAtCost || ex.fxRateAtCost };
+          merged++;
+        } else {
+          next.push({
+            id: uid(), ticker: tickerUp, market: r.market,
+            shares: r.shares, costBasis: r.costBasis,
+            notes: r.notes || '', addedAt: new Date().toISOString(),
+            purchaseDate: r.purchaseDate || today,
+            fxRateAtCost: r.rateAtCost, fxBase: 'USD'
+          });
+          added++;
+        }
+      }
+      return next;
+    });
+    setTransactions(prev => [...prev, ...prepared.map(r => ({
+      id: uid(), type: 'buy', ticker: r.ticker.toUpperCase(), market: r.market,
+      shares: r.shares, price: r.costBasis, notes: r.notes || '',
+      date: r.purchaseDate || today, createdAt: new Date().toISOString()
+    }))]);
+    toast(`Imported ${added} position${added !== 1 ? 's' : ''}${merged ? `, merged ${merged}` : ''}`);
+    return { added, merged };
+  };
   const sellPosition = (ticker, market, shares, sellPrice, date, notes) => {
     const tickerUp = ticker.toUpperCase();
     const numShares = parseFloat(shares);
@@ -1568,7 +1663,7 @@ function usePortfolio(fxRates, toast) {
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
-    addPosition, updatePosition, removePosition, sellPosition,
+    addPosition, updatePosition, removePosition, sellPosition, importPositions,
     addContribution, removeContribution,
     addWatch, removeWatch,
     addAlert, removeAlert
@@ -1605,6 +1700,7 @@ function App() {
   const navRef = useRef(null);
   const mainRef = useRef(null);
   const swipeRef = useRef({ startX: 0, startY: 0, swiping: false });
+  const childSwipeLockRef = useRef(false);
   const changeView = useCallback((newView, direction) => {
     if (newView === view) return;
     setViewTransDir(direction || null);
@@ -1623,6 +1719,7 @@ function App() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [posModalEditId, setPosModalEditId] = useState(null);
   const [posModalOpen, setPosModalOpen] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [sellModalPos, setSellModalPos] = useState(null);
   const [notifPerm, setNotifPerm] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
   const [installEvent, setInstallEvent] = useState(null);
@@ -1635,7 +1732,7 @@ function App() {
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
-    addPosition, updatePosition, removePosition, sellPosition,
+    addPosition, updatePosition, removePosition, sellPosition, importPositions,
     addContribution, removeContribution,
     addWatch, removeWatch,
     addAlert, removeAlert
@@ -1666,6 +1763,14 @@ function App() {
       setTimeout(() => setShowInstallBanner(true), 2500);
     }
     return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+  useEffect(() => {
+    const block = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      e.preventDefault();
+    };
+    document.addEventListener('contextmenu', block);
+    return () => document.removeEventListener('contextmenu', block);
   }, []);
   const tickersToFetch = useMemo(() => {
     const set = new Set();
@@ -1880,6 +1985,7 @@ function App() {
         setPosModalEditId(null);
         setPosModalOpen(true);
       },
+      onImportPositions: () => setShowImport(true),
       onSellPosition: pos => setSellModalPos(pos)
     }),
     watchlist: React.createElement(WatchlistView, {
@@ -1891,7 +1997,8 @@ function App() {
       onReorder: setWatchlist,
       onOpenDetail: openDetail,
       onAddAlert: addAlert,
-      onRemoveAlert: removeAlert
+      onRemoveAlert: removeAlert,
+      childSwipeLockRef: childSwipeLockRef
     }),
     heatmap: React.createElement(HeatmapView, {
       positions: positions,
@@ -1996,6 +2103,7 @@ function App() {
       swipeRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, swiping: false };
     },
     onTouchMove: e => {
+      if (childSwipeLockRef.current) return;
       const s = swipeRef.current;
       if (s.swiping) return;
       const dx = e.touches[0].clientX - s.startX;
@@ -2055,6 +2163,9 @@ function App() {
       else addPosition(data.ticker, data.market, data.shares, data.costBasis, data.notes, data.purchaseDate);
       setPosModalOpen(false);
     }
+  }), showImport && React.createElement(ImportModal, {
+    onClose: () => setShowImport(false),
+    onImport: importPositions
   }), sellModalPos && React.createElement(SellModal, {
     position: sellModalPos,
     prices: prices,
@@ -2837,6 +2948,7 @@ function CurrentView(_ref7) {
     setMarketFilter,
     onOpenDetail,
     onAddPosition,
+    onImportPositions,
     onSellPosition
   } = _ref7;
   const usdPositions = positions.filter(p => p.market === 'US');
@@ -2991,8 +3103,11 @@ function CurrentView(_ref7) {
     className: `toggle-opt ${marketFilter === 'TFSA' ? 'active' : ''}`,
     onClick: () => setMarketFilter('TFSA')
   }, "TFSA (", tfsaPositions.length, ")")),
-    React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
-      React.createElement(Icon, { name: "plus", size: 13 }), " Add"))),
+    React.createElement("div", { className: "flex gap-2 items-center" },
+      React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onImportPositions },
+        React.createElement(Icon, { name: "download", size: 13 }), " Import"),
+      React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
+        React.createElement(Icon, { name: "plus", size: 13 }), " Add")))),
     marketFilter === 'US' ? renderUS() : marketFilter === 'JSE' ? renderJSE() : renderTFSA());
 }
 const ALL_TICKERS = (() => {
@@ -3065,6 +3180,270 @@ async function fetchYahooSearch(query) {
   }
   return [];
 }
+// ─────────────────────────────────────────────────────────────────────────
+// Holdings import: parse CSV / TSV / Markdown / plain text natively, and XLSX
+// and PDF via libraries loaded lazily from a CDN only when a file of that type
+// is actually dropped. Everything funnels into a common {ticker, shares,
+// costBasis, market, purchaseDate, name} shape that the preview UI can edit
+// before committing. Designed to be forgiving: many broker exports vary wildly
+// in column names, separators, currency symbols and number formats.
+// ─────────────────────────────────────────────────────────────────────────
+function loadScriptOnce(src) {
+  loadScriptOnce._cache = loadScriptOnce._cache || {};
+  if (loadScriptOnce._cache[src]) return loadScriptOnce._cache[src];
+  const p = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Failed to load ' + src));
+    document.head.appendChild(s);
+  });
+  loadScriptOnce._cache[src] = p;
+  return p;
+}
+const XLSX_CDN = 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';
+const PDFJS_CDN = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js';
+const PDFJS_WORKER = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+
+// Header-name synonyms, checked in order. First matching column wins per field.
+const IMPORT_SYNONYMS = {
+  ticker: ['ticker', 'symbol', 'symb', 'code', 'instrument', 'security', 'scrip', 'share code', 'stock code', 'isin'],
+  shares: ['shares', 'quantity', 'qty', 'units', 'no. of shares', 'number of shares', 'share qty', 'units held', 'quantity held', 'holding', 'holdings', 'nominal', 'volume', 'position'],
+  cost:   ['cost basis', 'avg cost', 'average cost', 'avg. cost', 'cost price', 'unit cost', 'avg price', 'average price', 'avg. price', 'price paid', 'purchase price', 'buy price', 'avg buy price', 'book cost per share', 'entry price', 'vwap', 'cost'],
+  total:  ['total cost', 'book cost', 'book value', 'amount invested', 'invested', 'total invested', 'cost value', 'total cost basis'],
+  price:  ['last price', 'current price', 'market price', 'last', 'price', 'close'],
+  market: ['market', 'exchange', 'mkt', 'listing'],
+  currency: ['currency', 'ccy', 'curr'],
+  name:   ['name', 'company', 'description', 'security name', 'stock', 'company name', 'instrument name'],
+  date:   ['date', 'purchase date', 'buy date', 'trade date', 'acquired', 'date acquired', 'opened'],
+};
+const CURRENCY_TO_MARKET = { USD: 'US', ZAR: 'JSE', GBP: 'LSE', GBX: 'LSE', GBP_PENCE: 'LSE', AUD: 'ASX', EUR: 'FRA' };
+const SUFFIX_TO_MARKET = { JO: 'JSE', JNB: 'JSE', L: 'LSE', LON: 'LSE', AX: 'ASX', ASX: 'ASX', DE: 'FRA', F: 'FRA', FRA: 'FRA', PA: 'PAR', AS: 'AMS' };
+
+// Split a raw ticker like "AGL.JO" or "BHP:AX" into its market + bare symbol.
+function splitTickerMarket(raw) {
+  if (!raw) return { ticker: '', market: null };
+  let s = String(raw).trim().toUpperCase().replace(/\s+/g, '');
+  const m = s.match(/[.:]([A-Z]{1,4})$/);
+  if (m && SUFFIX_TO_MARKET[m[1]]) {
+    return { ticker: s.slice(0, m.index), market: SUFFIX_TO_MARKET[m[1]] };
+  }
+  return { ticker: s, market: null };
+}
+function inferMarket(currencyRaw, marketRaw, suffixMarket) {
+  if (suffixMarket) return suffixMarket;
+  const mr = (marketRaw || '').trim().toUpperCase();
+  if (mr) {
+    if (MARKET_CURRENCY[mr]) return mr;
+    if (/(NYSE|NASDAQ|NMS|NYQ|US|AMEX)/.test(mr)) return 'US';
+    if (/(JSE|JOHANNESBURG|JNB)/.test(mr)) return 'JSE';
+    if (/(LSE|LONDON)/.test(mr)) return 'LSE';
+    if (/(ASX|AUSTRAL)/.test(mr)) return 'ASX';
+    if (/(XETRA|FRANKFURT|FRA|DAX)/.test(mr)) return 'FRA';
+    if (/(PARIS|EURONEXT PAR)/.test(mr)) return 'PAR';
+    if (/(AMSTERDAM)/.test(mr)) return 'AMS';
+  }
+  const cr = (currencyRaw || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
+  if (cr && CURRENCY_TO_MARKET[cr]) return CURRENCY_TO_MARKET[cr];
+  return 'US';
+}
+
+// Split a single text line into cells, auto-detecting the delimiter. Falls back
+// to runs of 2+ spaces (fixed-width / PDF text) when no real delimiter exists.
+function splitLine(line) {
+  if (line.includes('\t')) return line.split('\t').map(c => c.trim());
+  // Markdown table row
+  if (/^\s*\|/.test(line)) return line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+  const commaCount = (line.match(/,/g) || []).length;
+  const semiCount = (line.match(/;/g) || []).length;
+  if (semiCount > commaCount && semiCount >= 1) return splitCsvLine(line, ';');
+  if (commaCount >= 1) return splitCsvLine(line, ',');
+  // Whitespace-separated (2+ spaces) — common in copied PDF tables
+  const ws = line.trim().split(/\s{2,}/).map(c => c.trim());
+  if (ws.length > 1) return ws;
+  return line.trim().split(/\s+/).map(c => c.trim());
+}
+// CSV splitter that respects double-quoted fields.
+function splitCsvLine(line, delim) {
+  const out = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === delim && !inQ) { out.push(cur.trim()); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+function looksLikeHeader(cells) {
+  const joined = cells.join(' ').toLowerCase();
+  const all = [].concat(...Object.values(IMPORT_SYNONYMS));
+  return all.some(syn => joined.includes(syn));
+}
+function matchColumn(headers, synonyms, used) {
+  const norm = headers.map(h => (h || '').toLowerCase().trim());
+  const free = (i) => i >= 0 && !(used && used.has(i));
+  // Exact match first, then "contains" — skipping columns already claimed by a
+  // more specific field (so "Book Cost" is taken as a total, not a per-share).
+  for (const syn of synonyms) {
+    const i = norm.findIndex((h, idx) => h === syn && free(idx));
+    if (i >= 0) return i;
+  }
+  for (const syn of synonyms) {
+    const i = norm.findIndex((h, idx) => h && h.includes(syn) && free(idx));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+// Turn an array-of-rows (each an array of cells) into holding objects.
+function rowsToHoldings(rows) {
+  const cleaned = rows.filter(r => r && r.some(c => c && String(c).trim() !== '') && !/^[-\s|:]+$/.test(r.join('')));
+  if (cleaned.length === 0) return [];
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(cleaned.length, 5); i++) {
+    if (looksLikeHeader(cleaned[i])) { headerIdx = i; break; }
+  }
+  let cols, dataRows;
+  if (headerIdx >= 0) {
+    const headers = cleaned[headerIdx];
+    const used = new Set();
+    const claim = (syns) => { const i = matchColumn(headers, syns, used); if (i >= 0) used.add(i); return i; };
+    // Order matters: claim the more specific fields first so generic ones
+    // (e.g. "cost" containing "book cost") don't steal a total/value column.
+    cols = {
+      ticker:   claim(IMPORT_SYNONYMS.ticker),
+      total:    claim(IMPORT_SYNONYMS.total),
+      cost:     claim(IMPORT_SYNONYMS.cost),
+      shares:   claim(IMPORT_SYNONYMS.shares),
+      price:    claim(IMPORT_SYNONYMS.price),
+      currency: claim(IMPORT_SYNONYMS.currency),
+      market:   claim(IMPORT_SYNONYMS.market),
+      date:     claim(IMPORT_SYNONYMS.date),
+      name:     claim(IMPORT_SYNONYMS.name),
+    };
+    dataRows = cleaned.slice(headerIdx + 1);
+    if (cols.ticker < 0 && cols.name < 0) { headerIdx = -1; }
+  }
+  if (headerIdx < 0) {
+    // Positional fallback: assume [ticker, shares, cost, (market)].
+    cols = { ticker: 0, shares: 1, cost: 2, total: -1, price: -1, market: 3, currency: -1, name: -1, date: -1 };
+    dataRows = cleaned;
+  }
+  const get = (row, i) => (i >= 0 && i < row.length) ? row[i] : '';
+  const holdings = [];
+  for (const row of dataRows) {
+    const tickRaw = get(row, cols.ticker) || get(row, cols.name);
+    if (!tickRaw) continue;
+    const { ticker, market: suffixMarket } = splitTickerMarket(tickRaw);
+    if (!ticker || !/[A-Z0-9]/.test(ticker) || ticker.length > 6 && cols.name < 0) {
+      // long token with no symbol column → probably a name row we can't use
+    }
+    if (!ticker) continue;
+    const shares = parseDecimal(get(row, cols.shares));
+    let cost = parseDecimal(get(row, cols.cost));
+    if ((!isFinite(cost) || cost <= 0) && cols.total >= 0 && isFinite(shares) && shares > 0) {
+      const tot = parseDecimal(get(row, cols.total));
+      if (isFinite(tot) && tot > 0) cost = tot / shares;
+    }
+    if ((!isFinite(cost) || cost <= 0) && cols.price >= 0) {
+      const pr = parseDecimal(get(row, cols.price));
+      if (isFinite(pr) && pr > 0) cost = pr;
+    }
+    const market = inferMarket(get(row, cols.currency), get(row, cols.market), suffixMarket);
+    const name = (cols.name >= 0 ? get(row, cols.name) : '') || '';
+    let purchaseDate = '';
+    if (cols.date >= 0) {
+      const d = parseImportDate(get(row, cols.date));
+      if (d) purchaseDate = d;
+    }
+    holdings.push({
+      ticker, market, name: name.trim(),
+      shares: isFinite(shares) ? shares : null,
+      costBasis: isFinite(cost) && cost > 0 ? cost : null,
+      purchaseDate,
+    });
+  }
+  return holdings;
+}
+function parseImportDate(raw) {
+  if (!raw) return '';
+  const s = String(raw).trim();
+  let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/); // DD/MM/YYYY (assume day-first)
+  if (m) {
+    let d = +m[1], mo = +m[2];
+    if (d > 12 && mo <= 12) { /* clearly DD/MM */ }
+    else if (mo > 12) { [d, mo] = [mo, d]; } // was MM/DD
+    return `${m[3]}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  const t = Date.parse(s);
+  if (!isNaN(t)) return new Date(t).toISOString().slice(0, 10);
+  return '';
+}
+function parseHoldingsFromText(text) {
+  if (!text) return [];
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').filter(l => l.trim() !== '');
+  const rows = lines.map(splitLine);
+  return rowsToHoldings(rows);
+}
+async function parseXlsxFile(file) {
+  await loadScriptOnce(XLSX_CDN);
+  const XLSX = window.XLSX;
+  if (!XLSX) throw new Error('Spreadsheet reader failed to load.');
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array' });
+  const all = [];
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name];
+    const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false, raw: false });
+    const holdings = rowsToHoldings(aoa);
+    all.push(...holdings);
+    if (holdings.length > 0) break; // first sheet that yields rows
+  }
+  return all;
+}
+async function parsePdfFile(file) {
+  await loadScriptOnce(PDFJS_CDN);
+  const pdfjsLib = window.pdfjsLib;
+  if (!pdfjsLib) throw new Error('PDF reader failed to load.');
+  try { pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; } catch (_) {}
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const lines = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    // Group text items into visual lines by their y-coordinate.
+    const byY = {};
+    for (const it of content.items) {
+      if (!it.str || !it.transform) continue;
+      const y = Math.round(it.transform[5]);
+      (byY[y] = byY[y] || []).push({ x: it.transform[4], s: it.str });
+    }
+    Object.keys(byY).map(Number).sort((a, b) => b - a).forEach(y => {
+      const cells = byY[y].sort((a, b) => a.x - b.x).map(o => o.s);
+      lines.push(cells.join('  '));
+    });
+  }
+  return parseHoldingsFromText(lines.join('\n'));
+}
+async function parseImportFile(file) {
+  const name = (file.name || '').toLowerCase();
+  if (name.endsWith('.xlsx') || name.endsWith('.xls') || /sheet|excel/.test(file.type)) {
+    return parseXlsxFile(file);
+  }
+  if (name.endsWith('.pdf') || file.type === 'application/pdf') {
+    return parsePdfFile(file);
+  }
+  const text = await file.text();
+  return parseHoldingsFromText(text);
+}
+
 function MarketPicker({ value, onChange, disabled, style }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
@@ -3276,7 +3655,8 @@ function WatchlistView(_ref8) {
     onReorder,
     onOpenDetail,
     onAddAlert,
-    onRemoveAlert
+    onRemoveAlert,
+    childSwipeLockRef
   } = _ref8;
   const [newTicker, setNewTicker] = useState('');
   const [newMarket, setNewMarket] = useState('US');
@@ -3284,6 +3664,11 @@ function WatchlistView(_ref8) {
   const [verifyError, setVerifyError] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [showSuggestions, setShowSuggestions] = usePersistedState('pb.watchlist.showSuggestions.v1', true);
+  // Suggestion chips leave the list the instant they're added (the list is
+  // derived from the watchlist), which left users unsure their tap registered.
+  // We keep a short-lived "added" snapshot so the tapped chip morphs into a
+  // green ✓ confirmation before fading, instead of silently vanishing.
+  const [justAdded, setJustAdded] = useState([]);
 
   // Alert popup state
   const [alertPopup, setAlertPopup] = useState(null);
@@ -3299,7 +3684,7 @@ function WatchlistView(_ref8) {
   };
   const submitAlertPopup = () => {
     if (!alertPopup) return;
-    const t = parseFloat(alertTarget);
+    const t = parseDecimal(alertTarget);
     if (!isFinite(t) || t <= 0) return;
     onAddAlert(alertPopup.ticker, alertPopup.market, alertDir, t, alertNote);
     setAlertNote('');
@@ -3310,10 +3695,9 @@ function WatchlistView(_ref8) {
   // Swipe-to-delete state
   const [swipedId, setSwipedId] = useState(null);
   const swipeRefs = useRef(new Map());
-  const swipeState = useRef(null);
 
-  // Freeform long-press drag-to-reorder. We use pointer events with capture so that
-  // the dragged card keeps receiving move events even when the pointer leaves it.
+  // Freeform long-press drag-to-reorder. Document-level pointer tracking keeps
+  // vertical scroll native while horizontal swipe / drag stay responsive.
   const [draggingId, setDraggingId] = useState(null);
   const cardRefsRef = useRef(new Map());
   const setCardRef = useCallback((id) => (el) => {
@@ -3325,6 +3709,9 @@ function WatchlistView(_ref8) {
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
   const hapticCtxRef = useRef(null);
+  const activeGestureRef = useRef(null);
+  const pointerTrackRef = useRef(null);
+  const dragTouchBlockRef = useRef(null);
 
   const triggerHaptic = () => {
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
@@ -3347,16 +3734,37 @@ function WatchlistView(_ref8) {
     }
   };
 
-  // Prevent iOS scroll while a drag is active (must be non-passive to cancel)
-  useEffect(() => {
-    const prevent = (e) => { if (dragRef.current && e.cancelable) e.preventDefault(); };
+  const blockPageScroll = () => {
+    if (dragTouchBlockRef.current) return;
+    const prevent = (e) => { if (e.cancelable) e.preventDefault(); };
     document.addEventListener('touchmove', prevent, { passive: false });
-    return () => document.removeEventListener('touchmove', prevent);
-  }, []);
+    dragTouchBlockRef.current = prevent;
+  };
+
+  const unblockPageScroll = () => {
+    if (!dragTouchBlockRef.current) return;
+    document.removeEventListener('touchmove', dragTouchBlockRef.current, { passive: false });
+    dragTouchBlockRef.current = null;
+  };
+
+  const detachPointerTracking = () => {
+    const track = pointerTrackRef.current;
+    if (!track) return;
+    document.removeEventListener('pointermove', track.onMove);
+    document.removeEventListener('pointerup', track.onUp);
+    document.removeEventListener('pointercancel', track.onUp);
+    pointerTrackRef.current = null;
+    activeGestureRef.current = null;
+    if (childSwipeLockRef) childSwipeLockRef.current = false;
+  };
 
   // Clean up haptic AudioContext on unmount
   useEffect(() => {
-    return () => { if (hapticCtxRef.current) try { hapticCtxRef.current.close(); } catch (_) {} };
+    return () => {
+      detachPointerTracking();
+      unblockPageScroll();
+      if (hapticCtxRef.current) try { hapticCtxRef.current.close(); } catch (_) {}
+    };
   }, []);
 
   const clearLongPress = () => {
@@ -3427,6 +3835,7 @@ function WatchlistView(_ref8) {
       originIdx, targetIdx: originIdx,
       moved: false,
     };
+    blockPageScroll();
     card.style.transition = 'none';
     card.style.transform = 'scale(1.04)';
     card.style.zIndex = '50';
@@ -3438,7 +3847,6 @@ function WatchlistView(_ref8) {
     if (e.target.closest('button,a,input,[data-no-drag]')) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (dragRef.current) return;
-    if (swipeState.current) return;
     clearLongPress();
     if (!hapticCtxRef.current) {
       try { hapticCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
@@ -3446,6 +3854,7 @@ function WatchlistView(_ref8) {
     if (hapticCtxRef.current && hapticCtxRef.current.state === 'suspended') {
       try { hapticCtxRef.current.resume(); } catch (_) {}
     }
+    if (swipedId && swipedId !== id) closeSwipe(swipedId);
     pressOriginRef.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY };
     longPressTimerRef.current = setTimeout(() => {
       longPressTimerRef.current = null;
@@ -3453,9 +3862,10 @@ function WatchlistView(_ref8) {
       if (!po || po.id !== id) return;
       startDrag(id, po.pointerId, po.y);
     }, 450);
+    attachPointerTracking(id, e.pointerId, e.clientX, e.clientY);
   };
 
-  const onCardPointerMove = (e) => {
+  const handleDocumentPointerMove = (e) => {
     const drag = dragRef.current;
     if (drag) {
       if (e.pointerId !== drag.pointerId) return;
@@ -3481,14 +3891,83 @@ function WatchlistView(_ref8) {
       }
       return;
     }
+
+    const g = activeGestureRef.current;
+    if (!g || e.pointerId !== g.pointerId) return;
+
+    const dx = e.clientX - g.startX;
+    const dy = e.clientY - g.startY;
+
     if (longPressTimerRef.current) {
-      const po = pressOriginRef.current;
-      if (po) {
-        const dx = e.clientX - po.x;
-        const dy = e.clientY - po.y;
-        if (dx * dx + dy * dy > 100) clearLongPress();
+      if (dx * dx + dy * dy > 100) clearLongPress();
+    }
+
+    if (!g.mode) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      g.mode = Math.abs(dx) > Math.abs(dy) ? 'swipe-h' : 'scroll-v';
+    }
+
+    if (g.mode === 'scroll-v') {
+      // Stop tracking so native scroll stays on the compositor thread.
+      const track = pointerTrackRef.current;
+      if (track) document.removeEventListener('pointermove', track.onMove);
+      return;
+    }
+
+    if (e.cancelable) e.preventDefault();
+    if (childSwipeLockRef) childSwipeLockRef.current = true;
+    clearLongPress();
+    g.swipeLocked = true;
+    g.dx = dx;
+    const inner = swipeRefs.current.get(g.id);
+    if (inner) {
+      inner.classList.add('is-swiping');
+      const clamped = Math.max(-80, Math.min(dx > 0 ? 0 : dx, 0));
+      inner.style.transition = 'none';
+      inner.style.transform = `translateX(${clamped}px)`;
+    }
+  };
+
+  const handleDocumentPointerUp = (e) => {
+    const drag = dragRef.current;
+    if (drag && e.pointerId === drag.pointerId) {
+      clearLongPress();
+      pressOriginRef.current = null;
+      finishDrag(e.type !== 'pointercancel');
+      detachPointerTracking();
+      return;
+    }
+
+    const g = activeGestureRef.current;
+    if (g && e.pointerId === g.pointerId && g.swipeLocked) {
+      const inner = swipeRefs.current.get(g.id);
+      if (inner) {
+        inner.classList.remove('is-swiping');
+        if (g.dx < -50) {
+          inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+          inner.style.transform = 'translateX(-80px)';
+          setSwipedId(g.id);
+        } else {
+          inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+          inner.style.transform = '';
+          setSwipedId(prev => prev === g.id ? null : prev);
+        }
       }
     }
+    clearLongPress();
+    pressOriginRef.current = null;
+    detachPointerTracking();
+  };
+
+  const attachPointerTracking = (id, pointerId, startX, startY) => {
+    detachPointerTracking();
+    activeGestureRef.current = { id, pointerId, startX, startY, mode: null, dx: 0, swipeLocked: false };
+    const onMove = (ev) => handleDocumentPointerMove(ev);
+    const onUp = (ev) => handleDocumentPointerUp(ev);
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+    pointerTrackRef.current = { onMove, onUp };
   };
 
   const finishDrag = (commit) => {
@@ -3514,76 +3993,19 @@ function WatchlistView(_ref8) {
     }
     if (drag.moved) suppressClickRef.current = true;
     dragRef.current = null;
+    unblockPageScroll();
     setDraggingId(null);
-  };
-
-  const onCardPointerUp = () => {
-    clearLongPress();
-    pressOriginRef.current = null;
-    if (dragRef.current) finishDrag(true);
-  };
-
-  const onCardPointerCancel = () => {
-    clearLongPress();
-    pressOriginRef.current = null;
-    if (dragRef.current) finishDrag(false);
   };
 
   const closeSwipe = useCallback((id) => {
     const inner = swipeRefs.current.get(id);
     if (inner) {
+      inner.classList.remove('is-swiping');
       inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
       inner.style.transform = '';
     }
     setSwipedId(prev => prev === id ? null : prev);
   }, []);
-
-  const onSwipeTouchStart = (e, id) => {
-    if (dragRef.current) return;
-    const t = e.touches[0];
-    swipeState.current = { id, startX: t.clientX, startY: t.clientY, dx: 0, locked: false, direction: null };
-    if (swipedId && swipedId !== id) closeSwipe(swipedId);
-  };
-
-  const onSwipeTouchMove = (e, id) => {
-    const s = swipeState.current;
-    if (!s || s.id !== id) return;
-    const t = e.touches[0];
-    const dx = t.clientX - s.startX;
-    const dy = t.clientY - s.startY;
-    if (!s.direction) {
-      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-      s.direction = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
-    }
-    if (s.direction !== 'h') { swipeState.current = null; return; }
-    if (e.cancelable) e.preventDefault();
-    clearLongPress();
-    s.locked = true;
-    s.dx = dx;
-    const inner = swipeRefs.current.get(id);
-    if (inner) {
-      const clamped = Math.max(-80, Math.min(dx > 0 ? 0 : dx, 0));
-      inner.style.transition = 'none';
-      inner.style.transform = `translateX(${clamped}px)`;
-    }
-  };
-
-  const onSwipeTouchEnd = (id) => {
-    const s = swipeState.current;
-    swipeState.current = null;
-    if (!s || s.id !== id || !s.locked) return;
-    const inner = swipeRefs.current.get(id);
-    if (!inner) return;
-    if (s.dx < -50) {
-      inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
-      inner.style.transform = 'translateX(-80px)';
-      setSwipedId(id);
-    } else {
-      inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
-      inner.style.transform = '';
-      setSwipedId(prev => prev === id ? null : prev);
-    }
-  };
 
   const confirmDelete = (id) => {
     const inner = swipeRefs.current.get(id);
@@ -3611,6 +4033,14 @@ function WatchlistView(_ref8) {
     setShowAddForm(false);
   };
   const suggestions = useMemo(() => buildSuggestions(watchlist), [watchlist]);
+  const addSuggestion = (s) => {
+    const key = priceKey(s.market, s.ticker);
+    if (watchlist.some(w => priceKey(w.market, w.ticker) === key)) return;
+    onAdd(s.ticker, s.market, s.name);
+    triggerHaptic();
+    setJustAdded(prev => prev.some(x => priceKey(x.market, x.ticker) === key) ? prev : [...prev, s]);
+    setTimeout(() => setJustAdded(prev => prev.filter(x => priceKey(x.market, x.ticker) !== key)), 1700);
+  };
   return React.createElement("div", null,
     React.createElement("div", { className: "flex justify-end mb-4" },
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: () => setShowAddForm(true) },
@@ -3669,9 +4099,6 @@ function WatchlistView(_ref8) {
           ref: setCardRef(w.id),
           className: "swipe-card-outer" + (isDragging ? " dragging" : ""),
           onPointerDown: (e) => onCardPointerDown(e, w.id),
-          onPointerMove: onCardPointerMove,
-          onPointerUp: onCardPointerUp,
-          onPointerCancel: onCardPointerCancel,
           onContextMenu: e => e.preventDefault()
         },
           React.createElement("div", { className: "swipe-delete-bg", onClick: () => confirmDelete(w.id) }, "Delete"),
@@ -3680,13 +4107,10 @@ function WatchlistView(_ref8) {
             ref: el => { if (el) swipeRefs.current.set(w.id, el); else swipeRefs.current.delete(w.id); },
             onClick: () => {
               if (suppressClickRef.current) { suppressClickRef.current = false; return; }
-              if (dragRef.current || swipeState.current) return;
+              if (dragRef.current) return;
               if (swipedId === w.id) { closeSwipe(w.id); return; }
               onOpenDetail(w.ticker, w.market);
-            },
-            onTouchStart: e => onSwipeTouchStart(e, w.id),
-            onTouchMove: e => onSwipeTouchMove(e, w.id),
-            onTouchEnd: () => onSwipeTouchEnd(w.id)
+            }
           },
             React.createElement("div", { className: "pos-head" },
               React.createElement("div", { className: "flex-1" },
@@ -3747,9 +4171,10 @@ function WatchlistView(_ref8) {
             React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
               React.createElement("span", { className: "prefix" }, popupCcy === 'ZAR' ? 'R' : '$'),
               React.createElement("input", {
-                type: "number", inputMode: "decimal", step: "0.01",
+                type: "text", inputMode: "decimal",
+                autoComplete: "off", autoCorrect: "off", spellCheck: false,
                 placeholder: "Target price", value: alertTarget,
-                onChange: e => setAlertTarget(e.target.value),
+                onChange: e => setAlertTarget(sanitizeDecimalInput(e.target.value)),
                 className: "alert-target-input"
               }))),
           React.createElement("input", {
@@ -3762,7 +4187,7 @@ function WatchlistView(_ref8) {
             onClick: submitAlertPopup
           }, React.createElement(Icon, { name: "plus" }),
             " Alert when ", alertDir === 'above' ? 'above ' : 'below ',
-            alertTarget && isFinite(parseFloat(alertTarget)) ? (popupCcy === 'ZAR' ? 'R' : '$') + parseFloat(alertTarget).toFixed(2) : 'target')))),
+            alertTarget && isFinite(parseDecimal(alertTarget)) ? (popupCcy === 'ZAR' ? 'R' : '$') + parseDecimal(alertTarget).toFixed(2) : 'target')))),
 
     React.createElement("div", { className: "eyebrow suggestions-head" },
       React.createElement("span", null, "Suggested for you"),
@@ -3771,14 +4196,20 @@ function WatchlistView(_ref8) {
         onClick: () => setShowSuggestions(v => !v),
         'aria-label': showSuggestions ? "Hide suggestions" : "Show suggestions"
       }, showSuggestions ? "Hide" : "Show")),
-    showSuggestions && (suggestions.length === 0
+    showSuggestions && (suggestions.length === 0 && justAdded.length === 0
       ? React.createElement("div", { className: "text-sm text-dim" }, "No more suggestions — you're tracking the popular names already.")
       : React.createElement("div", { className: "chip-row" },
+          justAdded.map(s => React.createElement("div", {
+            key: 'added:' + priceKey(s.market, s.ticker),
+            className: "chip added"
+          }, React.createElement(Icon, { name: "checkCircle", size: 13 }),
+             " ", s.ticker, React.createElement("span", { className: "chip-sub" }, "Added to watchlist"))),
           suggestions.map(s => React.createElement("button", {
             key: priceKey(s.market, s.ticker),
             className: "chip",
-            onClick: () => onAdd(s.ticker, s.market, s.name)
-          }, s.ticker, React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market)))))
+            onClick: () => addSuggestion(s)
+          }, React.createElement(Icon, { name: "plus", size: 12, className: "chip-plus" }),
+             " ", s.ticker, React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market)))))
   );
 }
 
@@ -3866,20 +4297,27 @@ function buildSectorHierarchy(rows) {
   // rows: [{ticker, sector, industry, value, changePct, market}]
   const sectors = {};
   for (const r of rows) {
-    if (!sectors[r.sector]) sectors[r.sector] = { name: r.sector, value: 0, weightedChg: 0, industries: {} };
-    if (!sectors[r.sector].industries[r.industry]) sectors[r.sector].industries[r.industry] = { name: r.industry, value: 0, weightedChg: 0, tickers: [] };
+    const chg = (typeof r.changePct === 'number' && isFinite(r.changePct)) ? r.changePct : null;
+    if (!sectors[r.sector]) sectors[r.sector] = { name: r.sector, value: 0, weightedChg: 0, chgValue: 0, industries: {} };
+    if (!sectors[r.sector].industries[r.industry]) sectors[r.sector].industries[r.industry] = { name: r.industry, value: 0, weightedChg: 0, chgValue: 0, tickers: [] };
     sectors[r.sector].value += r.value;
-    sectors[r.sector].weightedChg += r.changePct * r.value;
     sectors[r.sector].industries[r.industry].value += r.value;
-    sectors[r.sector].industries[r.industry].weightedChg += r.changePct * r.value;
+    if (chg != null) {
+      // Only rows with a live quote contribute to the weighted average, so the
+      // header figure stays accurate while a heatmap is still streaming in.
+      sectors[r.sector].weightedChg += chg * r.value;
+      sectors[r.sector].chgValue += r.value;
+      sectors[r.sector].industries[r.industry].weightedChg += chg * r.value;
+      sectors[r.sector].industries[r.industry].chgValue += r.value;
+    }
     sectors[r.sector].industries[r.industry].tickers.push(r);
   }
   const sectorList = Object.values(sectors).map(s => {
     const industries = Object.values(s.industries).map(ind => ({
       name: ind.name, value: ind.value, tickers: ind.tickers,
-      avgChange: ind.value > 0 ? ind.weightedChg / ind.value : 0
+      avgChange: ind.chgValue > 0 ? ind.weightedChg / ind.chgValue : 0
     }));
-    return { name: s.name, value: s.value, industries, avgChange: s.value > 0 ? s.weightedChg / s.value : 0 };
+    return { name: s.name, value: s.value, industries, avgChange: s.chgValue > 0 ? s.weightedChg / s.chgValue : 0 };
   });
   return sectorList;
 }
@@ -3931,7 +4369,7 @@ function useContainerWidth() {
   return [ref, width];
 }
 function HeatmapTreemap(_ref8c) {
-  let { rows, aspectRatio, minHeight, onOpenDetail } = _ref8c;
+  let { rows, aspectRatio, minHeight, onOpenDetail, loading } = _ref8c;
   const [containerRef, width] = useContainerWidth();
   const sectors = useMemo(() => buildSectorHierarchy(rows), [rows]);
   const height = width > 0 ? Math.max(minHeight || 360, width * (aspectRatio || 0.7)) : (minHeight || 360);
@@ -3952,21 +4390,30 @@ function HeatmapTreemap(_ref8c) {
         );
       }
       const t = cell.ref;
-      const c = heatColor(t.changePct);
-      const showPct = cell.w >= 38 && cell.h >= 28;
-      const showTkr = cell.w >= 22 && cell.h >= 16;
-      const tkrSize = Math.max(9, Math.min(20, Math.sqrt(cell.w * cell.h) / 6));
+      const hasData = t.changePct != null && isFinite(t.changePct);
+      const c = heatColor(hasData ? t.changePct : null);
+      // Inset each tile so neighbours are separated by a clean gutter (the dark
+      // container shows through), giving the grid breathing room instead of the
+      // cramped hairline-border look. Smaller gap on very small cells.
+      const GAP = cell.w < 26 || cell.h < 20 ? 1.5 : 2.5;
+      const iw = Math.max(0, cell.w - GAP * 2);
+      const ih = Math.max(0, cell.h - GAP * 2);
+      const showPct = hasData && iw >= 38 && ih >= 30;
+      const showTkr = iw >= 20 && ih >= 15;
+      const tkrSize = Math.max(9, Math.min(20, Math.sqrt(iw * ih) / 6));
       const pctSize = Math.max(8, tkrSize - 4);
+      const radius = Math.min(6, iw / 4, ih / 4);
       return React.createElement("button", {
         key: 't:' + priceKey(t.market, t.ticker),
-        className: 'tm-cell',
+        className: 'tm-cell' + (hasData ? '' : (loading ? ' loading' : ' nodata')),
         style: {
-          left: cell.x + 'px', top: cell.y + 'px',
-          width: cell.w + 'px', height: cell.h + 'px',
+          left: (cell.x + GAP) + 'px', top: (cell.y + GAP) + 'px',
+          width: iw + 'px', height: ih + 'px',
+          borderRadius: radius + 'px',
           background: c.bg, color: c.fg
         },
         onClick: () => onOpenDetail && onOpenDetail(t.ticker, t.market),
-        title: `${t.ticker} ${t.changePct >= 0 ? '+' : ''}${t.changePct.toFixed(2)}%`
+        title: hasData ? `${t.ticker} ${t.changePct >= 0 ? '+' : ''}${t.changePct.toFixed(2)}%` : t.ticker
       },
         showTkr ? React.createElement("span", { className: 'tm-cell-tkr', style: { fontSize: tkrSize + 'px' } }, t.ticker) : null,
         showPct ? React.createElement("span", { className: 'tm-cell-pct', style: { fontSize: pctSize + 'px' } },
@@ -3983,32 +4430,55 @@ function HeatmapView(_ref8b) {
   const [selectedId, setSelectedId] = usePersistedState('pb.heatmap.exchange.v1', exchanges[0].id);
   const [portfolioFilter, setPortfolioFilter] = usePersistedState('pb.heatmap.pf.v1', 'all');
   const exchange = exchanges.find(e => e.id === selectedId) || exchanges[0];
-  const [cache, setCache] = useState({});
+  // Last-good rows are persisted per exchange so reopening the tab paints the
+  // previous heatmap instantly while a fresh fetch runs in the background.
+  const [persisted, setPersisted] = usePersistedState('pb.heatmap.lastgood.v1', {});
+  const [cache, setCache] = useState(() => ({ ...persisted }));
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
-  const [lastUpdate, setLastUpdate] = useState(null);
+  const [lastUpdate, setLastUpdate] = useState(() => persisted[exchanges[0].id]?.fetchedAt ? new Date(persisted[exchanges[0].id].fetchedAt) : null);
   const cacheKey = exchange.id;
   const cached = cache[cacheKey];
   const loadRef = useRef(false);
+  const mkSkeleton = (c) => ({ ticker: c.t, market: exchange.market, sector: c.s, industry: c.i, value: c.m, price: null, changePct: null });
   const load = useCallback(async (force) => {
     if (loadRef.current) return;
-    if (!force && cache[cacheKey] && Date.now() - cache[cacheKey].fetchedAt < 300_000) return;
+    const existing = cache[cacheKey];
+    if (!force && existing && existing.fetchedAt && Date.now() - existing.fetchedAt < 300_000) return;
     loadRef.current = true;
     setLoading(true);
     setError(null);
-    setProgress({ done: 0, total: exchange.constituents.length });
+    const constituents = exchange.constituents;
+    setProgress({ done: 0, total: constituents.length });
+    // Paint the full grid immediately — its layout is driven by market cap
+    // (known up-front), so structure is stable and only colour fills in as
+    // quotes arrive. On a refresh we keep the previous (stale) colours visible
+    // and overwrite them per batch, so cells never flash back to grey.
+    const prevMap = {};
+    if (existing && existing.rows) existing.rows.forEach(r => { if (r.changePct != null) prevMap[priceKey(r.market, r.ticker)] = r; });
+    const buildRows = (quotes) => constituents.map(c => {
+      const key = priceKey(exchange.market, c.t);
+      const q = quotes[key];
+      if (q) return { ticker: c.t, market: exchange.market, sector: c.s, industry: c.i, value: c.m, price: q.price, changePct: q.changePct };
+      const prev = prevMap[key];
+      return prev || mkSkeleton(c);
+    });
+    setCache(prev => ({ ...prev, [cacheKey]: { rows: buildRows({}), fetchedAt: 0 } }));
     try {
-      const items = exchange.constituents.map(c => ({ ticker: c.t, market: exchange.market }));
-      const quotes = await fetchQuoteBatchLight(items, (done, total) => setProgress({ done, total }));
-      const rows = exchange.constituents.map(c => {
-        const q = quotes[priceKey(exchange.market, c.t)];
-        return q ? { ticker: c.t, market: exchange.market, sector: c.s, industry: c.i, value: c.m, price: q.price, changePct: q.changePct } : null;
-      }).filter(r => r && r.changePct != null);
-      if (rows.length === 0) {
+      const items = constituents.map(c => ({ ticker: c.t, market: exchange.market }));
+      const quotes = await fetchQuoteBatchLight(items, (done, total, partial) => {
+        setProgress({ done, total });
+        if (partial) setCache(prev => ({ ...prev, [cacheKey]: { rows: buildRows(partial), fetchedAt: 0 } }));
+      });
+      const rows = buildRows(quotes);
+      if (rows.filter(r => r.changePct != null).length === 0) {
         setError('No live data returned. Try again shortly.');
+        setCache(prev => { const n = { ...prev }; delete n[cacheKey]; return n; });
       } else {
-        setCache(prev => ({ ...prev, [cacheKey]: { rows, fetchedAt: Date.now() } }));
+        const entry = { rows, fetchedAt: Date.now() };
+        setCache(prev => ({ ...prev, [cacheKey]: entry }));
+        setPersisted(prev => ({ ...prev, [cacheKey]: entry }));
         setLastUpdate(new Date());
       }
     } catch (e) {
@@ -4018,9 +4488,13 @@ function HeatmapView(_ref8b) {
       setLoading(false);
       setProgress(null);
     }
-  }, [cacheKey, exchange, cache]);
+  }, [cacheKey, exchange, cache, setPersisted]);
   useEffect(() => {
-    if (mode === 'market') load(false);
+    if (mode === 'market') {
+      const e = cache[cacheKey];
+      if (e && e.fetchedAt) setLastUpdate(new Date(e.fetchedAt));
+      load(false);
+    }
   }, [cacheKey, mode]);
   const portfolioMarkets = useMemo(() => {
     const mkts = new Set();
@@ -4041,12 +4515,14 @@ function HeatmapView(_ref8b) {
   const activeRows = mode === 'market' ? (cached ? cached.rows : []) : portfolioRows;
   const stats = useMemo(() => {
     if (!activeRows || activeRows.length === 0) return null;
-    const up = activeRows.filter(r => r.changePct > 0).length;
-    const down = activeRows.filter(r => r.changePct < 0).length;
-    const flat = activeRows.length - up - down;
-    const totalVal = activeRows.reduce((s, r) => s + r.value, 0);
-    const wAvg = totalVal > 0 ? activeRows.reduce((s, r) => s + r.changePct * r.value, 0) / totalVal : 0;
-    return { up, down, flat, avg: wAvg, total: activeRows.length };
+    const dataRows = activeRows.filter(r => r.changePct != null && isFinite(r.changePct));
+    if (dataRows.length === 0) return null;
+    const up = dataRows.filter(r => r.changePct > 0).length;
+    const down = dataRows.filter(r => r.changePct < 0).length;
+    const flat = dataRows.length - up - down;
+    const totalVal = dataRows.reduce((s, r) => s + r.value, 0);
+    const wAvg = totalVal > 0 ? dataRows.reduce((s, r) => s + r.changePct * r.value, 0) / totalVal : 0;
+    return { up, down, flat, avg: wAvg, total: dataRows.length };
   }, [activeRows]);
   const aspectRatio = mode === 'market' ? 0.62 : 0.5;
   const minHeight = mode === 'market' ? 480 : 360;
@@ -4114,7 +4590,8 @@ function HeatmapView(_ref8b) {
       rows: activeRows,
       aspectRatio: aspectRatio,
       minHeight: minHeight,
-      onOpenDetail: onOpenDetail
+      onOpenDetail: onOpenDetail,
+      loading: loading
     }) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null)
   );
 }
@@ -4703,7 +5180,7 @@ function DetailModal(_ref10) {
     if (onLoadHistory) onLoadHistory(range);
   }, [range]);
   const submitAlert = () => {
-    const t = parseFloat(target);
+    const t = parseDecimal(target);
     if (!isFinite(t) || t <= 0) return;
     onAddAlert(ticker, market, dir, t, note);
     setNote('');
@@ -4835,9 +5312,10 @@ function DetailModal(_ref10) {
           React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
             React.createElement("span", { className: "prefix" }, ccy === 'ZAR' ? 'R' : '$'),
             React.createElement("input", {
-              type: "number", inputMode: "decimal", step: "0.01",
+              type: "text", inputMode: "decimal",
+              autoComplete: "off", autoCorrect: "off", spellCheck: false,
               placeholder: "Target price", value: target,
-              onChange: e => setTarget(e.target.value),
+              onChange: e => setTarget(sanitizeDecimalInput(e.target.value)),
               className: "alert-target-input"
             })
           )
@@ -4852,7 +5330,7 @@ function DetailModal(_ref10) {
           onClick: submitAlert
         }, React.createElement(Icon, { name: "plus" }),
           " Alert when ", dir === 'above' ? 'above ' : 'below ',
-          target && isFinite(parseFloat(target)) ? (ccy === 'ZAR' ? 'R' : '$') + parseFloat(target).toFixed(2) : 'target')
+          target && isFinite(parseDecimal(target)) ? (ccy === 'ZAR' ? 'R' : '$') + parseDecimal(target).toFixed(2) : 'target')
       )
     ),
 
@@ -5090,7 +5568,7 @@ function ContributionModal({ onClose, onSave }) {
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   const submit = () => {
-    const a = parseFloat(amount);
+    const a = parseDecimal(amount);
     if (!isFinite(a) || a <= 0) return;
     onSave(a, currency, date, note);
   };
@@ -5124,9 +5602,10 @@ function ContributionModal({ onClose, onSave }) {
           React.createElement("div", { className: "input-prefix-wrap" },
             React.createElement("span", { className: "prefix" }, ccy),
             React.createElement("input", {
-              type: "number", inputMode: "decimal", step: "0.01", min: "0",
+              type: "text", inputMode: "decimal",
+              autoComplete: "off", autoCorrect: "off", spellCheck: false,
               placeholder: "0.00", value: amount,
-              onChange: e => setAmount(e.target.value),
+              onChange: e => setAmount(sanitizeDecimalInput(e.target.value)),
               autoFocus: true,
               onKeyDown: e => { if (e.key === 'Enter') submit(); }
             })
@@ -5151,6 +5630,246 @@ function ContributionModal({ onClose, onSave }) {
     )
   );
 }
+function ImportModal({ onClose, onImport }) {
+  const [stage, setStage] = useState('input'); // 'input' | 'review'
+  const [rows, setRows] = useState([]);
+  const [parsing, setParsing] = useState(false);
+  const [parseError, setParseError] = useState('');
+  const [pasteText, setPasteText] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef(null);
+  const panelRef = useRef(null);
+  useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
+
+  const toRows = (holdings) => holdings.map(h => ({
+    id: uid(),
+    ticker: h.ticker || '',
+    market: h.market || 'US',
+    shares: h.shares != null ? String(h.shares) : '',
+    costBasis: h.costBasis != null ? String(h.costBasis) : '',
+    purchaseDate: h.purchaseDate || '',
+    name: h.name || '',
+    resolvedName: h.name || '',
+    status: null,        // null | 'checking' | 'ok' | 'notfound'
+    currentPrice: null,
+    include: true,
+  }));
+
+  const handleParsed = (holdings) => {
+    if (!holdings || holdings.length === 0) {
+      setParseError("Couldn't find any holdings. Make sure your file has a ticker/symbol column with quantities — or paste rows like \"AAPL, 10, 150.25\".");
+      return;
+    }
+    const r = toRows(holdings);
+    setRows(r);
+    setStage('review');
+    setParseError('');
+    verifyRows(r);
+  };
+
+  const handleFiles = async (files) => {
+    const file = files && files[0];
+    if (!file) return;
+    setParsing(true); setParseError('');
+    try {
+      const holdings = await parseImportFile(file);
+      handleParsed(holdings);
+    } catch (e) {
+      setParseError(e?.message || 'Could not read that file. Try CSV, XLSX, or paste the rows instead.');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const handlePaste = () => {
+    if (!pasteText.trim()) return;
+    setParsing(true); setParseError('');
+    try {
+      handleParsed(parseHoldingsFromText(pasteText));
+    } catch (e) {
+      setParseError('Could not parse that text.');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  // Validate tickers against live quotes — resolves real names + current price,
+  // and flags symbols that don't exist on the chosen market so the user can fix
+  // the market before importing. Concurrency-limited to stay friendly to proxies.
+  const verifyRows = async (list) => {
+    setVerifying(true);
+    setRows(prev => prev.map(x => list.some(l => l.id === x.id) ? { ...x, status: 'checking' } : x));
+    let i = 0;
+    const worker = async () => {
+      while (i < list.length) {
+        const r = list[i++];
+        if (!r.ticker.trim()) { setRows(prev => prev.map(x => x.id === r.id ? { ...x, status: 'notfound' } : x)); continue; }
+        const q = await fetchQuote(r.ticker.trim(), r.market).catch(() => null);
+        setRows(prev => prev.map(x => x.id === r.id ? {
+          ...x,
+          status: q ? 'ok' : 'notfound',
+          currentPrice: q ? q.price : null,
+          resolvedName: q ? (resolveTickerName(r.ticker.trim().toUpperCase(), r.market, q) || x.name) : x.name,
+        } : x));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, list.length) }, worker));
+    setVerifying(false);
+  };
+
+  const updateRow = (id, patch) => setRows(prev => prev.map(r => {
+    if (r.id !== id) return r;
+    const next = { ...r, ...patch };
+    // Editing the symbol or market invalidates a prior verification.
+    if (('ticker' in patch || 'market' in patch)) { next.status = null; next.currentPrice = null; }
+    return next;
+  }));
+  const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
+
+  const validRows = rows.filter(r => r.include && r.ticker.trim() &&
+    isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0 &&
+    isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
+  const notFoundCount = rows.filter(r => r.include && r.status === 'notfound').length;
+
+  const doImport = async () => {
+    if (validRows.length === 0) return;
+    setImporting(true);
+    try {
+      await onImport(validRows.map(r => ({
+        ticker: r.ticker.trim().toUpperCase(),
+        market: r.market,
+        shares: parseDecimal(r.shares),
+        costBasis: parseDecimal(r.costBasis),
+        purchaseDate: r.purchaseDate || null,
+        notes: '',
+      })));
+      onClose();
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const renderInput = () => React.createElement("div", { className: "modal-body" },
+    React.createElement("div", {
+      className: "import-drop" + (dragOver ? " over" : ""),
+      onDragOver: e => { e.preventDefault(); setDragOver(true); },
+      onDragLeave: () => setDragOver(false),
+      onDrop: e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); },
+      onClick: () => fileRef.current?.click()
+    },
+      React.createElement(Icon, { name: parsing ? "refresh" : "download", size: 26, className: parsing ? "spin" : "" }),
+      React.createElement("div", { className: "import-drop-title" }, parsing ? "Reading your file…" : "Drop a file or tap to browse"),
+      React.createElement("div", { className: "import-drop-sub" }, "CSV · Excel (.xlsx) · PDF · Markdown · plain text"),
+      React.createElement("input", {
+        ref: fileRef, type: "file", accept: ".csv,.tsv,.txt,.md,.xls,.xlsx,.pdf,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf",
+        style: { display: 'none' },
+        onChange: e => handleFiles(e.target.files)
+      })
+    ),
+    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste your holdings")),
+    React.createElement("textarea", {
+      className: "import-paste",
+      placeholder: "Paste rows from a spreadsheet or broker statement, e.g.\n\nTicker, Shares, Cost\nAAPL, 10, 150.25\nMSFT, 5, 310.00\nAGL.JO, 100, 320.50",
+      value: pasteText,
+      onChange: e => setPasteText(e.target.value),
+      rows: 6
+    }),
+    parseError ? React.createElement("div", { className: "verify-error", style: { marginTop: 10 } }, parseError) : null,
+    React.createElement("div", { className: "form-actions", style: { marginTop: 14 } },
+      React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
+      React.createElement("button", {
+        className: "btn btn-primary",
+        onClick: handlePaste,
+        disabled: !pasteText.trim() || parsing
+      }, "Parse holdings")
+    )
+  );
+
+  const statusDot = (r) => {
+    if (r.status === 'checking') return React.createElement("span", { className: "import-status checking", title: "Checking…" });
+    if (r.status === 'ok') return React.createElement("span", { className: "import-status ok", title: r.currentPrice != null ? ("Verified · now " + fmt(r.currentPrice, r.market)) : "Verified" });
+    if (r.status === 'notfound') return React.createElement("span", { className: "import-status bad", title: "Not found on this market — check symbol/market" });
+    return React.createElement("span", { className: "import-status", title: "Not checked" });
+  };
+
+  const renderReview = () => React.createElement("div", { className: "modal-body" },
+    React.createElement("div", { className: "import-review-head" },
+      React.createElement("span", null, validRows.length, " of ", rows.length, " ready"),
+      notFoundCount > 0 ? React.createElement("span", { className: "text-down text-xs" }, notFoundCount, " need a fix") : null,
+      verifying ? React.createElement("span", { className: "text-dim text-xs" }, "Verifying…") : React.createElement("button", {
+        className: "btn btn-ghost btn-xs", onClick: () => verifyRows(rows.filter(r => r.include))
+      }, React.createElement(Icon, { name: "refresh", size: 12 }), " Re-check")
+    ),
+    React.createElement("div", { className: "import-table" },
+      React.createElement("div", { className: "import-row import-row-head" },
+        React.createElement("span", null, ""),
+        React.createElement("span", null, "Ticker"),
+        React.createElement("span", null, "Market"),
+        React.createElement("span", null, "Shares"),
+        React.createElement("span", null, "Cost/share"),
+        React.createElement("span", null, "")
+      ),
+      rows.map(r => {
+        const sharesBad = !(isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0);
+        const costBad = !(isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
+        return React.createElement("div", { key: r.id, className: "import-row" + (r.include ? "" : " excluded") },
+          React.createElement("label", { className: "import-check" },
+            React.createElement("input", { type: "checkbox", checked: r.include, onChange: e => updateRow(r.id, { include: e.target.checked }) })
+          ),
+          React.createElement("div", { className: "import-tkr-cell" },
+            statusDot(r),
+            React.createElement("input", {
+              className: "import-input import-input-tkr" + (!r.ticker.trim() ? " bad" : ""),
+              value: r.ticker, autoCapitalize: "characters", autoComplete: "off", spellCheck: false,
+              onChange: e => updateRow(r.id, { ticker: e.target.value.toUpperCase() })
+            }),
+            r.resolvedName ? React.createElement("span", { className: "import-name" }, r.resolvedName) : null
+          ),
+          React.createElement("select", {
+            className: "import-input import-select", value: r.market,
+            onChange: e => updateRow(r.id, { market: e.target.value })
+          }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value }, m.label))),
+          React.createElement("input", {
+            className: "import-input" + (sharesBad ? " bad" : ""),
+            inputMode: "decimal", value: r.shares, placeholder: "0",
+            onChange: e => updateRow(r.id, { shares: sanitizeDecimalInput(e.target.value) })
+          }),
+          React.createElement("input", {
+            className: "import-input" + (costBad ? " bad" : ""),
+            inputMode: "decimal", value: r.costBasis, placeholder: "0.00",
+            onChange: e => updateRow(r.id, { costBasis: sanitizeDecimalInput(e.target.value) })
+          }),
+          React.createElement("button", { className: "import-del", onClick: () => removeRow(r.id), "aria-label": "Remove row" },
+            React.createElement(Icon, { name: "x", size: 13 }))
+        );
+      })
+    ),
+    React.createElement("div", { className: "form-actions", style: { marginTop: 14 } },
+      React.createElement("button", { className: "btn btn-secondary", onClick: () => { setStage('input'); setRows([]); } }, "Back"),
+      React.createElement("button", {
+        className: "btn btn-primary", onClick: doImport,
+        disabled: validRows.length === 0 || importing
+      }, importing ? "Importing…" : "Import " + validRows.length + " holding" + (validRows.length !== 1 ? "s" : ""))
+    )
+  );
+
+  return React.createElement("div", { className: "modal" },
+    React.createElement("div", { className: "modal-backdrop", onClick: stage === 'input' ? onClose : undefined }),
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 620 } },
+      React.createElement("div", { className: "modal-handle" }),
+      React.createElement("div", { className: "modal-header" },
+        React.createElement("div", null,
+          React.createElement("div", { className: "modal-title" }, "Import holdings"),
+          React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "From CSV, Excel, PDF or pasted text" : "Review and confirm before importing")
+        ),
+        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))
+      ),
+      stage === 'input' ? renderInput() : renderReview()
+    )
+  );
+}
 function PositionModal(_ref12) {
   let {
     editId,
@@ -5172,8 +5891,8 @@ function PositionModal(_ref12) {
   useSwipeDownToClose(panelRef, onClose);
   const submit = async () => {
     if (!ticker.trim()) return;
-    const s = parseFloat(shares);
-    const c = parseFloat(costBasis);
+    const s = parseDecimal(shares);
+    const c = parseDecimal(costBasis);
     if (!isFinite(s) || s <= 0) return;
     if (!isFinite(c) || c <= 0) return;
     if (purchaseDate && purchaseDate > todayISO) {
@@ -5247,13 +5966,14 @@ function PositionModal(_ref12) {
   }, React.createElement("label", {
     className: "form-label"
   }, "Shares"), React.createElement("input", {
-    type: "number",
+    type: "text",
     inputMode: "decimal",
-    step: "0.0001",
-    min: "0",
+    autoComplete: "off",
+    autoCorrect: "off",
+    spellCheck: false,
     placeholder: "10",
     value: shares,
-    onChange: e => setShares(e.target.value)
+    onChange: e => setShares(sanitizeDecimalInput(e.target.value))
   })), React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {
@@ -5263,13 +5983,14 @@ function PositionModal(_ref12) {
   }, React.createElement("span", {
     className: "prefix"
   }, ccy), React.createElement("input", {
-    type: "number",
+    type: "text",
     inputMode: "decimal",
-    step: "0.01",
-    min: "0",
+    autoComplete: "off",
+    autoCorrect: "off",
+    spellCheck: false,
     placeholder: "0.00",
     value: costBasis,
-    onChange: e => setCostBasis(e.target.value)
+    onChange: e => setCostBasis(sanitizeDecimalInput(e.target.value))
   })), React.createElement("div", {
     className: "form-help"
   }, "What you paid per share (your average if you bought in tranches).")), React.createElement("div", {
@@ -5316,8 +6037,8 @@ function SellModal({ position, prices, onClose, onSell }) {
     if (q && !sellPrice) setSellPrice(q.price.toFixed(2));
   }, [q]);
   const ccy = (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
-  const numShares = parseFloat(shares);
-  const numPrice = parseFloat(sellPrice);
+  const numShares = parseDecimal(shares);
+  const numPrice = parseDecimal(sellPrice);
   const valid = isFinite(numShares) && numShares > 0 && numShares <= position.shares && isFinite(numPrice) && numPrice > 0;
   const pnl = valid ? (numPrice - position.costBasis) * numShares : null;
   const submit = () => {
@@ -5340,10 +6061,10 @@ function SellModal({ position, prices, onClose, onSell }) {
         React.createElement("div", { className: "form-group" },
           React.createElement("label", { className: "form-label" }, "Shares to sell"),
           React.createElement("input", {
-            type: "number", inputMode: "decimal", step: "0.0001",
-            min: "0", max: position.shares.toString(),
+            type: "text", inputMode: "decimal",
+            autoComplete: "off", autoCorrect: "off", spellCheck: false,
             placeholder: position.shares.toString(),
-            value: shares, onChange: e => setShares(e.target.value)
+            value: shares, onChange: e => setShares(sanitizeDecimalInput(e.target.value))
           }),
           React.createElement("div", { className: "form-help" },
             "Max: ", position.shares,
@@ -5353,9 +6074,10 @@ function SellModal({ position, prices, onClose, onSell }) {
           React.createElement("div", { className: "input-prefix-wrap" },
             React.createElement("span", { className: "prefix" }, ccy),
             React.createElement("input", {
-              type: "number", inputMode: "decimal", step: "0.01", min: "0",
+              type: "text", inputMode: "decimal",
+              autoComplete: "off", autoCorrect: "off", spellCheck: false,
               placeholder: q ? q.price.toFixed(2) : '0.00',
-              value: sellPrice, onChange: e => setSellPrice(e.target.value)
+              value: sellPrice, onChange: e => setSellPrice(sanitizeDecimalInput(e.target.value))
             }))),
         React.createElement("div", { className: "form-group" },
           React.createElement("label", { className: "form-label" }, "Sale date"),
