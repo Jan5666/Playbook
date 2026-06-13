@@ -1301,6 +1301,24 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   font-size: 10px; color: var(--text-dim);
   font-family: var(--mono); margin-top: 1px;
 }
+/* Market-open divider tag on the 1D chart (HTML overlay so it isn't distorted
+   by the chart's preserveAspectRatio:none stretching). */
+.chart-open-tag {
+  position: absolute; top: 2px; transform: translateX(-50%);
+  font-family: var(--mono); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em;
+  color: #cbd5e1; background: color-mix(in srgb, #94a3b8 22%, var(--bg));
+  border: 1px solid color-mix(in srgb, #94a3b8 40%, transparent);
+  border-radius: 4px; padding: 1px 5px; pointer-events: none; z-index: 2;
+  white-space: nowrap;
+}
+.chart-session-legend {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-top: 8px; font-size: 10.5px; color: var(--text-muted);
+}
+.chart-session-item { display: inline-flex; align-items: center; gap: 5px; }
+.chart-session-swatch { width: 14px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
+.chart-session-swatch.pre { border-top-style: dashed; border-top-color: #94a3b8; }
+.chart-session-swatch.reg { border-top-color: var(--emerald); }
 .chart-summary {
   display: flex; justify-content: space-between; align-items: center;
   margin-top: 10px; flex-wrap: wrap; gap: 8px;
@@ -1322,6 +1340,23 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   height: 160px; display: flex; align-items: center; justify-content: center;
   color: var(--text-dim); font-size: 12px; font-family: var(--mono);
 }
+.chart-skeleton {
+  position: relative; height: 180px; border-radius: 10px; overflow: hidden;
+  background: var(--bg-raised);
+}
+.chart-skeleton-line {
+  position: absolute; inset: 0; opacity: 0.55;
+  background-image: repeating-linear-gradient(0deg, transparent 0, transparent 35px, var(--border) 35px, var(--border) 36px);
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 12%, #000 88%, transparent);
+          mask-image: linear-gradient(180deg, transparent, #000 12%, #000 88%, transparent);
+}
+.chart-skeleton-shimmer {
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--text) 8%, transparent) 50%, transparent 70%);
+  background-size: 220% 100%;
+  animation: chart-shimmer 1.25s ease-in-out infinite;
+}
+@keyframes chart-shimmer { from { background-position: 220% 0; } to { background-position: -220% 0; } }
 
 /* ATH badge (watchlist) */
 .ath-badge {
@@ -2252,6 +2287,14 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .import-card { border: 1px solid var(--border); border-radius: 12px; padding: 9px 11px; display: flex; flex-direction: column; gap: 8px; background: var(--bg); }
 .import-card.excluded { opacity: 0.45; }
 .import-card.is-bad { border-color: color-mix(in srgb, var(--rose) 45%, var(--border)); }
+.import-card.is-low { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.import-conf-low {
+  flex: 0 0 auto; font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  border-radius: 4px; padding: 1px 5px;
+}
 .import-card-top { display: flex; align-items: center; gap: 8px; }
 .import-query-input {
   flex: 1; min-width: 0; padding: 7px 9px; border-radius: 8px;

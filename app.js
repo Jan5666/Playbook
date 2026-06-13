@@ -39,6 +39,53 @@ function usePersistedState(key, defaultValue) {
   }, [key, value]);
   return [value, setValue];
 }
+// ─────────────────────────────────────────────────────────────────────────
+// Body scroll lock. When a modal/overlay opens we pin the page with
+// position:fixed (the only reliable lock on iOS) and restore the exact scroll
+// offset on close. This is what kills the "whole app jumps" glitch when a
+// stock card closes: the background never scrolls behind the sheet, and we
+// scroll back to the precise pixel afterwards. Reference-counted so stacked
+// overlays (sector popup over fullscreen heatmap) don't fight each other, and
+// scrollbar-width is compensated so desktop doesn't shift horizontally.
+let _scrollLockCount = 0;
+let _savedScrollY = 0;
+function lockBodyScroll() {
+  if (_scrollLockCount === 0 && typeof document !== 'undefined') {
+    _savedScrollY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0;
+    const sbw = window.innerWidth - document.documentElement.clientWidth;
+    const b = document.body;
+    b.style.position = 'fixed';
+    b.style.top = `-${_savedScrollY}px`;
+    b.style.left = '0';
+    b.style.right = '0';
+    b.style.width = '100%';
+    if (sbw > 0) b.style.paddingRight = `calc(var(--safe-right) + ${sbw}px)`;
+    b.classList.add('pb-scroll-locked');
+  }
+  _scrollLockCount++;
+}
+function unlockBodyScroll() {
+  _scrollLockCount = Math.max(0, _scrollLockCount - 1);
+  if (_scrollLockCount === 0 && typeof document !== 'undefined') {
+    const b = document.body;
+    b.style.position = '';
+    b.style.top = '';
+    b.style.left = '';
+    b.style.right = '';
+    b.style.width = '';
+    b.style.paddingRight = '';
+    b.classList.remove('pb-scroll-locked');
+    // Restore scroll without smooth behaviour so it's a single instant frame.
+    window.scrollTo(0, _savedScrollY);
+  }
+}
+function useBodyScrollLock(active = true) {
+  useEffect(() => {
+    if (active === false) return undefined;
+    lockBodyScroll();
+    return unlockBodyScroll;
+  }, [active]);
+}
 // Calls `refresh` immediately, then on an interval, and on tab-visible if
 // the cached data is older than `staleMs`. The callback is held in a ref so
 // effect deps don't churn when refresh closes over fresh state — this avoids
@@ -729,25 +776,40 @@ function parseHistoryResult(result, ticker, market, r) {
   const ts = result.timestamp;
   const closes = result?.indicators?.quote?.[0]?.close;
   if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
-  const currency = result.meta?.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+  const meta = result.meta || {};
+  const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
   const divisor = centDivisor(market, currency);
   // Cache the company name off the chart meta while we have it — chart history
   // is often the first call to land for a stock opened from the heatmap.
-  cacheName(market, ticker, result.meta?.shortName || result.meta?.longName);
+  cacheName(market, ticker, meta.shortName || meta.longName);
+  // Regular-session window (epoch ms). Only meaningful on the intraday (1d)
+  // chart, where we classify each bar as pre-market / regular / after-hours so
+  // the UI can shade the extended-hours portion distinctly.
+  const ctp = meta.currentTradingPeriod || {};
+  const regularStart = r === '1d' && ctp.regular?.start ? ctp.regular.start * 1000 : null;
+  const regularEnd = r === '1d' && ctp.regular?.end ? ctp.regular.end * 1000 : null;
   const points = [];
   for (let i = 0; i < ts.length; i++) {
     const c = closes[i];
     if (c == null || !isFinite(c)) continue;
-    points.push({ t: ts[i] * 1000, p: c / divisor });
+    const tms = ts[i] * 1000;
+    let session = 'regular';
+    if (r === '1d' && regularStart != null && regularEnd != null) {
+      if (tms < regularStart) session = 'pre';
+      else if (tms > regularEnd) session = 'post';
+    }
+    points.push({ t: tms, p: c / divisor, session });
   }
   if (points.length < 2) return null;
-  return { points, range: r, fetchedAt: Date.now() };
+  return { points, range: r, fetchedAt: Date.now(), regularStart, regularEnd };
 }
 async function fetchHistory(ticker, market, range) {
   const sym = yahooSymbol(ticker, market);
   const r = range || '1y';
   const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === '1y') ? '1d' : '1wk');
-  const includePrePost = r === '1d' || r === '5d' ? '&includePrePost=true' : '';
+  // Pre/post-market bars belong ONLY on the 1-day chart. Every other range
+  // shows actual regular-session trading only.
+  const includePrePost = r === '1d' ? '&includePrePost=true' : '';
   // Try both Yahoo hosts; proxy edges fail intermittently and one host often
   // works when the other 5xx's, so a single attempt left charts blank too often.
   const urls = [
@@ -1633,14 +1695,40 @@ const Icon = _ref => {
 // The loading guard uses a ref so the callback identity doesn't change on every
 // loading toggle — this prevents the stale-closure race where two concurrent
 // calls (visibility + interval) both read loading=false and double-fetch.
+const PRICES_LS_KEY = 'pb.prices.v1';
+const PRICES_MAX_AGE_MS = 3 * 24 * 3600 * 1000; // drop quotes older than 3 days
 function usePriceFeed(tickersToFetch, toast) {
-  const [prices, setPrices] = useState({});
+  // Rehydrate last-known prices instantly so the app paints real numbers on
+  // open instead of em-dashes — the single biggest "premium fintech" perception
+  // win. Stale entries (>3d) are dropped so we never show ancient data as live.
+  const [prices, setPrices] = useState(() => {
+    const saved = LS.get(PRICES_LS_KEY, null);
+    if (!saved || typeof saved !== 'object') return {};
+    const now = Date.now();
+    const fresh = {};
+    for (const k in saved) {
+      const q = saved[k];
+      if (q && typeof q.price === 'number' && (!q.fetchedAt || now - q.fetchedAt < PRICES_MAX_AGE_MS)) fresh[k] = q;
+    }
+    return fresh;
+  });
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
   const [lastUpdate, setLastUpdate] = useState(null);
-  // Number of consecutive refreshes where every ticker came back null. Used by
-  // the header dot so users see "all proxies down" instead of a silent freeze.
   const [failStreak, setFailStreak] = useState(0);
+  // Debounced persist so a burst of merges writes once.
+  const persistRef = useRef(null);
+  const persistPrices = useCallback((obj) => {
+    if (persistRef.current) clearTimeout(persistRef.current);
+    persistRef.current = setTimeout(() => LS.set(PRICES_LS_KEY, obj), 1200);
+  }, []);
+  // Merge externally-fetched quotes (e.g. a just-added holding) so the
+  // dashboard charts update the instant a position is created, without waiting
+  // for the next 90s poll to cycle through every ticker.
+  const mergePrices = useCallback((obj) => {
+    if (!obj || !Object.keys(obj).length) return;
+    setPrices(prev => { const next = { ...prev, ...obj }; persistPrices(next); return next; });
+  }, [persistPrices]);
   const refresh = useCallback(async () => {
     if (loadingRef.current) return;
     loadingRef.current = true;
@@ -1649,12 +1737,10 @@ function usePriceFeed(tickersToFetch, toast) {
       const newPrices = await fetchQuoteBatch(tickersToFetch);
       const gotAny = Object.keys(newPrices).length > 0;
       if (gotAny) {
-        setPrices(prev => ({ ...prev, ...newPrices }));
+        setPrices(prev => { const next = { ...prev, ...newPrices }; persistPrices(next); return next; });
         setLastUpdate(new Date());
         setFailStreak(0);
       } else if (tickersToFetch.length > 0) {
-        // Every proxy returned null — surface the failure once we've seen
-        // enough consecutive misses to rule out a transient hiccup.
         setFailStreak(prev => {
           const next = prev + 1;
           if (next === 2 && toast) toast('Price feed unreachable — using last known prices');
@@ -1668,9 +1754,9 @@ function usePriceFeed(tickersToFetch, toast) {
     }
     loadingRef.current = false;
     setLoading(false);
-  }, [tickersToFetch, toast]);
+  }, [tickersToFetch, toast, persistPrices]);
   usePolledRefresh(refresh, 90000, 60000, tickersToFetch);
-  return { prices, loading, lastUpdate, failStreak, refresh };
+  return { prices, loading, lastUpdate, failStreak, refresh, mergePrices };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
 // price/alert change. fireNotification is injected because its closure (toast,
@@ -2046,7 +2132,15 @@ function App() {
       };
     });
   }, [positions, watchlist, alerts, ribbonItems]);
-  const { prices, loading, lastUpdate, failStreak, refresh: refreshPrices } = usePriceFeed(tickersToFetch, toast);
+  const { prices, loading, lastUpdate, failStreak, refresh: refreshPrices, mergePrices } = usePriceFeed(tickersToFetch, toast);
+  // Fetch one symbol now and merge it so dashboard charts update immediately
+  // after a holding is added/imported, instead of waiting for the poll cycle.
+  const seedQuote = useCallback(async (ticker, market) => {
+    try {
+      const q = await fetchQuote(ticker, market);
+      if (q) mergePrices({ [priceKey(market, ticker)]: q });
+    } catch (_e) {}
+  }, [mergePrices]);
   const fireNotification = useCallback(async trig => {
     const sym = (trig.market === 'JSE' || trig.market === 'TFSA') ? 'R' : '$';
     const title = `${trig.ticker} ${trig.direction} ${sym}${trig.targetPrice.toFixed(2)}`;
@@ -2398,14 +2492,22 @@ function App() {
     editId: posModalEditId,
     existing: posModalEditId ? positions.find(p => p.id === posModalEditId) : null,
     onClose: () => setPosModalOpen(false),
-    onSave: data => {
+    onSave: (data, quote) => {
       if (posModalEditId) updatePosition(posModalEditId, data);
-      else addPosition(data.ticker, data.market, data.shares, data.costBasis, data.notes, data.purchaseDate);
+      else {
+        addPosition(data.ticker, data.market, data.shares, data.costBasis, data.notes, data.purchaseDate);
+        if (quote) mergePrices({ [priceKey(data.market, data.ticker)]: quote });
+        else seedQuote(data.ticker, data.market);
+      }
       setPosModalOpen(false);
     }
   }), showImport && React.createElement(ImportModal, {
     onClose: () => setShowImport(false),
-    onImport: importPositions
+    onImport: async (holdings) => {
+      await importPositions(holdings);
+      // Seed the imported symbols so the dashboard reflects them immediately.
+      holdings.forEach(h => seedQuote(h.ticker, h.market));
+    }
   }), sellModalPos && React.createElement(SellModal, {
     position: sellModalPos,
     prices: prices,
@@ -2874,6 +2976,8 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     '#f97316', '#6366f1', '#14b8a6', '#e879f9'
   ];
   const SIZE = 154, CX = SIZE / 2, CY = SIZE / 2, R = 61, INNER_R = 39;
+  const RING_R = (R + INNER_R) / 2, RING_W = R - INNER_R;
+  const single = slices.length === 1;
   let cumAngle = -Math.PI / 2;
   const arcs = slices.map((s, i) => {
     const angle = (s.value / total) * Math.PI * 2;
@@ -2885,9 +2989,10 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     const x2 = CX + R * Math.cos(endAngle), y2 = CY + R * Math.sin(endAngle);
     const ix1 = CX + INNER_R * Math.cos(endAngle), iy1 = CY + INNER_R * Math.sin(endAngle);
     const ix2 = CX + INNER_R * Math.cos(startAngle), iy2 = CY + INNER_R * Math.sin(startAngle);
-    const d = slices.length === 1
-      ? `M${CX + R},${CY}A${R},${R} 0 1,1 ${CX + R - 0.01},${CY}Z` +
-        `M${CX + INNER_R},${CY}A${INNER_R},${INNER_R} 0 1,0 ${CX + INNER_R - 0.01},${CY}Z`
+    // A single 100% holding can't be drawn as an arc path (start == end point
+    // is degenerate and renders as a thin seam / nothing). Draw it as a stroked
+    // ring circle instead so it shows a clean full donut.
+    const d = single ? null
       : `M${x1},${y1}A${R},${R} 0 ${largeArc},1 ${x2},${y2}L${ix1},${iy1}A${INNER_R},${INNER_R} 0 ${largeArc},0 ${ix2},${iy2}Z`;
     return { ...s, d, color: COLORS[i % COLORS.length], pct: (s.value / total * 100) };
   });
@@ -2902,14 +3007,21 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     React.createElement("div", { className: "chart-pie-wrap" },
       React.createElement("div", { className: "chart-pie-ring" },
         React.createElement("svg", { viewBox: `0 0 ${SIZE} ${SIZE}`, className: "chart-pie-svg" },
-          arcs.map((a, i) => React.createElement("path", {
-            key: i, d: a.d, fill: a.color,
-            stroke: "var(--bg-raised)", strokeWidth: "1.5",
-            style: { cursor: 'pointer', opacity: hovered != null && hovered !== i ? 0.4 : 1, transition: 'opacity 0.2s' },
-            onMouseEnter: () => setHovered(i),
-            onMouseLeave: () => setHovered(null),
-            onClick: () => mode === 'ticker' ? onOpenDetail(a.ticker, a.market) : null
-          }))),
+          single
+            ? React.createElement("circle", {
+                cx: CX, cy: CY, r: RING_R, fill: "none",
+                stroke: arcs[0].color, strokeWidth: RING_W,
+                style: { cursor: mode === 'ticker' ? 'pointer' : 'default' },
+                onClick: () => mode === 'ticker' ? onOpenDetail(arcs[0].ticker, arcs[0].market) : null
+              })
+            : arcs.map((a, i) => React.createElement("path", {
+                key: i, d: a.d, fill: a.color,
+                stroke: "var(--bg-raised)", strokeWidth: "1.5",
+                style: { cursor: 'pointer', opacity: hovered != null && hovered !== i ? 0.4 : 1, transition: 'opacity 0.2s' },
+                onMouseEnter: () => setHovered(i),
+                onMouseLeave: () => setHovered(null),
+                onClick: () => mode === 'ticker' ? onOpenDetail(a.ticker, a.market) : null
+              }))),
         React.createElement("div", { className: "chart-pie-center" },
           hovered != null
             ? React.createElement(React.Fragment, null,
@@ -3363,21 +3475,49 @@ function normaliseCompanyName(s) {
     .replace(/\s+/g, ' ')
     .trim();
 }
-// 0..1 similarity between a query and a candidate company name.
+// Sørensen–Dice bigram similarity (0..1) — robust to typos/misspellings
+// ("brodcom" ≈ "broadcom") which exact/substring checks miss.
+function diceSimilarity(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
+  const grams = new Map();
+  for (let i = 0; i < a.length - 1; i++) { const g = a.slice(i, i + 2); grams.set(g, (grams.get(g) || 0) + 1); }
+  let inter = 0, bn = 0;
+  for (let i = 0; i < b.length - 1; i++) {
+    const g = b.slice(i, i + 2); bn++;
+    const c = grams.get(g);
+    if (c > 0) { inter++; grams.set(g, c - 1); }
+  }
+  return (2 * inter) / ((a.length - 1) + bn);
+}
+// 0..1 similarity between a query and a candidate company name. Blends exact /
+// prefix / substring / token-overlap / bigram / acronym signals so fuzzy and
+// abbreviated inputs still land on the right company.
 function companyNameScore(query, candidate) {
   const a = normaliseCompanyName(query);
   const b = normaliseCompanyName(candidate);
   if (!a || !b) return 0;
   if (a === b) return 1;
-  if (b.startsWith(a) || a.startsWith(b)) return 0.92;
-  if (b.includes(a) || a.includes(b)) return 0.8;
+  let score = 0;
+  if (b.startsWith(a) || a.startsWith(b)) score = Math.max(score, 0.92);
+  else if (b.includes(a) || a.includes(b)) score = Math.max(score, 0.8);
   const at = a.split(' '), bt = b.split(' ');
   const aset = new Set(at), bset = new Set(bt);
   let inter = 0; aset.forEach(t => { if (bset.has(t)) inter++; });
   const uni = new Set([...at, ...bt]).size;
   let j = uni ? inter / uni : 0;
   if (at[0] && at[0] === bt[0]) j += 0.18; // first-word match (e.g. "Anglo …")
-  return Math.min(0.88, j);
+  score = Math.max(score, Math.min(0.9, j));
+  // Typo tolerance on the despaced strings.
+  score = Math.max(score, diceSimilarity(a.replace(/ /g, ''), b.replace(/ /g, '')) * 0.85);
+  // Acronym: short query matches the candidate's word initials (IBM → I.B.M.).
+  const aFlat = a.replace(/ /g, '');
+  if (aFlat.length >= 2 && aFlat.length <= 5 && bt.length >= 2) {
+    const initials = bt.map(w => w[0]).join('');
+    if (initials === aFlat || initials.startsWith(aFlat)) score = Math.max(score, 0.72);
+  }
+  return Math.min(1, score);
 }
 // Decide whether a token looks like a stock symbol rather than a company name.
 function looksLikeTickerToken(s) {
@@ -3407,12 +3547,40 @@ function rankImportCandidates(query, tickerHint, chosenMarket, remote) {
     }
   });
   return pool.map(c => {
-    let score = companyNameScore(query, c.name) * 100;
+    const ns = companyNameScore(query, c.name);
+    let score = ns * 100;
     if (c.market === chosenMarket) score += 45;                 // market guides the pick
     if (tickerHint && c.ticker.toUpperCase() === String(tickerHint).toUpperCase()) score += 35;
     if (c.ticker.toUpperCase() === qUpper) score += 25;          // query itself was a symbol
-    return { ...c, score };
+    return { ...c, score, nameScore: ns };
   }).sort((a, b) => b.score - a.score);
+}
+// Search live listings using several query variants (full name, suffix-stripped,
+// first words, ticker hint), stopping early once a confident chosen-market match
+// appears. This is what makes fuzzy / abbreviated company names resolve.
+async function searchListingsMulti(query, tickerHint, chosenMarket) {
+  const q = String(query || '').trim();
+  const tried = new Set();
+  const merged = [];
+  const runSearch = async (term) => {
+    const key = String(term || '').toLowerCase().trim();
+    if (!key || tried.has(key)) return;
+    tried.add(key);
+    const r = await fetchYahooSearch(term);
+    if (r && r.length) merged.push(...r);
+  };
+  const hasStrong = () => rankImportCandidates(q, tickerHint, chosenMarket, merged)
+    .some(c => c.market === chosenMarket && c.nameScore >= 0.82);
+  await runSearch(q);
+  if (!hasStrong()) {
+    const norm = normaliseCompanyName(q);
+    const words = norm.split(' ').filter(Boolean);
+    if (norm && norm !== q.toLowerCase()) await runSearch(norm);
+    if (!hasStrong() && words.length > 2) await runSearch(words.slice(0, 2).join(' '));
+    if (!hasStrong() && words.length > 1) await runSearch(words[0]);
+    if (!hasStrong() && tickerHint) await runSearch(tickerHint);
+  }
+  return merged;
 }
 // ─────────────────────────────────────────────────────────────────────────
 // Holdings import: parse CSV / TSV / Markdown / plain text natively, and XLSX
@@ -4796,7 +4964,8 @@ function HeatmapTreemap(_ref8c) {
 // heatmap and the in-place sector popup, so the popup behaves exactly like the
 // big heatmap without ever going fullscreen.
 function ZoomPanHeatmap(_refZP) {
-  let { rows, loading, onOpenDetail, onOpenSector, lockBodyScroll, stageClass, contentClass } = _refZP;
+  let { rows, loading, onOpenDetail, onOpenSector, lockScroll, stageClass, contentClass } = _refZP;
+  useBodyScrollLock(!!lockScroll);
   const wrapRef = useRef(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
   const [z, setZ] = useState(1);
@@ -4829,14 +4998,11 @@ function ZoomPanHeatmap(_refZP) {
     // measurement can land mid-transition.
     const raf = requestAnimationFrame(measure);
     window.addEventListener('resize', measure);
-    let prevOverflow;
-    if (lockBodyScroll) { prevOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; }
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', measure);
-      if (lockBodyScroll) document.body.style.overflow = prevOverflow;
     };
-  }, [lockBodyScroll]);
+  }, []);
   useEffect(() => {
     const el = wrapRef.current; if (!el) return;
     const onDown = e => {
@@ -4932,7 +5098,7 @@ function HeatmapFullscreen(_refFS) {
     ),
     React.createElement(ZoomPanHeatmap, {
       rows: rows, loading: loading, onOpenDetail: onOpenDetail, onOpenSector: onOpenSector,
-      lockBodyScroll: true, stageClass: "heatmap-fs-stage", contentClass: "heatmap-fs-content"
+      lockScroll: true, stageClass: "heatmap-fs-stage", contentClass: "heatmap-fs-content"
     })
   );
 }
@@ -4957,12 +5123,11 @@ function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDet
     return () => { alive = false; };
   }, [sectorName]);
 
+  useBodyScrollLock();
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') close(); };
     document.addEventListener('keydown', onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
+    return () => { document.removeEventListener('keydown', onKey); };
   }, [close]);
 
   // Relative size: this sector's market-cap weight vs every other sector on the
@@ -5066,7 +5231,7 @@ function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDet
                 React.createElement(ZoomPanHeatmap, {
                   rows: sectorRows,
                   loading: false,
-                  lockBodyScroll: false,
+                  lockScroll: false,
                   stageClass: "sector-zoom-stage",
                   contentClass: "heatmap-fs-content",
                   onOpenDetail: (tk, mk) => { close(); onOpenDetail && onOpenDetail(tk, mk); }
@@ -5575,9 +5740,17 @@ function PriceChart(_refChart) {
   );
   const rawPoints = history && history.data && history.data.points ? history.data.points : null;
   if (!rawPoints || rawPoints.length < 2) {
+    const dataMissing = history && history.data === null && !loading;
+    if (dataMissing) {
+      return React.createElement("div", { className: "chart-block" }, rangeBar,
+        React.createElement("div", { className: "chart-empty" }, 'Chart data unavailable'));
+    }
+    // Shimmer skeleton while the series loads \u2014 reads as a premium fintech app
+    // instead of a bare "Loading\u2026" string.
     return React.createElement("div", { className: "chart-block" }, rangeBar,
-      React.createElement("div", { className: "chart-empty" },
-        loading ? 'Loading chart\u2026' : (history && !loading ? 'Chart data unavailable' : 'Loading chart\u2026')
+      React.createElement("div", { className: "chart-skeleton" },
+        React.createElement("div", { className: "chart-skeleton-line" }),
+        React.createElement("div", { className: "chart-skeleton-shimmer" })
       )
     );
   }
@@ -5590,7 +5763,9 @@ function PriceChart(_refChart) {
   let points = rawPoints;
   if (is1d && quote && typeof quote.price === 'number' && quote.price > 0) {
     const lastP = rawPoints[rawPoints.length - 1].p;
-    if (Math.abs(lastP - quote.price) / quote.price > 0.0005) points = [...rawPoints, { t: Date.now(), p: quote.price }];
+    if (Math.abs(lastP - quote.price) / quote.price > 0.0005) {
+      points = [...rawPoints, { t: Date.now(), p: quote.price, session: rawPoints[rawPoints.length - 1].session || 'regular' }];
+    }
   }
   const W = 600, H = 180;
   const PL = 2, PR = 2, PT = 6, PB = 6;
@@ -5605,6 +5780,34 @@ function PriceChart(_refChart) {
   const yFor = p => PT + (1 - (p - min) / span) * chartH;
   const d = points.map((pt, i) => `${i === 0 ? 'M' : 'L'}${xFor(i).toFixed(2)},${yFor(pt.p).toFixed(2)}`).join(' ');
   const areaD = d + ` L${xFor(points.length - 1).toFixed(2)},${H - PB} L${PL},${H - PB} Z`;
+  // Extended-hours segmentation — 1d only. We split the line so the pre-market
+  // and after-hours portions read as dashed/translucent with shaded bands and a
+  // labelled market-open divider, while the regular session stays solid.
+  const hasExtHours = is1d && points.some(p => p.session && p.session !== 'regular');
+  const hasRegular = hasExtHours && points.some(p => p.session === 'regular');
+  const openIdx = hasRegular ? points.findIndex(p => p.session === 'regular') : -1;
+  const postIdx = hasExtHours ? points.findIndex(p => p.session === 'post') : -1;
+  const segPath = (i0, i1) => {
+    if (i0 < 0 || i1 < i0) return '';
+    let s = '';
+    for (let i = i0; i <= i1; i++) s += (i === i0 ? 'M' : 'L') + xFor(i).toFixed(2) + ',' + yFor(points[i].p).toFixed(2) + ' ';
+    return s.trim();
+  };
+  // allExt = the whole intraday line is extended-hours (e.g. viewing during the
+  // pre-market session before the open) → draw the entire line dashed.
+  const allExt = hasExtHours && !hasRegular;
+  const hasPre = hasRegular && openIdx > 0;
+  const hasPost = hasRegular && postIdx >= 0;
+  const regStart = openIdx >= 0 ? openIdx : 0;
+  const regEnd = postIdx >= 0 ? postIdx : points.length - 1;
+  const preSegD = hasPre ? segPath(0, openIdx) : '';
+  const regSegD = hasRegular ? segPath(regStart, regEnd) : '';
+  const postSegD = hasPost ? segPath(postIdx, points.length - 1) : '';
+  const openX = hasPre ? xFor(openIdx) : null;
+  const postX = hasPost ? xFor(postIdx) : null;
+  const hasPreBars = hasExtHours && points.some(p => p.session === 'pre');
+  const hasPostBars = hasExtHours && points.some(p => p.session === 'post');
+  const extColor = '#94a3b8';
   const first = points[0].p;
   const last = points[points.length - 1].p;
   // Daily move is anchored to prev close / live quote so it matches the header.
@@ -5644,12 +5847,33 @@ function PriceChart(_refChart) {
           )
         ),
         React.createElement("path", { d: areaD, fill: `url(#${gradId})` }),
+        hasPre && React.createElement("rect", {
+          x: PL, y: PT, width: Math.max(0, openX - PL), height: chartH,
+          fill: extColor, fillOpacity: 0.09
+        }),
+        hasPost && React.createElement("rect", {
+          x: postX, y: PT, width: Math.max(0, (W - PR) - postX), height: chartH,
+          fill: extColor, fillOpacity: 0.07
+        }),
         baseline != null && React.createElement("line", {
           x1: PL, y1: yFor(baseline), x2: W - PR, y2: yFor(baseline),
           stroke: "#a1a1aa", strokeWidth: 0.5, strokeDasharray: "3,3", strokeOpacity: 0.6,
           vectorEffect: "non-scaling-stroke"
         }),
-        React.createElement("path", { d, fill: "none", stroke: color, strokeWidth: 1.5, vectorEffect: "non-scaling-stroke" }),
+        hasPre && React.createElement("line", {
+          x1: openX, y1: PT, x2: openX, y2: H - PB,
+          stroke: extColor, strokeWidth: 1, strokeDasharray: "2,2", strokeOpacity: 0.9,
+          vectorEffect: "non-scaling-stroke"
+        }),
+        // Extended-hours portions: dashed + translucent. Regular session: solid.
+        hasExtHours
+          ? React.createElement(React.Fragment, null,
+              allExt && React.createElement("path", { d, fill: "none", stroke: extColor, strokeWidth: 1.5, strokeDasharray: "3,2.5", strokeOpacity: 0.9, vectorEffect: "non-scaling-stroke" }),
+              preSegD && React.createElement("path", { d: preSegD, fill: "none", stroke: extColor, strokeWidth: 1.4, strokeDasharray: "3,2.5", strokeOpacity: 0.85, vectorEffect: "non-scaling-stroke" }),
+              postSegD && React.createElement("path", { d: postSegD, fill: "none", stroke: extColor, strokeWidth: 1.4, strokeDasharray: "3,2.5", strokeOpacity: 0.85, vectorEffect: "non-scaling-stroke" }),
+              regSegD && React.createElement("path", { d: regSegD, fill: "none", stroke: color, strokeWidth: 1.6, vectorEffect: "non-scaling-stroke" })
+            )
+          : React.createElement("path", { d, fill: "none", stroke: color, strokeWidth: 1.5, vectorEffect: "non-scaling-stroke" }),
         hover && React.createElement("g", null,
           React.createElement("line", { x1: hover.x, y1: PT, x2: hover.x, y2: H - PB, stroke: "#71717a", strokeWidth: 0.5, strokeDasharray: "2,2", vectorEffect: "non-scaling-stroke" }),
           React.createElement("circle", { cx: hover.x, cy: hover.y, r: 3.5, fill: color, style: { stroke: 'var(--bg)' }, strokeWidth: 1.2 })
@@ -5671,7 +5895,19 @@ function PriceChart(_refChart) {
           }
           return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
         })())
-      )
+      ),
+      hasPre && React.createElement("div", {
+        className: "chart-open-tag",
+        style: { left: `${(openX / W) * 100}%` }
+      }, "OPEN")
+    ),
+    hasExtHours && React.createElement("div", { className: "chart-session-legend" },
+      hasPreBars && React.createElement("span", { className: "chart-session-item" },
+        React.createElement("span", { className: "chart-session-swatch pre" }), "Pre-market"),
+      hasPostBars && React.createElement("span", { className: "chart-session-item" },
+        React.createElement("span", { className: "chart-session-swatch pre" }), "After-hours"),
+      hasRegular && React.createElement("span", { className: "chart-session-item" },
+        React.createElement("span", { className: "chart-session-swatch reg", style: { borderTopColor: color } }), "Regular session")
     ),
     React.createElement("div", { className: "chart-summary" },
       React.createElement("div", null,
@@ -5938,6 +6174,7 @@ function DetailModal(_ref10) {
   const [showAlertForm, setShowAlertForm] = useState(!!selected.openAlerts);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
   const history = historyByTicker ? historyByTicker[priceKey(market, ticker) + ':' + range] : null;
   useEffect(() => {
     if (quote && !target) setTarget(quote.price.toFixed(2));
@@ -6139,6 +6376,7 @@ function AlertsModal(_ref11) {
   const [pkReveal, setPkReveal] = useState(false);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
   useEffect(() => { setPkDraft(perplexityKey || ''); }, [perplexityKey]);
   const savePk = () => {
     const v = pkDraft.trim();
@@ -6334,6 +6572,7 @@ function ContributionModal({ onClose, onSave }) {
   const [note, setNote] = useState('');
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
   const submit = () => {
     const a = parseDecimal(amount);
     if (!isFinite(a) || a <= 0) return;
@@ -6412,6 +6651,7 @@ function ImportModal({ onClose, onImport }) {
   const fileRef = useRef(null);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
+  useBodyScrollLock();
 
   const toRows = (holdings, market) => holdings.map(h => ({
     id: uid(),
@@ -6474,13 +6714,13 @@ function ImportModal({ onClose, onImport }) {
   // resolves even when its primary listing isn't on the chosen exchange.
   const resolveRow = async (r) => {
     const market = r.market;
-    const remote = await fetchYahooSearch(r.query).catch(() => []);
+    const remote = await searchListingsMulti(r.query, r.tickerHint, market).catch(() => []);
     const ranked = rankImportCandidates(r.query, r.tickerHint, market, remote);
     let pick = ranked.find(c => c.market === market) || ranked[0] || null;
     let q = pick ? await fetchQuote(pick.ticker, pick.market).catch(() => null) : null;
     if (!q && r.tickerHint) {
       const hq = await fetchQuote(r.tickerHint, market).catch(() => null);
-      if (hq) { pick = { ticker: r.tickerHint, market, name: resolveTickerName(r.tickerHint, market, hq) || r.query }; q = hq; }
+      if (hq) { pick = { ticker: r.tickerHint, market, name: resolveTickerName(r.tickerHint, market, hq) || r.query, nameScore: 1 }; q = hq; }
     }
     if (!q && ranked.length) {
       for (const c of ranked.slice(0, 4)) {
@@ -6488,12 +6728,19 @@ function ImportModal({ onClose, onImport }) {
         if (cq) { pick = c; q = cq; break; }
       }
     }
+    // Confidence = how well the matched listing's name fits the query. Low
+    // confidence (or a pick that landed off the chosen market) is surfaced so
+    // the user can sanity-check or pick an alternative.
+    const conf = q && pick ? (pick.nameScore != null ? pick.nameScore : companyNameScore(r.query, pick.name || '')) : 0;
+    const offMarket = !!(q && pick && pick.market !== market);
     return {
       ticker: q && pick ? pick.ticker : (r.tickerHint || ''),
       market: q && pick ? pick.market : market,
       resolvedName: q && pick ? (pick.name || resolveTickerName(pick.ticker, pick.market, q) || r.query) : r.resolvedName,
       currentPrice: q ? q.price : null,
       status: q ? 'ok' : 'notfound',
+      confidence: conf,
+      lowConfidence: !!(q && (conf < 0.5 || offMarket)),
       candidates: ranked.slice(0, 7),
     };
   };
@@ -6528,12 +6775,13 @@ function ImportModal({ onClose, onImport }) {
 
   // User explicitly picks one of the alternative listings.
   const chooseCandidate = async (id, cand) => {
-    setRows(prev => prev.map(r => r.id === id ? { ...r, ticker: cand.ticker, market: cand.market, resolvedName: cand.name, status: 'resolving', showAlts: false } : r));
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ticker: cand.ticker, market: cand.market, resolvedName: cand.name, status: 'resolving', showAlts: false, lowConfidence: false } : r));
     const q = await fetchQuote(cand.ticker, cand.market).catch(() => null);
     setRows(prev => prev.map(r => r.id === id ? {
       ...r,
       status: q ? 'ok' : 'notfound',
       currentPrice: q ? q.price : null,
+      lowConfidence: false,
       resolvedName: q ? (resolveTickerName(cand.ticker, cand.market, q) || cand.name) : cand.name,
     } : r));
   };
@@ -6630,7 +6878,8 @@ function ImportModal({ onClose, onImport }) {
     const sharesBad = !(isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0);
     const costBad = !(isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
     const alts = (r.candidates || []).filter(c => !(c.ticker === r.ticker && c.market === r.market)).slice(0, 6);
-    return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") },
+    const lowConf = r.status === 'ok' && r.lowConfidence;
+    return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") + (lowConf ? " is-low" : "") },
       React.createElement("div", { className: "import-card-top" },
         React.createElement("label", { className: "import-check" },
           React.createElement("input", { type: "checkbox", checked: r.include, onChange: e => updateRow(r.id, { include: e.target.checked }) })),
@@ -6650,7 +6899,8 @@ function ImportModal({ onClose, onImport }) {
         r.ticker
           ? React.createElement(React.Fragment, null,
               React.createElement("span", { className: "import-match-tkr" }, r.ticker),
-              React.createElement("span", { className: "import-match-name" }, r.resolvedName || ''))
+              React.createElement("span", { className: "import-match-name" }, r.resolvedName || ''),
+              lowConf ? React.createElement("span", { className: "import-conf-low", title: "Loose match — please confirm or pick an alternative" }, "check?") : null)
           : React.createElement("span", { className: "import-match-name text-dim" },
               r.status === 'resolving' ? "Searching live listings…" : (r.status === 'notfound' ? "No match — try the exact name or another market" : "Not matched yet")),
         React.createElement("select", {
@@ -6760,6 +7010,7 @@ function PositionModal(_ref12) {
   const [tickerError, setTickerError] = useState('');
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
   const submit = async () => {
     if (!ticker.trim()) return;
     const s = parseDecimal(shares);
@@ -6770,21 +7021,24 @@ function PositionModal(_ref12) {
       setTickerError('Purchase date cannot be in the future.');
       return;
     }
+    let verifiedQuote = null;
     if (!isEdit) {
       setVerifying(true);
       setTickerError('');
-      const q = await fetchQuote(ticker.trim(), market);
+      verifiedQuote = await fetchQuote(ticker.trim(), market);
       setVerifying(false);
-      if (!q) {
+      if (!verifiedQuote) {
         setTickerError(`"${ticker.trim()}" not found on ${market}. Check the symbol.`);
         return;
       }
     }
+    // Pass the quote we just fetched up so the feed can seed it instantly — the
+    // dashboard pie/line then update the moment the position is added.
     onSave({
       ticker: ticker.trim().toUpperCase(),
       market, shares: s, costBasis: c, notes,
       purchaseDate: purchaseDate || null
-    });
+    }, verifiedQuote);
   };
   const ccy = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).sym;
   return React.createElement("div", {
@@ -6903,6 +7157,7 @@ function SellModal({ position, prices, onClose, onSell }) {
   const [notes, setNotes] = useState('');
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
   const q = prices[priceKey(position.market, position.ticker)];
   useEffect(() => {
     if (q && !sellPrice) setSellPrice(q.price.toFixed(2));
@@ -7098,6 +7353,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
   const snap = useMemo(
     () => computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency }),
     [positions, contributions, prices, fxRates, displayCurrency]
