@@ -138,6 +138,11 @@ function useSwipeDownToClose(panelRef, onClose) {
         dragging = true;
         // Anchor the drag here so the panel tracks the finger 1:1 with no jump.
         startY = y;
+        // Kill the entrance animation permanently. Otherwise, when we later
+        // remove `.swiping` (which set `animation:none`), the base panel's
+        // `slide-up` keyframes re-run and the sheet jumps back up before
+        // closing — the glitch the user reported.
+        panel.style.animation = 'none';
         panel.classList.add('swiping');
       }
       const now = Date.now();
@@ -310,6 +315,68 @@ const FX_PROXIES = [
 // the pence-suffix forms because Yahoo isn't perfectly consistent.
 function priceKey(market, ticker) {
   return market + ':' + ticker;
+}
+// ─────────────────────────────────────────────────────────────────────────
+// Company-name resolution. Heatmap constituents (and many Yahoo-searched
+// tickers) ship without a curated name, so a bare ticker like AVGO would
+// otherwise show with no company name. We keep a persistent market:ticker →
+// name map that fills from every live quote we see (full + light), seeded with
+// a curated map of the most-browsed names so they read correctly on first
+// paint before any network call lands.
+// ─────────────────────────────────────────────────────────────────────────
+const CURATED_NAMES = {
+  'US:AVGO': 'Broadcom', 'US:AAPL': 'Apple', 'US:MSFT': 'Microsoft', 'US:NVDA': 'NVIDIA',
+  'US:GOOGL': 'Alphabet (Class A)', 'US:GOOG': 'Alphabet (Class C)', 'US:AMZN': 'Amazon',
+  'US:META': 'Meta Platforms', 'US:TSLA': 'Tesla', 'US:ORCL': 'Oracle', 'US:CRM': 'Salesforce',
+  'US:ADBE': 'Adobe', 'US:AMD': 'Advanced Micro Devices', 'US:CSCO': 'Cisco Systems',
+  'US:ACN': 'Accenture', 'US:NOW': 'ServiceNow', 'US:IBM': 'IBM', 'US:INTU': 'Intuit',
+  'US:QCOM': 'Qualcomm', 'US:TXN': 'Texas Instruments', 'US:AMAT': 'Applied Materials',
+  'US:ANET': 'Arista Networks', 'US:PLTR': 'Palantir Technologies', 'US:ADI': 'Analog Devices',
+  'US:MU': 'Micron Technology', 'US:APH': 'Amphenol', 'US:LRCX': 'Lam Research', 'US:INTC': 'Intel',
+  'US:CRWD': 'CrowdStrike', 'US:KLAC': 'KLA Corp', 'US:SNPS': 'Synopsys', 'US:CDNS': 'Cadence Design',
+  'US:DELL': 'Dell Technologies', 'US:APP': 'AppLovin', 'US:GLW': 'Corning', 'US:MPWR': 'Monolithic Power',
+  'US:NFLX': 'Netflix', 'US:TMUS': 'T-Mobile US', 'US:DIS': 'Walt Disney', 'US:CMCSA': 'Comcast',
+  'US:JPM': 'JPMorgan Chase', 'US:V': 'Visa', 'US:MA': 'Mastercard', 'US:BAC': 'Bank of America',
+  'US:WFC': 'Wells Fargo', 'US:GS': 'Goldman Sachs', 'US:MS': 'Morgan Stanley', 'US:AXP': 'American Express',
+  'US:BRK-B': 'Berkshire Hathaway', 'US:C': 'Citigroup', 'US:UNH': 'UnitedHealth', 'US:LLY': 'Eli Lilly',
+  'US:JNJ': 'Johnson & Johnson', 'US:ABBV': 'AbbVie', 'US:MRK': 'Merck', 'US:PFE': 'Pfizer',
+  'US:TMO': 'Thermo Fisher', 'US:ABT': 'Abbott Laboratories', 'US:VRTX': 'Vertex Pharmaceuticals',
+  'US:XOM': 'Exxon Mobil', 'US:CVX': 'Chevron', 'US:OXY': 'Occidental Petroleum', 'US:COP': 'ConocoPhillips',
+  'US:WMT': 'Walmart', 'US:COST': 'Costco', 'US:PG': 'Procter & Gamble', 'US:KO': 'Coca-Cola',
+  'US:PEP': 'PepsiCo', 'US:HD': 'Home Depot', 'US:MCD': "McDonald's", 'US:NKE': 'Nike',
+  'US:CAT': 'Caterpillar', 'US:GE': 'GE Aerospace', 'US:BA': 'Boeing', 'US:HON': 'Honeywell',
+  'US:ETN': 'Eaton', 'US:GD': 'General Dynamics', 'US:GEV': 'GE Vernova', 'US:CEG': 'Constellation Energy',
+  'US:TSM': 'Taiwan Semiconductor', 'US:ASML': 'ASML Holding', 'US:NBIS': 'Nebius Group',
+  'US:MSTR': 'Strategy (MicroStrategy)', 'US:ASPI': 'ASP Isotopes',
+};
+const NAME_CACHE_KEY = 'pb.nameCache.v1';
+const NAME_CACHE = (() => {
+  const seed = { ...CURATED_NAMES };
+  try { Object.assign(seed, LS.get(NAME_CACHE_KEY, {}) || {}); } catch (_e) {}
+  return seed;
+})();
+let _nameCacheDirty = false;
+function _flushNameCache() {
+  if (!_nameCacheDirty) return;
+  _nameCacheDirty = false;
+  // Don't persist the curated seed — only learned names — to keep the blob small.
+  const learned = {};
+  for (const k in NAME_CACHE) { if (CURATED_NAMES[k] !== NAME_CACHE[k]) learned[k] = NAME_CACHE[k]; }
+  LS.set(NAME_CACHE_KEY, learned);
+}
+function cacheName(market, ticker, name) {
+  if (!market || !ticker || !name) return;
+  const clean = String(name).trim();
+  if (!clean || clean.toUpperCase() === String(ticker).toUpperCase()) return;
+  const key = market + ':' + ticker;
+  if (NAME_CACHE[key] === clean) return;
+  NAME_CACHE[key] = clean;
+  _nameCacheDirty = true;
+  // Debounced persist so a batch of quotes writes once.
+  if (typeof setTimeout === 'function') { clearTimeout(cacheName._t); cacheName._t = setTimeout(_flushNameCache, 1500); }
+}
+function cachedName(market, ticker) {
+  return NAME_CACHE[market + ':' + ticker] || null;
 }
 function centDivisor(market, currency) {
   const raw = currency || '';
@@ -552,7 +619,10 @@ async function fetchQuote(ticker, market) {
       } catch (_e) {}
     }
   }
-  if (quote) return quote;
+  if (quote) {
+    cacheName(market, ticker, quote.shortName || quote.longName);
+    return quote;
+  }
   // Stooq fallback only covers US and JSE; other markets just fail here.
   if (market !== 'US' && market !== 'JSE') {
     console.warn(`Price fetch failed for ${ticker} (${market})`);
@@ -575,19 +645,29 @@ async function fetchQuote(ticker, market) {
 async function fetchQuoteBatch(items) {
   const results = {};
   const batchSize = 8;
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market)));
-    settled.forEach((r, idx) => {
-      const { market, ticker } = batch[idx];
-      const key = priceKey(market, ticker);
-      if (r.status === 'fulfilled' && r.value) {
-        results[key] = r.value;
-      } else if (r.status === 'rejected') {
-        console.warn(`fetchQuoteBatch: ${key} rejected`, r.reason);
-      }
-    });
-  }
+  const runPass = async (list) => {
+    for (let i = 0; i < list.length; i += batchSize) {
+      const batch = list.slice(i, i + batchSize);
+      const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market)));
+      settled.forEach((r, idx) => {
+        const { market, ticker } = batch[idx];
+        const key = priceKey(market, ticker);
+        if (r.status === 'fulfilled' && r.value) {
+          results[key] = r.value;
+        } else if (r.status === 'rejected') {
+          console.warn(`fetchQuoteBatch: ${key} rejected`, r.reason);
+        }
+      });
+    }
+  };
+  await runPass(items);
+  // Second pass for any symbols that came back empty. Non-US markets (JSE/LSE/
+  // ASX/EU) are queried after the US names and trade outside US hours, so they
+  // disproportionately hit shared-proxy rate limits on the first sweep and come
+  // back null — a single retry recovers most of them so the watchlist isn't
+  // left showing prices for US tickers only.
+  const missing = items.filter(it => !results[priceKey(it.market, it.ticker)]);
+  if (missing.length) await runPass(missing);
   return results;
 }
 async function fetchQuoteLight(ticker, market) {
@@ -601,6 +681,7 @@ async function fetchQuoteLight(ticker, market) {
     if (!result) return null;
     const meta = result?.meta;
     if (!meta || typeof meta.regularMarketPrice !== 'number') return null;
+    cacheName(market, ticker, meta.shortName || meta.longName);
     const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
     const divisor = centDivisor(market, currency);
     const price = meta.regularMarketPrice / divisor;
@@ -626,36 +707,64 @@ async function fetchQuoteBatchLight(items, onProgress) {
     });
     if (onProgress) onProgress(Math.min(i + batchSize, items.length), items.length, results);
   }
+  // Second pass: retry any symbols that failed (proxy hiccups / rate limits) so
+  // the heatmap shows daily movement for *all* constituents, not a partial grid.
+  const missing = items.filter(it => !results[priceKey(it.market, it.ticker)]);
+  if (missing.length) {
+    const retrySize = 8;
+    for (let i = 0; i < missing.length; i += retrySize) {
+      const batch = missing.slice(i, i + retrySize);
+      const settled = await Promise.allSettled(batch.map(it => fetchQuoteLight(it.ticker, it.market)));
+      settled.forEach((r, idx) => {
+        const { market, ticker } = batch[idx];
+        if (r.status === 'fulfilled' && r.value) results[priceKey(market, ticker)] = r.value;
+      });
+      if (onProgress) onProgress(items.length, items.length, results);
+    }
+  }
   return results;
+}
+function parseHistoryResult(result, ticker, market, r) {
+  if (!result) return null;
+  const ts = result.timestamp;
+  const closes = result?.indicators?.quote?.[0]?.close;
+  if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
+  const currency = result.meta?.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+  const divisor = centDivisor(market, currency);
+  // Cache the company name off the chart meta while we have it — chart history
+  // is often the first call to land for a stock opened from the heatmap.
+  cacheName(market, ticker, result.meta?.shortName || result.meta?.longName);
+  const points = [];
+  for (let i = 0; i < ts.length; i++) {
+    const c = closes[i];
+    if (c == null || !isFinite(c)) continue;
+    points.push({ t: ts[i] * 1000, p: c / divisor });
+  }
+  if (points.length < 2) return null;
+  return { points, range: r, fetchedAt: Date.now() };
 }
 async function fetchHistory(ticker, market, range) {
   const sym = yahooSymbol(ticker, market);
   const r = range || '1y';
   const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === '1y') ? '1d' : '1wk');
   const includePrePost = r === '1d' || r === '5d' ? '&includePrePost=true' : '';
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=${interval}&range=${r}${includePrePost}`;
-  const text = await fetchViaProxies(yahooUrl);
-  if (!text) return null;
-  try {
-    const data = JSON.parse(text);
-    const result = data?.chart?.result?.[0];
-    if (!result) return null;
-    const ts = result.timestamp;
-    const closes = result?.indicators?.quote?.[0]?.close;
-    if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
-    const currency = result.meta?.currency || (MARKET_CURRENCY[market]?.code || 'USD');
-    const divisor = centDivisor(market, currency);
-    const points = [];
-    for (let i = 0; i < ts.length; i++) {
-      const c = closes[i];
-      if (c == null || !isFinite(c)) continue;
-      points.push({ t: ts[i] * 1000, p: c / divisor });
-    }
-    if (points.length < 2) return null;
-    return { points, range: r, fetchedAt: Date.now() };
-  } catch (_e) {
-    return null;
+  // Try both Yahoo hosts; proxy edges fail intermittently and one host often
+  // works when the other 5xx's, so a single attempt left charts blank too often.
+  const urls = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=${interval}&range=${r}${includePrePost}`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=${interval}&range=${r}${includePrePost}`,
+  ];
+  for (let attempt = 0; attempt < urls.length; attempt++) {
+    const text = await fetchViaProxies(urls[attempt]);
+    if (!text) continue;
+    try {
+      const data = JSON.parse(text);
+      const result = data?.chart?.result?.[0];
+      const parsed = result ? parseHistoryResult(result, ticker, market, r) : null;
+      if (parsed) return parsed;
+    } catch (_e) {}
   }
+  return null;
 }
 async function fetchNewsForTicker(ticker, market) {
   const yahooSym = yahooSymbol(ticker, market);
@@ -885,7 +994,115 @@ Shape (null for unknown values):
     return null;
   }
 }
+// Parse stockanalysis.com's human-formatted figures: "4.28T", "451.44B",
+// "27.15%", "$1.04", "1,234" → numbers. Returns null for "n/a"/blank.
+function saNum(s) {
+  if (s == null) return null;
+  if (typeof s === 'number') return isFinite(s) ? s : null;
+  let t = String(s).trim().replace(/[$%\s]/g, '');
+  if (t === '' || /^n\/?a$/i.test(t) || t === '-') return null;
+  t = t.replace(/,/g, '');
+  const m = t.match(/^(-?\d+(?:\.\d+)?)([TBMK])?$/i);
+  if (m) {
+    let n = parseFloat(m[1]);
+    const u = (m[2] || '').toUpperCase();
+    if (u === 'T') n *= 1e12; else if (u === 'B') n *= 1e9; else if (u === 'M') n *= 1e6; else if (u === 'K') n *= 1e3;
+    return isFinite(n) ? n : null;
+  }
+  const f = parseFloat(t);
+  return isFinite(f) ? f : null;
+}
+// stockanalysis.com is CORS-open and (unlike Yahoo's now crumb-gated
+// quoteSummary) returns full fundamentals for US listings without auth.
+async function fetchFundamentalsStockAnalysis(ticker) {
+  const base = `https://stockanalysis.com/api/symbol/s/${encodeURIComponent(ticker.toUpperCase())}`;
+  let ov = null, st = null;
+  try {
+    const [ovr, str] = await Promise.all([
+      fetch(`${base}/overview`).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`${base}/statistics`).then(r => r.ok ? r.json() : null).catch(() => null)
+    ]);
+    ov = ovr && ovr.data ? ovr.data : null;
+    st = str && str.data ? str.data : null;
+  } catch (e) { return null; }
+  if (!ov && !st) return null;
+  // Flatten every statistics section into a title→value map (prefer the
+  // full-precision `hover` over the abbreviated `value` when present).
+  const S = {};
+  if (st) for (const sec of Object.keys(st)) {
+    const blk = st[sec];
+    if (blk && Array.isArray(blk.data)) for (const it of blk.data) {
+      if (it && it.title) S[it.title] = (it.hover != null && /[\d]/.test(String(it.hover))) ? it.hover : it.value;
+    }
+  }
+  const g = (title) => saNum(S[title]);
+  const o = ov || {};
+  // Latest fiscal-year revenue / earnings growth from the mini financial chart.
+  let revenueGrowth = null, earningsGrowth = null, lastFyEnd = null;
+  if (Array.isArray(o.financialChart) && o.financialChart.length) {
+    const last = o.financialChart[o.financialChart.length - 1];
+    revenueGrowth = (typeof last.revenueGrowth === 'number') ? last.revenueGrowth : null;
+    earningsGrowth = (typeof last.earningsGrowth === 'number') ? last.earningsGrowth : null;
+    const yr = parseInt(last.year, 10);
+    if (isFinite(yr)) lastFyEnd = new Date(yr, 11, 31).getTime();
+  }
+  let dividendYield = null;
+  if (o.dividend) { const m = String(o.dividend).match(/\(([-\d.]+)%\)/); if (m) dividendYield = parseFloat(m[1]); }
+  let targetMean = null;
+  if (o.target) { const m = String(o.target).match(/^[^\d-]*(-?[\d.,]+)/); if (m) targetMean = saNum(m[1]); }
+  const recMap = { 'strong buy': 'strong_buy', 'buy': 'buy', 'hold': 'hold', 'sell': 'sell', 'strong sell': 'strong_sell' };
+  const recommendation = o.analysts ? (recMap[String(o.analysts).toLowerCase()] || null) : null;
+  const de = g('Debt / Equity');
+  const result = {
+    marketCap: g('Market Cap'),
+    peTrailing: g('PE Ratio') != null ? g('PE Ratio') : saNum(o.peRatio),
+    peForward: g('Forward PE') != null ? g('Forward PE') : saNum(o.forwardPE),
+    pegRatio: g('PEG Ratio'),
+    priceToBook: g('PB Ratio'),
+    priceToSales: g('PS Ratio'),
+    eps: saNum(o.eps) != null ? saNum(o.eps) : g('Earnings Per Share (EPS)'),
+    epsForward: null,
+    beta: g('Beta (5Y)') != null ? g('Beta (5Y)') : saNum(o.beta),
+    dividendYield,
+    profitMargin: g('Profit Margin'),
+    operatingMargin: g('Operating Margin'),
+    revenueGrowth,
+    earningsGrowth,
+    roe: g('Return on Equity (ROE)'),
+    roa: g('Return on Assets (ROA)'),
+    // Match Yahoo's convention (it reports D/E as a percent, e.g. 80 for 0.80).
+    debtToEquity: de != null ? de * 100 : null,
+    currentRatio: g('Current Ratio'),
+    totalCash: null, totalDebt: null,
+    freeCashflow: g('Free Cash Flow'),
+    revenue: g('Revenue'),
+    ebitda: g('EBITDA'),
+    mostRecentQuarter: null,
+    lastFiscalYearEnd: lastFyEnd,
+    targetMean,
+    targetHigh: null, targetLow: null,
+    recommendation,
+    analystCount: null,
+    avgVolume: g('Average Volume (20 Days)'),
+    yearHigh: null, yearLow: null,
+    earningsDate: o.earningsDate && !isNaN(Date.parse(o.earningsDate)) ? Date.parse(o.earningsDate) : null,
+    epsEst: null, revEst: null,
+    sector: (o.infoTable || []).find(r => r.t === 'Sector')?.v || null,
+    industry: (o.infoTable || []).find(r => r.t === 'Industry')?.v || null,
+    currency: 'USD', divisor: 1,
+    fetchedAt: Date.now(),
+    source: 'stockanalysis'
+  };
+  // Require at least a couple of real values to count as a hit.
+  const filled = Object.values(result).filter(v => typeof v === 'number' && isFinite(v)).length;
+  return filled >= 3 ? result : null;
+}
 async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
+  // US listings: stockanalysis.com is the most reliable free source.
+  if (market === 'US') {
+    const sa = await fetchFundamentalsStockAnalysis(ticker);
+    if (sa) return sa;
+  }
   const yahoo = await fetchFundamentalsYahoo(ticker, market);
   if (yahoo) return yahoo;
   if (perplexityKey) return await fetchFundamentalsPerplexity(ticker, market, companyName, perplexityKey);
@@ -1724,9 +1941,12 @@ function App() {
   const childSwipeLockRef = useRef(false);
   const changeView = useCallback((newView, direction) => {
     if (newView === view) return;
+    // Reset scroll instantly *before* the new view paints. A smooth scroll here
+    // fights the content-height change (e.g. tall heatmap → short picks) and
+    // reads as a jump; instant keeps the slide transition clean.
+    window.scrollTo(0, 0);
     setViewTransDir(direction || null);
     setView(newView);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
     requestAnimationFrame(() => {
       const btn = navRef.current?.querySelector(`[data-tab="${newView}"]`);
       if (btn) btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
@@ -2022,7 +2242,8 @@ function App() {
         setPosModalOpen(true);
       },
       onImportPositions: () => setShowImport(true),
-      onSellPosition: pos => setSellModalPos(pos)
+      onSellPosition: pos => setSellModalPos(pos),
+      onRemovePosition: removePosition
     }),
     watchlist: React.createElement(WatchlistView, {
       watchlist: watchlist,
@@ -2968,32 +3189,51 @@ function CurrentView(_ref7) {
     onOpenDetail,
     onAddPosition,
     onImportPositions,
-    onSellPosition
+    onSellPosition,
+    onRemovePosition
   } = _ref7;
-  const usdPositions = positions.filter(p => p.market === 'US');
-  const zarPositions = positions.filter(p => p.market === 'JSE');
-  const tfsaPositions = positions.filter(p => p.market === 'TFSA');
-  const renderUS = () => {
-    if (usdPositions.length === 0) {
+  // Always offer the three primary US/SA tabs, then surface any other market
+  // the user actually holds (LSE, ASX, FRA, PAR, AMS…) so imported non-US
+  // holdings don't silently disappear from the Holdings view.
+  const BASE_TABS = ['US', 'JSE', 'TFSA'];
+  const marketOrder = MARKETS.map(m => m.value);
+  const extraMarkets = Array.from(new Set(positions.map(p => p.market)))
+    .filter(m => !BASE_TABS.includes(m))
+    .sort((a, b) => marketOrder.indexOf(a) - marketOrder.indexOf(b));
+  const tabs = [...BASE_TABS, ...extraMarkets];
+  const tabLabel = (m) => MARKET_LABELS[m] || m;
+  const activeMarket = tabs.includes(marketFilter) ? marketFilter : 'US';
+  const countFor = (m) => positions.filter(p => p.market === m).length;
+
+  const renderMarket = (market) => {
+    const rows = positions.filter(p => p.market === market);
+    if (rows.length === 0) {
       return React.createElement("div", { className: "empty" },
         React.createElement(Icon, { name: "briefcase", size: 40 }),
-        React.createElement("h3", null, "No US positions yet"),
-        React.createElement("p", null, "Add your US holdings using the Add button above."));
+        React.createElement("h3", null, "No ", tabLabel(market), " positions yet"),
+        React.createElement("p", null, "Add your ", tabLabel(market), " holdings using the Add button above."));
     }
     return React.createElement("div", null, React.createElement("div", {
       className: "eyebrow"
-    }, "Your US positions"), React.createElement("div", {
+    }, "Your ", tabLabel(market), " positions"), React.createElement("div", {
       className: "row-list"
-    }, usdPositions.map(p => {
-      const q = prices['US:' + p.ticker];
-      const info = DATA.findInfo(p.ticker, 'US');
+    }, rows.map(p => {
+      const q = prices[priceKey(market, p.ticker)];
+      const info = DATA.findInfo(p.ticker, market);
       const marketValue = q ? p.shares * q.price : null;
       const cost = p.shares * p.costBasis;
       const pnlPct = marketValue != null && cost > 0 ? (marketValue - cost) / cost * 100 : null;
+      const remove = (e) => {
+        e.stopPropagation();
+        if (!onRemovePosition) return;
+        if (window.confirm(`Remove ${p.ticker} (${tabLabel(market)}) from your holdings?\n\nThis deletes the position without recording a sale — use Sell instead if you actually sold.`)) {
+          onRemovePosition(p.id);
+        }
+      };
       return React.createElement("button", {
         key: p.id,
         className: "row",
-        onClick: () => onOpenDetail(p.ticker, 'US')
+        onClick: () => onOpenDetail(p.ticker, market)
       }, React.createElement("div", {
         className: "row-main"
       }, React.createElement("div", {
@@ -3002,132 +3242,48 @@ function CurrentView(_ref7) {
         className: "tkr"
       }, p.ticker), React.createElement("span", {
         className: "text-sm text-dim"
-      }, info.name || p.ticker)), React.createElement("div", {
+      }, (info && info.name) || p.ticker)), React.createElement("div", {
         className: "row-meta"
-      }, p.shares, " \xD7 ", fmt(p.costBasis, 'US'), pnlPct != null && React.createElement("span", {
+      }, p.shares, " \xD7 ", fmt(p.costBasis, market), pnlPct != null && React.createElement("span", {
         className: `mono ${pnlPct >= 0 ? 'text-up' : 'text-down'}`
       }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"),
         React.createElement("button", {
           className: "btn-sell-inline",
           onClick: e => { e.stopPropagation(); onSellPosition(p); }
-        }, "Sell"))), React.createElement("div", {
-        className: "row-right"
-      }, React.createElement(PriceBlock, {
-        quote: q
-      }), marketValue != null && React.createElement("div", {
-        className: "text-xs text-dim mt-1 mono"
-      }, fmt(marketValue, 'US'))));
-    })));
-  };
-  const renderJSE = () => {
-    if (zarPositions.length === 0) {
-      return React.createElement("div", { className: "empty" },
-        React.createElement(Icon, { name: "briefcase", size: 40 }),
-        React.createElement("h3", null, "No JSE positions yet"),
-        React.createElement("p", null, "Add your JSE (ZAR) holdings using the Add button above."));
-    }
-    return React.createElement("div", null, React.createElement("div", {
-      className: "eyebrow"
-    }, "Your JSE positions"), React.createElement("div", {
-      className: "row-list"
-    }, zarPositions.map(p => {
-      const q = prices['JSE:' + p.ticker];
-      const info = DATA.findInfo(p.ticker, 'JSE');
-      const marketValue = q ? p.shares * q.price : null;
-      const cost = p.shares * p.costBasis;
-      const pnlPct = marketValue != null && cost > 0 ? (marketValue - cost) / cost * 100 : null;
-      return React.createElement("button", {
-        key: p.id,
-        className: "row",
-        onClick: () => onOpenDetail(p.ticker, 'JSE')
-      }, React.createElement("div", {
-        className: "row-main"
-      }, React.createElement("div", {
-        className: "row-head"
-      }, React.createElement("span", {
-        className: "tkr"
-      }, p.ticker), React.createElement("span", {
-        className: "text-sm text-dim"
-      }, info.name || p.ticker)), React.createElement("div", {
-        className: "row-meta"
-      }, p.shares, " \xD7 ", fmt(p.costBasis, 'JSE'), pnlPct != null && React.createElement("span", {
-        className: `mono ${pnlPct >= 0 ? 'text-up' : 'text-down'}`
-      }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"),
+        }, "Sell"),
         React.createElement("button", {
-          className: "btn-sell-inline",
-          onClick: e => { e.stopPropagation(); onSellPosition(p); }
-        }, "Sell"))), React.createElement("div", {
+          className: "btn-remove-inline",
+          title: "Remove holding",
+          "aria-label": "Remove holding",
+          onClick: remove
+        }, React.createElement(Icon, { name: "trash", size: 12 })))),
+        React.createElement("div", {
         className: "row-right"
       }, React.createElement(PriceBlock, {
         quote: q
       }), marketValue != null && React.createElement("div", {
         className: "text-xs text-dim mt-1 mono"
-      }, fmt(marketValue, 'JSE'))));
-    })));
-  };
-  const renderTFSA = () => {
-    if (tfsaPositions.length === 0) {
-      return React.createElement("div", { className: "empty" },
-        React.createElement(Icon, { name: "briefcase", size: 40 }),
-        React.createElement("h3", null, "No TFSA positions yet"),
-        React.createElement("p", null, "Add your Tax-Free Savings Account holdings above."));
-    }
-    return React.createElement("div", null, React.createElement("div", {
-      className: "eyebrow"
-    }, "TFSA holdings"), React.createElement("div", {
-      className: "row-list"
-    }, tfsaPositions.map(p => {
-      const q = prices['TFSA:' + p.ticker];
-      const info = DATA.findInfo(p.ticker, 'TFSA');
-      const marketValue = q ? p.shares * q.price : null;
-      const cost = p.shares * p.costBasis;
-      const pnlPct = marketValue != null && cost > 0 ? (marketValue - cost) / cost * 100 : null;
-      return React.createElement("button", {
-        key: p.id, className: "row",
-        onClick: () => onOpenDetail(p.ticker, 'TFSA')
-      }, React.createElement("div", { className: "row-main" },
-        React.createElement("div", { className: "row-head" },
-          React.createElement("span", { className: "tkr" }, p.ticker),
-          React.createElement("span", { className: "text-sm text-dim" }, info.name || p.ticker)),
-        React.createElement("div", { className: "row-meta" },
-          p.shares, " \xD7 ", fmt(p.costBasis, 'TFSA'), pnlPct != null && React.createElement("span", {
-            className: `mono ${pnlPct >= 0 ? 'text-up' : 'text-down'}`
-          }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"),
-          React.createElement("button", {
-            className: "btn-sell-inline",
-            onClick: e => { e.stopPropagation(); onSellPosition(p); }
-          }, "Sell"))),
-        React.createElement("div", { className: "row-right" },
-          React.createElement(PriceBlock, { quote: q }),
-          marketValue != null && React.createElement("div", {
-            className: "text-xs text-dim mt-1 mono"
-          }, fmt(marketValue, 'TFSA'))));
+      }, fmt(marketValue, market))));
     })));
   };
   return React.createElement("div", null, React.createElement("div", {
-    className: "flex justify-between items-center mb-3",
+    className: "flex justify-between items-center mb-3 flex-wrap",
     style: {
       gap: 10
     }
-  }, React.createElement("div", { className: "flex gap-2 items-center" },
-    React.createElement("div", {
-    className: "toggle-group"
-  }, React.createElement("button", {
-    className: `toggle-opt ${marketFilter === 'US' ? 'active' : ''}`,
-    onClick: () => setMarketFilter('US')
-  }, "US (", usdPositions.length, ")"), React.createElement("button", {
-    className: `toggle-opt ${marketFilter === 'JSE' ? 'active' : ''}`,
-    onClick: () => setMarketFilter('JSE')
-  }, "JSE (", zarPositions.length, ")"), React.createElement("button", {
-    className: `toggle-opt ${marketFilter === 'TFSA' ? 'active' : ''}`,
-    onClick: () => setMarketFilter('TFSA')
-  }, "TFSA (", tfsaPositions.length, ")")),
+  }, React.createElement("div", {
+    className: "toggle-group toggle-group-scroll"
+  }, tabs.map(m => React.createElement("button", {
+    key: m,
+    className: `toggle-opt ${activeMarket === m ? 'active' : ''}`,
+    onClick: () => setMarketFilter(m)
+  }, tabLabel(m), " (", countFor(m), ")"))),
     React.createElement("div", { className: "flex gap-2 items-center" },
       React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onImportPositions },
         React.createElement(Icon, { name: "download", size: 13 }), " Import"),
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
-        React.createElement(Icon, { name: "plus", size: 13 }), " Add")))),
-    marketFilter === 'US' ? renderUS() : marketFilter === 'JSE' ? renderJSE() : renderTFSA());
+        React.createElement(Icon, { name: "plus", size: 13 }), " Add"))),
+    renderMarket(activeMarket));
 }
 const ALL_TICKERS = (() => {
   const seen = new Set();
@@ -3166,38 +3322,97 @@ function parseYahooSymbol(sym) {
   return { ticker: sym, market: 'US' };
 }
 async function fetchYahooSearch(query) {
-  const proxies = [
-    url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+  const q = String(query || '').trim();
+  if (!q) return [];
+  // Route through the shared, self-healing proxy chain (same one the price feed
+  // uses) and try both Yahoo hosts — the old hard-coded 3-proxy list failed
+  // often enough that name-based import matching couldn't find anything.
+  const urls = [
+    `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=18&newsCount=0&listsCount=0`,
+    `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=18&newsCount=0&listsCount=0`,
   ];
-  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=12&newsCount=0&listsCount=0`;
-  for (const buildProxy of proxies) {
-    try {
-      const res = await fetch(buildProxy(url));
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (!Array.isArray(data.quotes)) continue;
-      const out = [];
-      for (const q of data.quotes) {
-        if (!q.symbol) continue;
-        const qt = (q.quoteType || '').toUpperCase();
-        if (qt && qt !== 'EQUITY' && qt !== 'ETF' && qt !== 'MUTUALFUND') continue;
-        const parsed = parseYahooSymbol(q.symbol);
-        if (!parsed) continue;
-        out.push({
-          ticker: parsed.ticker,
-          market: parsed.market,
-          name: q.shortname || q.longname || parsed.ticker,
-          exchange: q.exchDisp || ''
-        });
-      }
-      return out;
-    } catch (e) {
-      continue;
+  for (const url of urls) {
+    const text = await fetchViaProxies(url, { timeoutMs: 8000 });
+    if (!text) continue;
+    let data;
+    try { data = JSON.parse(text); } catch (_e) { continue; }
+    if (!Array.isArray(data.quotes)) continue;
+    const out = [];
+    for (const item of data.quotes) {
+      if (!item.symbol) continue;
+      const qt = (item.quoteType || '').toUpperCase();
+      if (qt && qt !== 'EQUITY' && qt !== 'ETF' && qt !== 'MUTUALFUND') continue;
+      const parsed = parseYahooSymbol(item.symbol);
+      if (!parsed) continue;
+      const name = item.shortname || item.longname || parsed.ticker;
+      cacheName(parsed.market, parsed.ticker, name);
+      out.push({ ticker: parsed.ticker, market: parsed.market, name, exchange: item.exchDisp || '' });
     }
+    if (out.length) return out;
   }
   return [];
+}
+// ── Fuzzy company-name matching for import ────────────────────────────────
+// Strip legal suffixes / punctuation so "Broadcom Inc." ≈ "broadcom".
+function normaliseCompanyName(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[.,'’`()\/\-]/g, ' ')
+    .replace(/\b(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|llc|holdings?|group|grp|ag|sa|nv|se|asa|spa|the|class|cls|adr|ads|ordinary|ord|shares?|reit|trust|fund|enterprises?)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+// 0..1 similarity between a query and a candidate company name.
+function companyNameScore(query, candidate) {
+  const a = normaliseCompanyName(query);
+  const b = normaliseCompanyName(candidate);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (b.startsWith(a) || a.startsWith(b)) return 0.92;
+  if (b.includes(a) || a.includes(b)) return 0.8;
+  const at = a.split(' '), bt = b.split(' ');
+  const aset = new Set(at), bset = new Set(bt);
+  let inter = 0; aset.forEach(t => { if (bset.has(t)) inter++; });
+  const uni = new Set([...at, ...bt]).size;
+  let j = uni ? inter / uni : 0;
+  if (at[0] && at[0] === bt[0]) j += 0.18; // first-word match (e.g. "Anglo …")
+  return Math.min(0.88, j);
+}
+// Decide whether a token looks like a stock symbol rather than a company name.
+function looksLikeTickerToken(s) {
+  const t = String(s || '').trim().toUpperCase();
+  if (!t || /\s/.test(t)) return false;
+  return /^[A-Z0-9]{1,5}([.\-:][A-Z]{1,4})?$/.test(t);
+}
+// Rank live-search + local candidates for a query, biased by the chosen market.
+function rankImportCandidates(query, tickerHint, chosenMarket, remote) {
+  const pool = [];
+  const seen = new Set();
+  const add = (c) => {
+    if (!c || !c.ticker) return;
+    const key = priceKey(c.market, c.ticker);
+    if (seen.has(key)) return;
+    seen.add(key);
+    pool.push(c);
+  };
+  (remote || []).forEach(add);
+  // Seed from the app's own known tickers so offline / proxy-down still matches
+  // the curated universe (JSE, LSE, US holdings, etc.).
+  const qUpper = String(query || '').toUpperCase();
+  ALL_TICKERS.forEach(t => {
+    if (t.ticker === qUpper || (tickerHint && t.ticker === String(tickerHint).toUpperCase()) ||
+        companyNameScore(query, t.name) >= 0.6) {
+      add({ ticker: t.ticker, market: t.market, name: t.name, exchange: '' });
+    }
+  });
+  return pool.map(c => {
+    let score = companyNameScore(query, c.name) * 100;
+    if (c.market === chosenMarket) score += 45;                 // market guides the pick
+    if (tickerHint && c.ticker.toUpperCase() === String(tickerHint).toUpperCase()) score += 35;
+    if (c.ticker.toUpperCase() === qUpper) score += 25;          // query itself was a symbol
+    return { ...c, score };
+  }).sort((a, b) => b.score - a.score);
 }
 // ─────────────────────────────────────────────────────────────────────────
 // Holdings import: parse CSV / TSV / Markdown / plain text natively, and XLSX
@@ -3352,16 +3567,12 @@ function rowsToHoldings(rows) {
     cols = { ticker: 0, shares: 1, cost: 2, total: -1, price: -1, market: 3, currency: -1, name: -1, date: -1 };
     dataRows = cleaned;
   }
-  const get = (row, i) => (i >= 0 && i < row.length) ? row[i] : '';
+  const get = (row, i) => (i >= 0 && i < row.length) ? String(row[i] != null ? row[i] : '').trim() : '';
+  const isNumericCell = (c) => { const s = String(c || '').trim(); return s !== '' && isFinite(parseDecimal(s)) && /^[\d.,\s$£R€%+\-]+$/.test(s); };
   const holdings = [];
   for (const row of dataRows) {
-    const tickRaw = get(row, cols.ticker) || get(row, cols.name);
-    if (!tickRaw) continue;
-    const { ticker, market: suffixMarket } = splitTickerMarket(tickRaw);
-    if (!ticker || !/[A-Z0-9]/.test(ticker) || ticker.length > 6 && cols.name < 0) {
-      // long token with no symbol column → probably a name row we can't use
-    }
-    if (!ticker) continue;
+    const nameCell = cols.name >= 0 ? get(row, cols.name) : '';
+    const tickerCell = cols.ticker >= 0 ? get(row, cols.ticker) : '';
     const shares = parseDecimal(get(row, cols.shares));
     let cost = parseDecimal(get(row, cols.cost));
     if ((!isFinite(cost) || cost <= 0) && cols.total >= 0 && isFinite(shares) && shares > 0) {
@@ -3372,15 +3583,44 @@ function rowsToHoldings(rows) {
       const pr = parseDecimal(get(row, cols.price));
       if (isFinite(pr) && pr > 0) cost = pr;
     }
-    const market = inferMarket(get(row, cols.currency), get(row, cols.market), suffixMarket);
-    const name = (cols.name >= 0 ? get(row, cols.name) : '') || '';
+    // Name-first: the markdown almost always lists company names, so the human
+    // identifier (name column, else the ticker column) becomes the search query
+    // that gets fuzzy-matched to a live listing. A bare symbol token is kept as
+    // a hint, but we never coerce a company name into a fake ticker.
+    let query = nameCell;
+    let tickerHint = null;
+    let suffixMarket = null;
+    if (tickerCell) {
+      const sp = splitTickerMarket(tickerCell);
+      suffixMarket = sp.market;
+      if (looksLikeTickerToken(tickerCell)) tickerHint = sp.ticker;
+      if (!query) query = tickerCell;
+    }
+    if (!query) {
+      const textCells = row.map(c => String(c || '').trim()).filter(c => c && !isNumericCell(c));
+      textCells.sort((a, b) => b.length - a.length);
+      query = textCells[0] || '';
+      if (query && !tickerHint && looksLikeTickerToken(query)) {
+        const sp = splitTickerMarket(query);
+        tickerHint = sp.ticker; suffixMarket = suffixMarket || sp.market;
+      }
+    }
+    if (!query) continue;
+    const marketCol = cols.market >= 0 ? get(row, cols.market) : '';
+    const currencyCol = cols.currency >= 0 ? get(row, cols.currency) : '';
+    let marketHint = null;
+    if (suffixMarket) marketHint = suffixMarket;
+    else if (marketCol || currencyCol) marketHint = inferMarket(currencyCol, marketCol, null);
     let purchaseDate = '';
     if (cols.date >= 0) {
       const d = parseImportDate(get(row, cols.date));
       if (d) purchaseDate = d;
     }
     holdings.push({
-      ticker, market, name: name.trim(),
+      query: query.trim(),
+      nameHint: nameCell,
+      tickerHint,
+      marketHint,
       shares: isFinite(shares) ? shares : null,
       costBasis: isFinite(cost) && cost > 0 ? cost : null,
       purchaseDate,
@@ -3404,9 +3644,21 @@ function parseImportDate(raw) {
   if (!isNaN(t)) return new Date(t).toISOString().slice(0, 10);
   return '';
 }
+// Strip leading markdown list markers ("- ", "* ", "+ ", "•", "1. ", "1) ")
+// and trailing markdown emphasis so a plain "- **Broadcom**" line becomes
+// "Broadcom" before we split it into cells.
+function stripListMarker(line) {
+  return String(line)
+    .replace(/^\s{0,4}([-*+•·–—]\s+|\d{1,3}[.)]\s+)/, '')
+    .replace(/\*\*/g, '')
+    .replace(/^#+\s+/, '')
+    .trim();
+}
 function parseHoldingsFromText(text) {
   if (!text) return [];
-  const lines = text.replace(/\r\n?/g, '\n').split('\n').filter(l => l.trim() !== '');
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+    .map(stripListMarker)
+    .filter(l => l.trim() !== '');
   const rows = lines.map(splitLine);
   return rowsToHoldings(rows);
 }
@@ -3620,12 +3872,18 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
 function resolveTickerName(ticker, market, q) {
   if (q) {
     const yahooName = q.shortName || q.longName;
-    if (yahooName && yahooName !== ticker) return yahooName;
+    if (yahooName && yahooName !== ticker) {
+      cacheName(market, ticker, yahooName);
+      return yahooName;
+    }
   }
   const info = DATA.findInfo(ticker, market);
   if (info && info.name && info.name !== ticker) return info.name;
   const hit = ALL_TICKERS.find(t => t.ticker === ticker && t.market === market);
   if (hit && hit.name && hit.name !== ticker) return hit.name;
+  // Learned/curated names (heatmap mega-caps, anything we've quoted before).
+  const cached = cachedName(market, ticker);
+  if (cached) return cached;
   return null;
 }
 
@@ -4232,16 +4490,28 @@ function WatchlistView(_ref8) {
   );
 }
 
-function heatColor(pct) {
-  if (pct == null || !isFinite(pct)) return { bg: 'rgb(60, 60, 66)', fg: '#a1a1aa' };
+function heatColor(pct, isLight) {
+  if (pct == null || !isFinite(pct)) {
+    return isLight ? { bg: 'rgb(228, 228, 231)', fg: '#52525b' } : { bg: 'rgb(60, 60, 66)', fg: '#a1a1aa' };
+  }
   const clamped = Math.max(-3, Math.min(3, pct));
   const t = Math.abs(clamped) / 3;
-  const lo = clamped >= 0 ? [38, 73, 56] : [73, 38, 45];
-  const hi = clamped >= 0 ? [22, 163, 74] : [220, 38, 38];
+  let lo, hi, fg;
+  if (isLight) {
+    // Light mode: pale tint near 0% → deep, saturated colour at the extremes.
+    // Dark text on the pale tiles, white once the fill is strong enough.
+    lo = clamped >= 0 ? [220, 252, 231] : [254, 226, 226];
+    hi = clamped >= 0 ? [21, 128, 61] : [185, 28, 28];
+    fg = t > 0.5 ? '#ffffff' : (clamped >= 0 ? '#14532d' : '#7f1d1d');
+  } else {
+    lo = clamped >= 0 ? [38, 73, 56] : [73, 38, 45];
+    hi = clamped >= 0 ? [22, 163, 74] : [220, 38, 38];
+    fg = '#ffffff';
+  }
   const r = Math.round(lo[0] + (hi[0] - lo[0]) * t);
   const g = Math.round(lo[1] + (hi[1] - lo[1]) * t);
   const b = Math.round(lo[2] + (hi[2] - lo[2]) * t);
-  return { bg: `rgb(${r}, ${g}, ${b})`, fg: '#ffffff' };
+  return { bg: `rgb(${r}, ${g}, ${b})`, fg };
 }
 function squarify(items, rect) {
   if (!items || items.length === 0 || rect.w <= 0 || rect.h <= 0) return [];
@@ -4387,30 +4657,108 @@ function useContainerWidth() {
   }, []);
   return [ref, width];
 }
+// Each GICS-style sector maps to the SPDR sector ETF that tracks it. We treat
+// the ETF's own price history as a proxy for "the size / health of the sector"
+// over time — it's a clean, liquid, well-known instrument per sector and lets us
+// show multi-horizon trend without needing a sector-market-cap time series.
+const SECTOR_ETF = {
+  'Technology':              { etf: 'XLK',  name: 'Technology Select Sector' },
+  'Communication Services':  { etf: 'XLC',  name: 'Communication Services' },
+  'Consumer Cyclical':       { etf: 'XLY',  name: 'Consumer Discretionary' },
+  'Consumer Defensive':      { etf: 'XLP',  name: 'Consumer Staples' },
+  'Energy':                  { etf: 'XLE',  name: 'Energy Select Sector' },
+  'Financial Services':      { etf: 'XLF',  name: 'Financial Select Sector' },
+  'Financials':             { etf: 'XLF',  name: 'Financial Select Sector' },
+  'Healthcare':              { etf: 'XLV',  name: 'Health Care Select Sector' },
+  'Industrials':             { etf: 'XLI',  name: 'Industrial Select Sector' },
+  'Basic Materials':         { etf: 'XLB',  name: 'Materials Select Sector' },
+  'Materials':               { etf: 'XLB',  name: 'Materials Select Sector' },
+  'Real Estate':             { etf: 'XLRE', name: 'Real Estate Select Sector' },
+  'Utilities':               { etf: 'XLU',  name: 'Utilities Select Sector' },
+};
+const SECTOR_TREND_WINDOWS = [
+  { key: '1W', days: 7 },
+  { key: '1M', days: 30 },
+  { key: '1Y', days: 365 },
+  { key: '2Y', days: 730 },
+  { key: '3Y', days: 1095 },
+  { key: '5Y', days: 1825 },
+];
+const SECTOR_TREND_CACHE = {};
+async function fetchSectorTrend(sectorName) {
+  const map = SECTOR_ETF[sectorName];
+  if (!map) return { unsupported: true };
+  const cached = SECTOR_TREND_CACHE[map.etf];
+  if (cached && Date.now() - cached.fetchedAt < 6 * 3600 * 1000) return cached;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${map.etf}?interval=1d&range=5y`;
+  const text = await fetchViaProxies(url, { timeoutMs: 9000 });
+  if (!text) return null;
+  let result;
+  try { result = JSON.parse(text)?.chart?.result?.[0]; } catch (_e) { return null; }
+  const ts = result?.timestamp;
+  const closes = result?.indicators?.quote?.[0]?.close;
+  if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
+  const bars = [];
+  for (let i = 0; i < ts.length; i++) {
+    const c = closes[i];
+    if (typeof c === 'number' && isFinite(c) && c > 0) bars.push({ t: ts[i] * 1000, p: c });
+  }
+  if (bars.length < 2) return null;
+  const latest = bars[bars.length - 1].p;
+  const now = bars[bars.length - 1].t;
+  const closeAtOrBefore = (targetMs) => {
+    for (let i = bars.length - 1; i >= 0; i--) { if (bars[i].t <= targetMs) return bars[i].p; }
+    return null;
+  };
+  const trends = SECTOR_TREND_WINDOWS.map(w => {
+    const past = closeAtOrBefore(now - w.days * 86400000);
+    const pct = past && past > 0 ? (latest - past) / past * 100 : null;
+    return { key: w.key, pct };
+  });
+  const entry = { etf: map.etf, name: map.name, trends, fetchedAt: Date.now() };
+  SECTOR_TREND_CACHE[map.etf] = entry;
+  return entry;
+}
 function HeatmapTreemap(_ref8c) {
-  let { rows, aspectRatio, minHeight, onOpenDetail, loading, height: fixedHeight } = _ref8c;
-  const [containerRef, width] = useContainerWidth();
+  let { rows, aspectRatio, minHeight, onOpenDetail, onOpenSector, loading, height: fixedHeight, width: fixedWidth } = _ref8c;
+  const [containerRef, measuredWidth] = useContainerWidth();
+  const width = fixedWidth || measuredWidth;
   const sectors = useMemo(() => buildSectorHierarchy(rows), [rows]);
   const height = fixedHeight || (width > 0 ? Math.max(minHeight || 360, width * (aspectRatio || 0.7)) : (minHeight || 360));
   const cells = useMemo(() => width > 0 ? layoutTreemap(sectors, width, height) : [], [sectors, width, height]);
-  return React.createElement("div", { ref: containerRef, className: "treemap", style: { height: height + 'px' } },
+  const isLight = typeof document !== 'undefined' && document.documentElement && document.documentElement.dataset.theme === 'light';
+  return React.createElement("div", { ref: containerRef, className: "treemap", style: { height: height + 'px', width: fixedWidth ? fixedWidth + 'px' : undefined } },
     cells.map((cell, idx) => {
       if (cell.kind === 'sector' || cell.kind === 'industry') {
         const isSec = cell.kind === 'sector';
-        return React.createElement("div", {
-          key: cell.kind + ':' + cell.name + ':' + idx,
-          className: isSec ? 'tm-sector-label' : 'tm-industry-label',
-          style: { left: cell.x + 'px', top: cell.y + 'px', width: cell.w + 'px' }
-        },
-          React.createElement("span", { className: "tm-label-name" }, cell.name),
-          React.createElement("span", { className: `tm-label-chg ${cell.avgChange >= 0 ? 'up' : 'down'}` },
-            ' ', (cell.avgChange >= 0 ? '+' : '') + cell.avgChange.toFixed(2) + '%'
+        // A framing box around the whole group makes it obvious which tiles
+        // belong to which sector / industry, plus the label strip on top.
+        return [
+          React.createElement("div", {
+            key: (isSec ? 'sbox:' : 'ibox:') + cell.name + ':' + idx,
+            className: isSec ? 'tm-sector-box' : 'tm-industry-box',
+            style: { left: cell.x + 'px', top: cell.y + 'px', width: cell.w + 'px', height: cell.h + 'px' }
+          }),
+          React.createElement("div", {
+            key: cell.kind + ':' + cell.name + ':' + idx,
+            className: (isSec ? 'tm-sector-label' : 'tm-industry-label') + (isSec && onOpenSector ? ' tm-sector-label-tap' : ''),
+            style: { left: cell.x + 'px', top: cell.y + 'px', width: cell.w + 'px' },
+            onClick: isSec && onOpenSector ? (e) => { e.stopPropagation(); onOpenSector(cell.name); } : undefined,
+            role: isSec && onOpenSector ? 'button' : undefined,
+            title: isSec && onOpenSector ? 'Open ' + cell.name + ' sector' : undefined
+          },
+            React.createElement("span", { className: "tm-label-name" }, cell.name),
+            React.createElement("span", { className: `tm-label-chg ${cell.avgChange >= 0 ? 'up' : 'down'}` },
+              ' ', (cell.avgChange >= 0 ? '+' : '') + cell.avgChange.toFixed(2) + '%'
+            ),
+            isSec && onOpenSector ? React.createElement("span", { className: "tm-sector-expand" },
+              React.createElement(Icon, { name: "maximize", size: 10 })) : null
           )
-        );
+        ];
       }
       const t = cell.ref;
       const hasData = t.changePct != null && isFinite(t.changePct);
-      const c = heatColor(hasData ? t.changePct : null);
+      const c = heatColor(hasData ? t.changePct : null, isLight);
       // Inset each tile so neighbours are separated by a clean gutter (the dark
       // container shows through), giving the grid breathing room instead of the
       // cramped hairline-border look. Smaller gap on very small cells.
@@ -4442,51 +4790,64 @@ function HeatmapTreemap(_ref8c) {
     })
   );
 }
-// Full-screen, pinch-to-zoom & pan heatmap. Lets you blow the map up to read
-// sector / industry labels on small cells (the inline map can't show them).
-function HeatmapFullscreen(_refFS) {
-  let { rows, title, loading, onOpenDetail, onClose } = _refFS;
+// Reusable pinch / scroll / double-tap zoom + drag-pan treemap. Zoom is realised
+// by RE-LAYING-OUT the treemap at a larger pixel size (not a CSS scale) so cells
+// physically grow and their labels stay sharp. Used both by the fullscreen
+// heatmap and the in-place sector popup, so the popup behaves exactly like the
+// big heatmap without ever going fullscreen.
+function ZoomPanHeatmap(_refZP) {
+  let { rows, loading, onOpenDetail, onOpenSector, lockBodyScroll, stageClass, contentClass } = _refZP;
   const wrapRef = useRef(null);
-  const contentRef = useRef(null);
-  const [tf, setTf] = useState({ s: 1, x: 0, y: 0 });
-  const [contentH, setContentH] = useState(0);
-  const tfRef = useRef(tf); tfRef.current = tf;
+  const [stage, setStage] = useState({ w: 0, h: 0 });
+  const [z, setZ] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const zRef = useRef(1);
+  const panRef = useRef({ x: 0, y: 0 });
   const ptrs = useRef(new Map());
   const pinch = useRef(null);
-  const pan = useRef(null);
+  const drag = useRef(null);
   const movedRef = useRef(false);
-  const MIN = 1, MAX = 6;
-  const clampScale = s => Math.max(MIN, Math.min(MAX, s));
-  const apply = (s, x, y) => {
+  const rafRef = useRef(0);
+  const nextRef = useRef({ z: 1, x: 0, y: 0 });
+  const MIN = 1, MAX = 5;
+  const commit = (nz, x, y) => {
+    nz = Math.max(MIN, Math.min(MAX, nz));
     const el = wrapRef.current;
-    if (el) {
-      const w = el.clientWidth, h = el.clientHeight;
-      x = Math.min(0, Math.max(w - w * s, x));
-      y = Math.min(0, Math.max(h - h * s, y));
-    }
-    setTf({ s, x, y });
+    if (el) { const w = el.clientWidth, h = el.clientHeight; x = Math.min(0, Math.max(w - w * nz, x)); y = Math.min(0, Math.max(h - h * nz, y)); }
+    nextRef.current = { z: nz, x, y };
+    zRef.current = nz; panRef.current = { x, y };
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
+      setZ(nextRef.current.z); setPan({ x: nextRef.current.x, y: nextRef.current.y });
+    });
   };
-  const reset = () => { movedRef.current = false; setTf({ s: 1, x: 0, y: 0 }); };
+  const reset = () => { movedRef.current = false; commit(1, 0, 0); };
   useEffect(() => {
-    const el = wrapRef.current;
-    if (el) setContentH(el.clientHeight);
-    const onResize = () => { if (wrapRef.current) setContentH(wrapRef.current.clientHeight); };
-    window.addEventListener('resize', onResize);
-    // lock background scroll while open
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { window.removeEventListener('resize', onResize); document.body.style.overflow = prevOverflow; };
-  }, []);
+    const measure = () => { const el = wrapRef.current; if (el) setStage({ w: el.clientWidth, h: el.clientHeight }); };
+    measure();
+    // Re-measure on the next frame too — inside an animating popup the first
+    // measurement can land mid-transition.
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener('resize', measure);
+    let prevOverflow;
+    if (lockBodyScroll) { prevOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; }
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+      if (lockBodyScroll) document.body.style.overflow = prevOverflow;
+    };
+  }, [lockBodyScroll]);
   useEffect(() => {
     const el = wrapRef.current; if (!el) return;
     const onDown = e => {
+      el.setPointerCapture && el.setPointerCapture(e.pointerId);
       ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (ptrs.current.size === 2) {
         const [a, b] = [...ptrs.current.values()];
-        pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), t: { ...tfRef.current }, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, rect: el.getBoundingClientRect() };
-        pan.current = null; movedRef.current = true;
+        pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), z: zRef.current, px: panRef.current.x, py: panRef.current.y, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, rect: el.getBoundingClientRect() };
+        drag.current = null; movedRef.current = true;
       } else if (ptrs.current.size === 1) {
-        pan.current = { x: e.clientX, y: e.clientY, t: { ...tfRef.current } };
+        drag.current = { x: e.clientX, y: e.clientY, px: panRef.current.x, py: panRef.current.y };
         movedRef.current = false;
       }
     };
@@ -4497,66 +4858,220 @@ function HeatmapFullscreen(_refFS) {
         const [a, b] = [...ptrs.current.values()];
         const nd = Math.hypot(a.x - b.x, a.y - b.y);
         const g = pinch.current;
-        const ns = clampScale(g.t.s * (nd / g.d));
-        const k = ns / g.t.s;
+        const nz = Math.max(MIN, Math.min(MAX, g.z * (nd / g.d)));
+        const k = nz / g.z;
         const fx = g.mx - g.rect.left, fy = g.my - g.rect.top;
-        apply(ns, fx - (fx - g.t.x) * k, fy - (fy - g.t.y) * k);
+        commit(nz, fx - (fx - g.px) * k, fy - (fy - g.py) * k);
         e.preventDefault();
-      } else if (ptrs.current.size === 1 && pan.current && tfRef.current.s > 1.01) {
-        const g = pan.current;
+      } else if (ptrs.current.size === 1 && drag.current && zRef.current > 1.01) {
+        const g = drag.current;
         const dx = e.clientX - g.x, dy = e.clientY - g.y;
         if (Math.abs(dx) + Math.abs(dy) > 5) movedRef.current = true;
-        apply(g.t.s, g.t.x + dx, g.t.y + dy);
+        commit(zRef.current, g.px + dx, g.py + dy);
         e.preventDefault();
       }
     };
     const onUp = e => {
       ptrs.current.delete(e.pointerId);
       if (ptrs.current.size < 2) pinch.current = null;
-      if (ptrs.current.size === 0) pan.current = null;
+      if (ptrs.current.size === 0) drag.current = null;
     };
     const onWheel = e => {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       const fx = e.clientX - rect.left, fy = e.clientY - rect.top;
-      const t = tfRef.current;
-      const ns = clampScale(t.s * (e.deltaY < 0 ? 1.15 : 0.87));
-      const k = ns / t.s;
-      apply(ns, fx - (fx - t.x) * k, fy - (fy - t.y) * k);
+      const cz = zRef.current;
+      const nz = Math.max(MIN, Math.min(MAX, cz * (e.deltaY < 0 ? 1.18 : 0.85)));
+      const k = nz / cz;
+      commit(nz, fx - (fx - panRef.current.x) * k, fy - (fy - panRef.current.y) * k);
     };
+    const onDbl = e => { e.preventDefault(); if (zRef.current > 1.01) commit(1, 0, 0); else { const rect = el.getBoundingClientRect(); const fx = e.clientX - rect.left, fy = e.clientY - rect.top; const nz = 2.5; commit(nz, fx - fx * nz, fy - fy * nz); } };
     el.addEventListener('pointerdown', onDown);
     el.addEventListener('pointermove', onMove, { passive: false });
     el.addEventListener('pointerup', onUp);
     el.addEventListener('pointercancel', onUp);
     el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('dblclick', onDbl);
     return () => {
       el.removeEventListener('pointerdown', onDown);
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
       el.removeEventListener('pointercancel', onUp);
       el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('dblclick', onDbl);
     };
   }, []);
+  // Suppress tap-throughs that happened during a pan/pinch gesture.
   const handleOpen = (tk, mk) => { if (movedRef.current) return; onOpenDetail && onOpenDetail(tk, mk); };
+  const handleSector = onOpenSector ? (name) => { if (movedRef.current) return; onOpenSector(name); } : undefined;
+  const cw = Math.round(stage.w * z), ch = Math.round(stage.h * z);
+  return React.createElement("div", { className: stageClass || "zoompan-stage", ref: wrapRef },
+    React.createElement("div", {
+      className: contentClass || "zoompan-content",
+      style: { transform: `translate3d(${pan.x}px, ${pan.y}px, 0)`, width: cw + 'px', height: ch + 'px' }
+    },
+      stage.w > 0 ? React.createElement(HeatmapTreemap, { rows: rows, width: cw, height: ch, onOpenDetail: handleOpen, onOpenSector: handleSector, loading: loading }) : null
+    ),
+    z > 1.01 ? React.createElement("div", { className: "zoompan-badge" },
+      React.createElement("span", null, z.toFixed(1) + '×'),
+      React.createElement("button", { className: "zoompan-reset", onClick: reset }, "Reset")
+    ) : null
+  );
+}
+// Full-screen pinch-to-zoom & pan heatmap — thin chrome around ZoomPanHeatmap.
+function HeatmapFullscreen(_refFS) {
+  let { rows, title, loading, onOpenDetail, onOpenSector, onClose } = _refFS;
   return React.createElement("div", { className: "heatmap-fs" },
     React.createElement("div", { className: "heatmap-fs-bar" },
       React.createElement("div", { className: "heatmap-fs-title" }, title || 'Heatmap',
-        React.createElement("span", { className: "heatmap-fs-hint" }, "Pinch or scroll to zoom · drag to pan")),
+        React.createElement("span", { className: "heatmap-fs-hint" }, "Pinch, scroll or double-tap to zoom · drag to pan · tap a sector name to dive in")),
       React.createElement("div", { className: "heatmap-fs-actions" },
-        tf.s > 1.01 ? React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: reset }, "Reset") : null,
         React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: onClose, "aria-label": "Close fullscreen" },
           React.createElement(Icon, { name: "x", size: 16 }))
       )
     ),
-    React.createElement("div", { className: "heatmap-fs-stage", ref: wrapRef },
-      React.createElement("div", {
-        className: "heatmap-fs-content", ref: contentRef,
-        style: { transform: `translate(${tf.x}px, ${tf.y}px) scale(${tf.s})`, transformOrigin: '0 0' }
-      },
-        contentH > 0 ? React.createElement(HeatmapTreemap, { rows: rows, height: contentH, onOpenDetail: handleOpen, loading: loading }) : null
-      )
-    )
+    React.createElement(ZoomPanHeatmap, {
+      rows: rows, loading: loading, onOpenDetail: onOpenDetail, onOpenSector: onOpenSector,
+      lockBodyScroll: true, stageClass: "heatmap-fs-stage", contentClass: "heatmap-fs-content"
+    })
   );
+}
+// iOS-style "zoom into the sector" popup. Springs up from a scaled-down,
+// translucent state into the centre of the screen, focuses the heatmap on a
+// single sector, and pulls multi-horizon trend for the sector's proxy ETF.
+function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDetail }) {
+  const [trend, setTrend] = useState(null);
+  const [trendLoading, setTrendLoading] = useState(true);
+  const [closing, setClosing] = useState(false);
+
+  const close = useCallback(() => {
+    setClosing(true);
+    setTimeout(onClose, 240);
+  }, [onClose]);
+
+  useEffect(() => {
+    let alive = true;
+    setTrendLoading(true);
+    setTrend(null);
+    fetchSectorTrend(sectorName).then(t => { if (alive) { setTrend(t); setTrendLoading(false); } });
+    return () => { alive = false; };
+  }, [sectorName]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
+  }, [close]);
+
+  // Relative size: this sector's market-cap weight vs every other sector on the
+  // same heatmap, plus its rank, so the user can gauge how big it is.
+  const sizeCtx = useMemo(() => {
+    const agg = {};
+    let total = 0;
+    rows.forEach(r => {
+      const v = r.value || 0;
+      agg[r.sector] = (agg[r.sector] || 0) + v;
+      total += v;
+    });
+    const list = Object.entries(agg).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    const rank = list.findIndex(s => s.name === sectorName) + 1;
+    const me = list.find(s => s.name === sectorName);
+    const largest = list.length ? list[0].value : 0;
+    return {
+      total, count: list.length, rank,
+      value: me ? me.value : 0,
+      share: total > 0 && me ? me.value / total * 100 : 0,
+      relToLargest: largest > 0 && me ? me.value / largest * 100 : 0,
+      top: list.slice(0, 6),
+    };
+  }, [rows, sectorName]);
+
+  const sectorRows = useMemo(() => rows.filter(r => r.sector === sectorName), [rows, sectorName]);
+  const dataRows = sectorRows.filter(r => r.changePct != null && isFinite(r.changePct));
+  const up = dataRows.filter(r => r.changePct > 0).length;
+  const down = dataRows.filter(r => r.changePct < 0).length;
+  const totalVal = dataRows.reduce((s, r) => s + r.value, 0);
+  const dayAvg = totalVal > 0 ? dataRows.reduce((s, r) => s + r.changePct * r.value, 0) / totalVal : 0;
+
+  const trendRow = trend && trend.trends
+    ? React.createElement("div", { className: "sector-trend-grid" },
+        trend.trends.map(t => React.createElement("div", { key: t.key, className: "sector-trend-cell" },
+          React.createElement("div", { className: "sector-trend-key" }, t.key),
+          React.createElement("div", {
+            className: "sector-trend-val " + (t.pct == null ? 'flat' : t.pct >= 0 ? 'up' : 'down')
+          }, t.pct == null ? '—' : (t.pct >= 0 ? '+' : '') + t.pct.toFixed(1) + '%')
+        )))
+    : (trendLoading
+        ? React.createElement("div", { className: "sector-trend-loading" }, "Loading sector trend…")
+        : React.createElement("div", { className: "sector-trend-loading" },
+            trend && trend.unsupported ? "No trend proxy for this sector." : "Sector trend unavailable right now."));
+
+  return React.createElement("div", { className: "sector-modal" + (closing ? " closing" : "") },
+    React.createElement("div", { className: "sector-modal-backdrop", onClick: close }),
+    React.createElement("div", { className: "sector-modal-panel", role: "dialog", "aria-label": sectorName + " sector" },
+      React.createElement("div", { className: "sector-modal-header" },
+        React.createElement("div", { className: "sector-modal-titles" },
+          React.createElement("div", { className: "sector-modal-title" }, sectorName),
+          React.createElement("div", { className: "sector-modal-sub" },
+            exchangeLabel ? exchangeLabel + " · " : "",
+            sectorRows.length, " companies",
+            trend && trend.etf ? React.createElement("span", { className: "sector-proxy-tag" }, " proxy ", trend.etf) : null)),
+        React.createElement("button", { className: "modal-close", onClick: close, "aria-label": "Close" },
+          React.createElement(Icon, { name: "x" }))),
+
+      React.createElement("div", { className: "sector-modal-body" },
+        // Snapshot stat strip
+        React.createElement("div", { className: "sector-stat-strip" },
+          React.createElement("div", { className: "sector-stat" },
+            React.createElement("div", { className: "sector-stat-label" }, "Today"),
+            React.createElement("div", { className: "sector-stat-val " + (dayAvg >= 0 ? 'up' : 'down') },
+              (dayAvg >= 0 ? '+' : '') + dayAvg.toFixed(2) + '%')),
+          React.createElement("div", { className: "sector-stat" },
+            React.createElement("div", { className: "sector-stat-label" }, "Breadth"),
+            React.createElement("div", { className: "sector-stat-val" },
+              React.createElement("span", { className: "stat-up" }, "▲", up),
+              " ",
+              React.createElement("span", { className: "stat-down" }, "▼", down))),
+          React.createElement("div", { className: "sector-stat" },
+            React.createElement("div", { className: "sector-stat-label" }, "Weight"),
+            React.createElement("div", { className: "sector-stat-val" }, sizeCtx.share.toFixed(1) + '%')),
+          React.createElement("div", { className: "sector-stat" },
+            React.createElement("div", { className: "sector-stat-label" }, "Size rank"),
+            React.createElement("div", { className: "sector-stat-val" }, sizeCtx.rank > 0 ? '#' + sizeCtx.rank + ' / ' + sizeCtx.count : '—'))),
+
+        // Relative-size bar vs the biggest sector
+        React.createElement("div", { className: "sector-size-block" },
+          React.createElement("div", { className: "sector-size-head" },
+            React.createElement("span", null, "Size vs largest sector"),
+            React.createElement("span", { className: "text-dim" }, sizeCtx.relToLargest.toFixed(0) + '%')),
+          React.createElement("div", { className: "sector-size-track" },
+            React.createElement("div", { className: "sector-size-fill", style: { width: Math.max(2, Math.min(100, sizeCtx.relToLargest)) + '%' } }))),
+
+        // Multi-horizon trend
+        React.createElement("div", { className: "sector-trend-block" },
+          React.createElement("div", { className: "sector-section-label" }, "Sector trend",
+            trend && trend.name ? React.createElement("span", { className: "text-dim" }, " · ", trend.name) : null),
+          trendRow,
+          React.createElement("div", { className: "sector-trend-note" }, "Total return of the sector's proxy ETF over each window.")),
+
+        // Focused heatmap of just this sector — pinch / scroll / double-tap to
+        // zoom and drag to pan, exactly like the big heatmap, but contained.
+        React.createElement("div", { className: "sector-heat-block" },
+          React.createElement("div", { className: "sector-section-label" }, "Companies",
+            React.createElement("span", { className: "text-dim" }, " · pinch / scroll to zoom, drag to pan")),
+          sectorRows.length > 0
+            ? React.createElement("div", { className: "sector-zoom-wrap" },
+                React.createElement(ZoomPanHeatmap, {
+                  rows: sectorRows,
+                  loading: false,
+                  lockBodyScroll: false,
+                  stageClass: "sector-zoom-stage",
+                  contentClass: "heatmap-fs-content",
+                  onOpenDetail: (tk, mk) => { close(); onOpenDetail && onOpenDetail(tk, mk); }
+                }))
+            : React.createElement("div", { className: "text-dim text-sm" }, "No live data for this sector yet.")))));
 }
 function HeatmapView(_ref8b) {
   let { positions, prices, onOpenDetail } = _ref8b;
@@ -4573,6 +5088,7 @@ function HeatmapView(_ref8b) {
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [sectorDetail, setSectorDetail] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(() => persisted[exchanges[0].id]?.fetchedAt ? new Date(persisted[exchanges[0].id].fetchedAt) : null);
   const cacheKey = exchange.id;
   const cached = cache[cacheKey];
@@ -4732,14 +5248,25 @@ function HeatmapView(_ref8b) {
       aspectRatio: aspectRatio,
       minHeight: minHeight,
       onOpenDetail: onOpenDetail,
+      onOpenSector: (name) => setSectorDetail(name),
       loading: loading
     }) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null),
+    activeRows.length > 0 ? React.createElement("div", { className: "heatmap-sector-hint" },
+      React.createElement(Icon, { name: "maximize", size: 11 }), " Tap a sector name to zoom in") : null,
     fullscreen ? React.createElement(HeatmapFullscreen, {
       rows: activeRows,
       loading: loading,
       title: mode === 'market' ? exchange.label : 'Your portfolio',
       onOpenDetail: (tk, mk) => { setFullscreen(false); onOpenDetail && onOpenDetail(tk, mk); },
+      onOpenSector: (name) => setSectorDetail(name),
       onClose: () => setFullscreen(false)
+    }) : null,
+    sectorDetail ? React.createElement(SectorDetailModal, {
+      sectorName: sectorDetail,
+      rows: activeRows,
+      exchangeLabel: mode === 'market' ? exchange.label : 'Your portfolio',
+      onOpenDetail: onOpenDetail,
+      onClose: () => setSectorDetail(null)
     }) : null
   );
 }
@@ -5211,6 +5738,27 @@ function EarningsBadge(_refEB) {
     )
   );
 }
+// Representative sector forward P/E benchmarks (broad-market estimates, early
+// 2026). Used as the "Industry fwd P/E" comparator when a live per-industry
+// figure isn't available (no free CORS source provides one without a key).
+const SECTOR_FWD_PE = {
+  'technology': 27, 'information technology': 27,
+  'communication services': 19, 'communications': 19,
+  'consumer cyclical': 22, 'consumer discretionary': 22,
+  'consumer defensive': 19, 'consumer staples': 19,
+  'healthcare': 17, 'health care': 17,
+  'financial services': 15, 'financials': 15, 'financial': 15,
+  'industrials': 20, 'industrial': 20,
+  'energy': 12,
+  'basic materials': 16, 'materials': 16,
+  'real estate': 18,
+  'utilities': 17,
+};
+function sectorForwardPE(sector) {
+  if (!sector) return null;
+  const v = SECTOR_FWD_PE[String(sector).trim().toLowerCase()];
+  return (typeof v === 'number') ? v : null;
+}
 // Convert a Yahoo currency code (e.g. ZAc, GBp, USD) to its 3-letter base.
 function baseCurrency(code, market) {
   const c = (code || '').toUpperCase();
@@ -5366,7 +5914,21 @@ function DetailModal(_ref10) {
     market
   } = selected;
   const info = DATA.findInfo(ticker, market);
-  const quote = prices[priceKey(market, ticker)];
+  const liveQuote = prices[priceKey(market, ticker)];
+  // Stocks opened from the heatmap / picks aren't in the main price feed, so
+  // fetch their quote on demand — this gives the detail its price, change and
+  // company name instead of just a bare ticker.
+  const [fetchedQuote, setFetchedQuote] = useState(null);
+  useEffect(() => {
+    setFetchedQuote(null);
+    if (!liveQuote) {
+      let alive = true;
+      fetchQuote(ticker, market).then(q => { if (alive && q) setFetchedQuote(q); });
+      return () => { alive = false; };
+    }
+  }, [ticker, market]);
+  const quote = liveQuote || fetchedQuote;
+  const displayName = resolveTickerName(ticker, market, quote) || null;
   const ccy = market === 'JSE' ? 'ZAR' : 'USD';
   const pos = positions ? positions.find(p => p.ticker === ticker && p.market === market) : null;
   const [dir, setDir] = useState('above');
@@ -5404,11 +5966,11 @@ function DetailModal(_ref10) {
     className: "modal-handle"
   }), React.createElement("div", {
     className: "modal-header"
-  }, React.createElement("div", null, React.createElement("div", {
+  }, React.createElement("div", { style: { minWidth: 0 } }, React.createElement("div", {
     className: "modal-title"
   }, ticker), React.createElement("div", {
     className: "modal-subtitle"
-  }, (info.name && info.name !== ticker ? info.name : null) || quote?.shortName || quote?.longName || ticker, " \xB7 ", React.createElement("span", {
+  }, displayName ? React.createElement(React.Fragment, null, displayName, " \xB7 ") : null, React.createElement("span", {
     className: "market-badge"
   }, market))), React.createElement("button", {
     className: "modal-close",
@@ -5842,36 +6404,42 @@ function ImportModal({ onClose, onImport }) {
   const [parseError, setParseError] = useState('');
   const [pasteText, setPasteText] = useState('');
   const [dragOver, setDragOver] = useState(false);
-  const [verifying, setVerifying] = useState(false);
+  const [resolving, setResolving] = useState(false);
   const [importing, setImporting] = useState(false);
+  // The market the user expects these holdings to live on. It biases every
+  // name→listing match (e.g. "Anglo American" → AGL.JO on JSE vs AAL.L on LSE).
+  const [chosenMarket, setChosenMarket] = useState('US');
   const fileRef = useRef(null);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
 
-  const toRows = (holdings) => holdings.map(h => ({
+  const toRows = (holdings, market) => holdings.map(h => ({
     id: uid(),
-    ticker: h.ticker || '',
-    market: h.market || 'US',
+    query: h.query || '',
+    tickerHint: h.tickerHint || null,
+    market: h.marketHint || market,
+    ticker: '',                 // resolved live symbol
+    resolvedName: h.nameHint || h.query || '',
+    candidates: [],
     shares: h.shares != null ? String(h.shares) : '',
     costBasis: h.costBasis != null ? String(h.costBasis) : '',
     purchaseDate: h.purchaseDate || '',
-    name: h.name || '',
-    resolvedName: h.name || '',
-    status: null,        // null | 'checking' | 'ok' | 'notfound'
+    status: null,               // null | 'resolving' | 'ok' | 'notfound'
     currentPrice: null,
     include: true,
+    showAlts: false,
   }));
 
   const handleParsed = (holdings) => {
     if (!holdings || holdings.length === 0) {
-      setParseError("Couldn't find any holdings. Make sure your file has a ticker/symbol column with quantities — or paste rows like \"AAPL, 10, 150.25\".");
+      setParseError("Couldn't find anything to import. Paste a list of company names (one per line) — e.g. \"Broadcom\", \"Naspers\" — or broker rows like \"Broadcom, 10, 800\".");
       return;
     }
-    const r = toRows(holdings);
+    const r = toRows(holdings, chosenMarket);
     setRows(r);
     setStage('review');
     setParseError('');
-    verifyRows(r);
+    resolveRows(r);
   };
 
   const handleFiles = async (files) => {
@@ -5900,43 +6468,91 @@ function ImportModal({ onClose, onImport }) {
     }
   };
 
-  // Validate tickers against live quotes — resolves real names + current price,
-  // and flags symbols that don't exist on the chosen market so the user can fix
-  // the market before importing. Concurrency-limited to stay friendly to proxies.
-  const verifyRows = async (list) => {
-    setVerifying(true);
-    setRows(prev => prev.map(x => list.some(l => l.id === x.id) ? { ...x, status: 'checking' } : x));
+  // Resolve one row: search live listings by the company name, rank with the
+  // chosen market biasing the pick, then confirm with a real quote. Falls back
+  // to the bare ticker hint and to other-market candidates so a name still
+  // resolves even when its primary listing isn't on the chosen exchange.
+  const resolveRow = async (r) => {
+    const market = r.market;
+    const remote = await fetchYahooSearch(r.query).catch(() => []);
+    const ranked = rankImportCandidates(r.query, r.tickerHint, market, remote);
+    let pick = ranked.find(c => c.market === market) || ranked[0] || null;
+    let q = pick ? await fetchQuote(pick.ticker, pick.market).catch(() => null) : null;
+    if (!q && r.tickerHint) {
+      const hq = await fetchQuote(r.tickerHint, market).catch(() => null);
+      if (hq) { pick = { ticker: r.tickerHint, market, name: resolveTickerName(r.tickerHint, market, hq) || r.query }; q = hq; }
+    }
+    if (!q && ranked.length) {
+      for (const c of ranked.slice(0, 4)) {
+        const cq = await fetchQuote(c.ticker, c.market).catch(() => null);
+        if (cq) { pick = c; q = cq; break; }
+      }
+    }
+    return {
+      ticker: q && pick ? pick.ticker : (r.tickerHint || ''),
+      market: q && pick ? pick.market : market,
+      resolvedName: q && pick ? (pick.name || resolveTickerName(pick.ticker, pick.market, q) || r.query) : r.resolvedName,
+      currentPrice: q ? q.price : null,
+      status: q ? 'ok' : 'notfound',
+      candidates: ranked.slice(0, 7),
+    };
+  };
+
+  const resolveRows = async (list) => {
+    setResolving(true);
+    setRows(prev => prev.map(x => list.some(l => l.id === x.id) ? { ...x, status: 'resolving' } : x));
     let i = 0;
     const worker = async () => {
       while (i < list.length) {
         const r = list[i++];
-        if (!r.ticker.trim()) { setRows(prev => prev.map(x => x.id === r.id ? { ...x, status: 'notfound' } : x)); continue; }
-        const q = await fetchQuote(r.ticker.trim(), r.market).catch(() => null);
-        setRows(prev => prev.map(x => x.id === r.id ? {
-          ...x,
-          status: q ? 'ok' : 'notfound',
-          currentPrice: q ? q.price : null,
-          resolvedName: q ? (resolveTickerName(r.ticker.trim().toUpperCase(), r.market, q) || x.name) : x.name,
-        } : x));
+        if (!r.query.trim()) { setRows(prev => prev.map(x => x.id === r.id ? { ...x, status: 'notfound' } : x)); continue; }
+        const res = await resolveRow(r);
+        setRows(prev => prev.map(x => x.id === r.id ? { ...x, ...res } : x));
       }
     };
-    await Promise.all(Array.from({ length: Math.min(6, list.length) }, worker));
-    setVerifying(false);
+    await Promise.all(Array.from({ length: Math.min(4, list.length) }, worker));
+    setResolving(false);
   };
 
-  const updateRow = (id, patch) => setRows(prev => prev.map(r => {
-    if (r.id !== id) return r;
-    const next = { ...r, ...patch };
-    // Editing the symbol or market invalidates a prior verification.
-    if (('ticker' in patch || 'market' in patch)) { next.status = null; next.currentPrice = null; }
-    return next;
-  }));
+  const updateRow = (id, patch) => setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
   const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
 
-  const validRows = rows.filter(r => r.include && r.ticker.trim() &&
-    isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0 &&
-    isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
+  // Re-resolve a single row (after the user edits its search text or market).
+  const reResolveRow = async (id) => {
+    let target = null;
+    setRows(prev => prev.map(r => { if (r.id === id) { target = r; return { ...r, status: 'resolving' }; } return r; }));
+    if (!target) return;
+    const res = await resolveRow({ ...target, status: 'resolving' });
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ...res } : r));
+  };
+
+  // User explicitly picks one of the alternative listings.
+  const chooseCandidate = async (id, cand) => {
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ticker: cand.ticker, market: cand.market, resolvedName: cand.name, status: 'resolving', showAlts: false } : r));
+    const q = await fetchQuote(cand.ticker, cand.market).catch(() => null);
+    setRows(prev => prev.map(r => r.id === id ? {
+      ...r,
+      status: q ? 'ok' : 'notfound',
+      currentPrice: q ? q.price : null,
+      resolvedName: q ? (resolveTickerName(cand.ticker, cand.market, q) || cand.name) : cand.name,
+    } : r));
+  };
+
+  // One-tap "these are all JSE / US / …": set the bias market, apply it to every
+  // included row, and re-run name matching so each maps to that exchange.
+  const setAllMarket = (market) => {
+    setChosenMarket(market);
+    const next = rows.map(r => r.include ? { ...r, market, status: null, currentPrice: null, ticker: '' } : r);
+    setRows(next);
+    resolveRows(next.filter(r => r.include));
+  };
+
+  const hasShares = (r) => isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0;
+  const hasCost = (r) => isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0;
+  // Importable only once matched to a confirmed live listing with valid qty/cost.
+  const validRows = rows.filter(r => r.include && r.ticker.trim() && r.status === 'ok' && hasShares(r) && hasCost(r));
   const notFoundCount = rows.filter(r => r.include && r.status === 'notfound').length;
+  const needQtyCount = rows.filter(r => r.include && r.status === 'ok' && (!hasShares(r) || !hasCost(r))).length;
 
   const doImport = async () => {
     if (validRows.length === 0) return;
@@ -5957,6 +6573,17 @@ function ImportModal({ onClose, onImport }) {
   };
 
   const renderInput = () => React.createElement("div", { className: "modal-body" },
+    React.createElement("div", { className: "import-market-pick" },
+      React.createElement("div", { className: "form-label" }, "Which market are these holdings on?"),
+      React.createElement("div", { className: "import-bulk-chips" },
+        MARKETS.map(m => React.createElement("button", {
+          key: m.value, type: "button",
+          className: "import-bulk-chip" + (chosenMarket === m.value ? " active" : ""),
+          onClick: () => setChosenMarket(m.value),
+          title: m.country + " · " + m.exchange
+        }, m.label))),
+      React.createElement("div", { className: "form-help" }, "Guides name matching — e.g. “Naspers” → NPN on JSE. You can change any row afterwards.")
+    ),
     React.createElement("div", {
       className: "import-drop" + (dragOver ? " over" : ""),
       onDragOver: e => { e.preventDefault(); setDragOver(true); },
@@ -5973,10 +6600,10 @@ function ImportModal({ onClose, onImport }) {
         onChange: e => handleFiles(e.target.files)
       })
     ),
-    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste your holdings")),
+    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste company names")),
     React.createElement("textarea", {
       className: "import-paste",
-      placeholder: "Paste rows from a spreadsheet or broker statement, e.g.\n\nTicker, Shares, Cost\nAAPL, 10, 150.25\nMSFT, 5, 310.00\nAGL.JO, 100, 320.50",
+      placeholder: "One company per line — names are fine, we'll find the live listing:\n\nBroadcom\nNaspers\nApple, 10, 150.25\nAnglo American, 100, 480",
       value: pasteText,
       onChange: e => setPasteText(e.target.value),
       rows: 6
@@ -5988,75 +6615,114 @@ function ImportModal({ onClose, onImport }) {
         className: "btn btn-primary",
         onClick: handlePaste,
         disabled: !pasteText.trim() || parsing
-      }, "Parse holdings")
+      }, "Match holdings")
     )
   );
 
   const statusDot = (r) => {
-    if (r.status === 'checking') return React.createElement("span", { className: "import-status checking", title: "Checking…" });
-    if (r.status === 'ok') return React.createElement("span", { className: "import-status ok", title: r.currentPrice != null ? ("Verified · now " + fmt(r.currentPrice, r.market)) : "Verified" });
-    if (r.status === 'notfound') return React.createElement("span", { className: "import-status bad", title: "Not found on this market — check symbol/market" });
-    return React.createElement("span", { className: "import-status", title: "Not checked" });
+    if (r.status === 'resolving') return React.createElement("span", { className: "import-status checking", title: "Matching…" });
+    if (r.status === 'ok') return React.createElement("span", { className: "import-status ok", title: r.currentPrice != null ? ("Matched · now " + fmt(r.currentPrice, r.market)) : "Matched" });
+    if (r.status === 'notfound') return React.createElement("span", { className: "import-status bad", title: "No live match on this market" });
+    return React.createElement("span", { className: "import-status", title: "Not matched" });
+  };
+
+  const renderCard = (r) => {
+    const sharesBad = !(isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0);
+    const costBad = !(isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
+    const alts = (r.candidates || []).filter(c => !(c.ticker === r.ticker && c.market === r.market)).slice(0, 6);
+    return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") },
+      React.createElement("div", { className: "import-card-top" },
+        React.createElement("label", { className: "import-check" },
+          React.createElement("input", { type: "checkbox", checked: r.include, onChange: e => updateRow(r.id, { include: e.target.checked }) })),
+        React.createElement("input", {
+          className: "import-query-input",
+          value: r.query, placeholder: "Company name",
+          autoComplete: "off", spellCheck: false,
+          onChange: e => updateRow(r.id, { query: e.target.value }),
+          onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); reResolveRow(r.id); } },
+          onBlur: () => { if (r.query.trim() && r.status !== 'resolving') reResolveRow(r.id); }
+        }),
+        React.createElement("button", { className: "import-del", onClick: () => removeRow(r.id), "aria-label": "Remove row" },
+          React.createElement(Icon, { name: "x", size: 13 }))
+      ),
+      React.createElement("div", { className: "import-card-match" },
+        statusDot(r),
+        r.ticker
+          ? React.createElement(React.Fragment, null,
+              React.createElement("span", { className: "import-match-tkr" }, r.ticker),
+              React.createElement("span", { className: "import-match-name" }, r.resolvedName || ''))
+          : React.createElement("span", { className: "import-match-name text-dim" },
+              r.status === 'resolving' ? "Searching live listings…" : (r.status === 'notfound' ? "No match — try the exact name or another market" : "Not matched yet")),
+        React.createElement("select", {
+          className: "import-input import-select import-card-market", value: r.market,
+          onChange: e => { updateRow(r.id, { market: e.target.value, status: 'resolving', ticker: '' }); reResolveRow(r.id); }
+        }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value }, m.label))),
+        alts.length > 0 ? React.createElement("button", {
+          className: "btn btn-ghost btn-xs import-alts-toggle",
+          onClick: () => updateRow(r.id, { showAlts: !r.showAlts })
+        }, r.showAlts ? "Hide" : "Change") : React.createElement("button", {
+          className: "btn btn-ghost btn-xs import-alts-toggle",
+          onClick: () => reResolveRow(r.id), title: "Re-match"
+        }, React.createElement(Icon, { name: "refresh", size: 12 }))
+      ),
+      r.showAlts && alts.length > 0 ? React.createElement("div", { className: "import-alts" },
+        alts.map(c => React.createElement("button", {
+          key: priceKey(c.market, c.ticker), className: "import-alt",
+          onClick: () => chooseCandidate(r.id, c)
+        },
+          React.createElement("span", { className: "import-alt-tkr" }, c.ticker),
+          React.createElement("span", { className: "market-badge" }, c.market),
+          React.createElement("span", { className: "import-alt-name" }, c.name)))
+      ) : null,
+      React.createElement("div", { className: "import-card-qty" },
+        React.createElement("div", { className: "import-qty-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Shares"),
+          React.createElement("input", {
+            className: "import-input" + (sharesBad ? " bad" : ""),
+            inputMode: "decimal", value: r.shares, placeholder: "0",
+            onChange: e => updateRow(r.id, { shares: sanitizeDecimalInput(e.target.value) })
+          })),
+        React.createElement("div", { className: "import-qty-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Cost/share (", (MARKET_CURRENCY[r.market] || MARKET_CURRENCY.US).code, ")"),
+          React.createElement("input", {
+            className: "import-input" + (costBad ? " bad" : ""),
+            inputMode: "decimal", value: r.costBasis, placeholder: "0.00",
+            onChange: e => updateRow(r.id, { costBasis: sanitizeDecimalInput(e.target.value) })
+          })))
+    );
   };
 
   const renderReview = () => React.createElement("div", { className: "modal-body" },
     React.createElement("div", { className: "import-review-head" },
       React.createElement("span", null, validRows.length, " of ", rows.length, " ready"),
-      notFoundCount > 0 ? React.createElement("span", { className: "text-down text-xs" }, notFoundCount, " need a fix") : null,
-      verifying ? React.createElement("span", { className: "text-dim text-xs" }, "Verifying…") : React.createElement("button", {
-        className: "btn btn-ghost btn-xs", onClick: () => verifyRows(rows.filter(r => r.include))
-      }, React.createElement(Icon, { name: "refresh", size: 12 }), " Re-check")
+      notFoundCount > 0 ? React.createElement("span", { className: "text-down text-xs" }, notFoundCount, " unmatched") : null,
+      resolving ? React.createElement("span", { className: "text-dim text-xs" }, "Matching…") : React.createElement("button", {
+        className: "btn btn-ghost btn-xs", onClick: () => resolveRows(rows.filter(r => r.include))
+      }, React.createElement(Icon, { name: "refresh", size: 12 }), " Re-match all")
     ),
-    React.createElement("div", { className: "import-table" },
-      React.createElement("div", { className: "import-row import-row-head" },
-        React.createElement("span", null, ""),
-        React.createElement("span", null, "Ticker"),
-        React.createElement("span", null, "Market"),
-        React.createElement("span", null, "Shares"),
-        React.createElement("span", null, "Cost/share"),
-        React.createElement("span", null, "")
-      ),
-      rows.map(r => {
-        const sharesBad = !(isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0);
-        const costBad = !(isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
-        return React.createElement("div", { key: r.id, className: "import-row" + (r.include ? "" : " excluded") },
-          React.createElement("label", { className: "import-check" },
-            React.createElement("input", { type: "checkbox", checked: r.include, onChange: e => updateRow(r.id, { include: e.target.checked }) })
-          ),
-          React.createElement("div", { className: "import-tkr-cell" },
-            statusDot(r),
-            React.createElement("input", {
-              className: "import-input import-input-tkr" + (!r.ticker.trim() ? " bad" : ""),
-              value: r.ticker, autoCapitalize: "characters", autoComplete: "off", spellCheck: false,
-              onChange: e => updateRow(r.id, { ticker: e.target.value.toUpperCase() })
-            }),
-            r.resolvedName ? React.createElement("span", { className: "import-name" }, r.resolvedName) : null
-          ),
-          React.createElement("select", {
-            className: "import-input import-select", value: r.market,
-            onChange: e => updateRow(r.id, { market: e.target.value })
-          }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value }, m.label))),
-          React.createElement("input", {
-            className: "import-input" + (sharesBad ? " bad" : ""),
-            inputMode: "decimal", value: r.shares, placeholder: "0",
-            onChange: e => updateRow(r.id, { shares: sanitizeDecimalInput(e.target.value) })
-          }),
-          React.createElement("input", {
-            className: "import-input" + (costBad ? " bad" : ""),
-            inputMode: "decimal", value: r.costBasis, placeholder: "0.00",
-            onChange: e => updateRow(r.id, { costBasis: sanitizeDecimalInput(e.target.value) })
-          }),
-          React.createElement("button", { className: "import-del", onClick: () => removeRow(r.id), "aria-label": "Remove row" },
-            React.createElement(Icon, { name: "x", size: 13 }))
-        );
-      })
+    React.createElement("div", { className: "import-bulk-market" },
+      React.createElement("span", { className: "import-bulk-label" }, "Match all rows against exchange"),
+      React.createElement("div", { className: "import-bulk-chips" },
+        MARKETS.map(m => React.createElement("button", {
+          key: m.value,
+          type: "button",
+          className: "import-bulk-chip" + (chosenMarket === m.value ? " active" : ""),
+          onClick: () => setAllMarket(m.value),
+          title: m.country + " · " + m.exchange + " · " + (MARKET_CURRENCY[m.value] || MARKET_CURRENCY.US).code
+        }, m.label)))
     ),
+    React.createElement("div", { className: "import-cards" }, rows.map(renderCard)),
+    (notFoundCount > 0 || needQtyCount > 0) && !resolving ? React.createElement("div", { className: "import-gate-note" },
+      notFoundCount > 0
+        ? `${notFoundCount} row${notFoundCount !== 1 ? 's' : ''} couldn't be matched to a live listing — refine the name, switch the market, or tap Change to pick from alternatives. Only matched holdings import.`
+        : `${needQtyCount} matched row${needQtyCount !== 1 ? 's' : ''} still need shares and cost before importing.`
+    ) : null,
     React.createElement("div", { className: "form-actions", style: { marginTop: 14 } },
       React.createElement("button", { className: "btn btn-secondary", onClick: () => { setStage('input'); setRows([]); } }, "Back"),
       React.createElement("button", {
         className: "btn btn-primary", onClick: doImport,
-        disabled: validRows.length === 0 || importing
-      }, importing ? "Importing…" : "Import " + validRows.length + " holding" + (validRows.length !== 1 ? "s" : ""))
+        disabled: validRows.length === 0 || importing || resolving
+      }, importing ? "Importing…" : resolving ? "Matching…" : "Import " + validRows.length + " holding" + (validRows.length !== 1 ? "s" : ""))
     )
   );
 
@@ -6067,7 +6733,7 @@ function ImportModal({ onClose, onImport }) {
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,
           React.createElement("div", { className: "modal-title" }, "Import holdings"),
-          React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "From CSV, Excel, PDF or pasted text" : "Review and confirm before importing")
+          React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "Match company names to live listings" : "Review matches before importing")
         ),
         React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))
       ),
