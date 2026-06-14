@@ -214,10 +214,25 @@ function useSwipeDownToClose(panelRef, onClose) {
         panel.style.transition = `transform 0.26s ${EASE}`;
         panel.style.transform = 'translateY(100%)';
         if (bd) { bd.style.transition = 'opacity 0.26s ease'; bd.style.opacity = '0'; }
+        let done = false;
         const cb = () => {
-          panel.style.transition = ''; panel.style.transform = '';
-          if (bd) { bd.style.transition = ''; bd.style.opacity = ''; }
+          if (done) return;
+          done = true;
+          // Trigger the close (which unmounts the modal) while the panel is
+          // still translated off-screen. Do NOT reset transform here — doing so
+          // snaps the panel back to its open position for one frame before the
+          // unmount commits, which is the "flickers on before closing" glitch.
+          // Only restore styles if, a beat later, the panel is somehow still in
+          // the DOM (e.g. a guarded onClose that didn't actually close).
           closeRef.current();
+          setTimeout(() => {
+            if (!panel.isConnected) return;
+            // Modal didn't unmount (guarded onClose) — glide it back up rather
+            // than leaving it stranded off-screen.
+            panel.style.transition = `transform 0.3s ${EASE}`;
+            panel.style.transform = '';
+            if (bd && bd.isConnected) { bd.style.transition = 'opacity 0.3s ease'; bd.style.opacity = ''; }
+          }, 80);
         };
         panel.addEventListener('transitionend', cb, { once: true });
         setTimeout(cb, 320);
