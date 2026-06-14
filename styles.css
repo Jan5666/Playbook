@@ -2381,6 +2381,15 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .chart-pie-legend-item.is-clickable:hover { background: var(--bg-elev); opacity: 1; }
 .chart-pie-legend-go { color: var(--text-dim); margin-left: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
 .chart-pie-legend-item:hover .chart-pie-legend-go { opacity: 0.6; }
+/* Holdings view: "TICKER  Company name" with a fixed-width ticker column so the
+   names line up at the same x down the legend. */
+.chart-pie-legend.named .chart-pie-legend-tkr { flex: 0 0 auto; min-width: 48px; }
+.chart-pie-legend-co {
+  flex: 1; min-width: 0; font-size: 10px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chart-pie-legend-co::before { content: "— "; color: var(--text-dim); }
+.chart-pie-legend.named .chart-pie-legend-pct { margin-left: 8px; }
 
 .sh-panel { max-width: 460px; }
 .sh-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
@@ -2395,14 +2404,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .sh-row:hover { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); background: var(--bg-elev); }
 .sh-row:active { transform: scale(0.99); }
-.sh-row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.sh-row-id { display: flex; align-items: baseline; gap: 7px; min-width: 0; flex-wrap: wrap; }
-.sh-row-tkr { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); }
-.sh-row-mkt {
-  font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--text-dim); background: var(--bg-elev); padding: 1px 5px; border-radius: 5px;
-}
-.sh-row-name { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; }
+.sh-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.sh-row-id { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
+/* Fixed-width ticker column → every company name starts at the same x. */
+.sh-row-tkr { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); flex: 0 0 auto; min-width: 62px; }
+.sh-row-name { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sh-row-name::before { content: "— "; color: var(--text-dim); }
 .sh-row-figs { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
 .sh-row-val { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); }
 .sh-row-wt { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
