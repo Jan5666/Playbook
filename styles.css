@@ -2375,3 +2375,90 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   border-radius: 6px; transition: color 0.15s, background 0.15s;
 }
 .import-del:hover { color: var(--rose); background: color-mix(in srgb, var(--rose) 12%, transparent); }
+
+/* ── Allocation: clickable sector legend + sector-holdings popup ──────────── */
+.chart-pie-legend-item.is-clickable { cursor: pointer; }
+.chart-pie-legend-item.is-clickable:hover { background: var(--bg-elev); opacity: 1; }
+.chart-pie-legend-go { color: var(--text-dim); margin-left: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
+.chart-pie-legend-item:hover .chart-pie-legend-go { opacity: 0.6; }
+
+.sh-panel { max-width: 460px; }
+.sh-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+.sh-summary-cell { background: var(--bg); border: 1px solid var(--border); border-radius: 11px; padding: 9px 8px; text-align: center; }
+.sh-summary-label { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); font-family: var(--mono); }
+.sh-summary-val { font-size: 15px; font-weight: 700; font-family: var(--mono); margin-top: 4px; color: var(--text); }
+.sh-list { display: flex; flex-direction: column; gap: 7px; }
+.sh-row {
+  display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; cursor: pointer;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+.sh-row:hover { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); background: var(--bg-elev); }
+.sh-row:active { transform: scale(0.99); }
+.sh-row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.sh-row-id { display: flex; align-items: baseline; gap: 7px; min-width: 0; flex-wrap: wrap; }
+.sh-row-tkr { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); }
+.sh-row-mkt {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-dim); background: var(--bg-elev); padding: 1px 5px; border-radius: 5px;
+}
+.sh-row-name { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; }
+.sh-row-figs { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
+.sh-row-val { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); }
+.sh-row-wt { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.sh-bar { height: 5px; border-radius: 999px; background: var(--bg-elev); overflow: hidden; }
+.sh-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--blue), color-mix(in srgb, var(--blue) 55%, var(--emerald))); }
+
+/* ── Deposit / withdrawal toggle + import link in the contribution modal ──── */
+.flow-toggle { display: flex; gap: 6px; padding: 4px; margin-bottom: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; }
+.flow-toggle-btn {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 9px 10px; border-radius: 9px; border: 1px solid transparent; background: transparent;
+  color: var(--text-dim); font-size: 13px; font-weight: 600; font-family: var(--sans); cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.flow-toggle-btn.active.deposit { background: color-mix(in srgb, var(--emerald) 16%, var(--bg-raised)); color: var(--emerald); border-color: color-mix(in srgb, var(--emerald) 40%, var(--border)); }
+.flow-toggle-btn.active.withdraw { background: color-mix(in srgb, var(--rose) 16%, var(--bg-raised)); color: var(--rose); border-color: color-mix(in srgb, var(--rose) 40%, var(--border)); }
+.contrib-import-link {
+  display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: center;
+  margin-bottom: 14px; padding: 9px; border-radius: 10px; border: 1px dashed var(--border);
+  background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.contrib-import-link:hover { border-color: var(--blue); color: var(--blue); }
+
+/* ── Growth tracker header actions ───────────────────────────────────────── */
+.growth-tracker-actions { display: flex; align-items: center; gap: 6px; }
+.growth-deposit-btn.ghost { background: transparent; }
+
+/* ── Cash-flow (deposit/withdrawal) import review ────────────────────────── */
+.cfi-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+.cfi-summary .up { color: var(--emerald); }
+.cfi-summary .down { color: var(--rose); }
+.cfi-summary-sep { color: var(--text-dim); }
+.cfi-list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; -webkit-overflow-scrolling: touch; margin: 0 -4px; padding: 2px 4px; }
+.cfi-row { border: 1px solid var(--border); border-radius: 12px; padding: 9px 10px; display: flex; flex-direction: column; gap: 8px; background: var(--bg); }
+.cfi-row.excluded { opacity: 0.45; }
+.cfi-row.invalid { border-color: color-mix(in srgb, var(--rose) 45%, var(--border)); }
+.cfi-row-head { display: flex; align-items: center; gap: 8px; }
+.cfi-type-toggle {
+  display: inline-flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 8px;
+  border: 1px solid var(--border); cursor: pointer; font-family: var(--mono); font-size: 11px; font-weight: 700;
+  background: var(--bg-raised); transition: background 0.15s, color 0.15s, border-color 0.15s; flex-shrink: 0;
+}
+.cfi-type-toggle.deposit { color: var(--emerald); border-color: color-mix(in srgb, var(--emerald) 40%, var(--border)); }
+.cfi-type-toggle.withdrawal { color: var(--rose); border-color: color-mix(in srgb, var(--rose) 40%, var(--border)); }
+.cfi-date { flex: 1; min-width: 0; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; color: var(--text); font-family: var(--mono); font-size: 12px; }
+.cfi-remove { background: transparent; border: none; color: var(--text-dim); cursor: pointer; padding: 4px; display: flex; align-items: center; border-radius: 6px; flex-shrink: 0; transition: color 0.15s, background 0.15s; }
+.cfi-remove:hover { color: var(--rose); background: color-mix(in srgb, var(--rose) 12%, transparent); }
+.cfi-row-body { display: flex; align-items: center; gap: 8px; }
+.cfi-amount-wrap { position: relative; flex: 1; min-width: 0; }
+.cfi-amount-sym { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--text-dim); font-family: var(--mono); font-size: 12px; pointer-events: none; }
+.cfi-amount { width: 100%; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px 7px 22px; color: var(--text); font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.cfi-ccy { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 7px 6px; color: var(--text); font-family: var(--mono); font-size: 12px; flex-shrink: 0; }
+.cfi-note { flex: 1.4; min-width: 0; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; color: var(--text); font-size: 12px; }
+.cfi-amount:focus, .cfi-note:focus, .cfi-date:focus, .cfi-ccy:focus { outline: none; border-color: var(--blue); }
+@media (max-width: 480px) {
+  .cfi-row-body { flex-wrap: wrap; }
+  .cfi-note { flex-basis: 100%; }
+}

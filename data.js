@@ -684,14 +684,169 @@ window.PB_DATA._sectorLookup = (function() {
   return map;
 })();
 
-window.PB_DATA.findSector = function(ticker, market) {
-  const direct = window.PB_DATA._sectorLookup[(market || 'US') + ':' + ticker];
-  if (direct) return direct;
-  // Fallback: scan thesis sector text on holdings/picks
-  const holding = window.PB_DATA.HOLDINGS.find(h => h.ticker === ticker)
-    || window.PB_DATA.NEW_PICKS.find(p => p.ticker === ticker);
-  if (holding && holding.sector) return { sector: holding.sector, industry: holding.sector };
-  const hedge = window.PB_DATA.HEDGES.find(h => h.ticker === ticker);
-  if (hedge && hedge.role) return { sector: 'Hedges', industry: hedge.role };
+// ── Expert sector classification ───────────────────────────────────────────
+// Canonical taxonomy: the 11 GICS-style equity sectors used across the heatmaps,
+// plus four non-equity buckets (funds / bonds / commodities / crypto) so ETFs
+// and hedges land somewhere meaningful instead of being dumped into "Other".
+window.PB_DATA.SECTOR_CANON = ['Technology', 'Communication Services', 'Consumer Cyclical', 'Consumer Defensive', 'Healthcare', 'Financial Services', 'Industrials', 'Energy', 'Basic Materials', 'Real Estate', 'Utilities', 'ETFs & Funds', 'Bonds & Income', 'Gold & Commodities', 'Crypto'];
+
+// Map any incoming sector label — heatmap, curated map, playbook thesis
+// shorthand, or a live fundamentals feed (Yahoo / stockanalysis use slightly
+// different spellings) — onto one canonical bucket. Freeform text → "Other".
+window.PB_DATA._SECTOR_ALIASES = (function () {
+  const m = {};
+  const add = (canon, aliases) => { m[canon.toLowerCase()] = canon; aliases.forEach(a => { m[a.toLowerCase()] = canon; }); };
+  add('Technology', ['tech', 'information technology', 'infotech', 'it', 'semiconductors', 'software', 'hardware', 'electronic technology', 'technology services']);
+  add('Communication Services', ['communication', 'communications', 'communication service', 'telecom', 'telecommunication', 'telecommunications', 'telecommunication services', 'media', 'media & entertainment', 'interactive media']);
+  add('Consumer Cyclical', ['consumer discretionary', 'consumer cyclicals', 'discretionary', 'retail trade', 'consumer durables', 'autos', 'auto']);
+  add('Consumer Defensive', ['consumer staples', 'consumer defensives', 'staples', 'consumer non-cyclical', 'consumer non cyclical', 'consumer non-durables']);
+  add('Healthcare', ['health care', 'health', 'medical', 'pharmaceuticals', 'pharma', 'biotech', 'biotechnology', 'life sciences', 'health technology']);
+  add('Financial Services', ['financial', 'financials', 'finance', 'financial service', 'banks', 'banking', 'insurance', 'capital markets', 'diversified financials']);
+  add('Industrials', ['industrial', 'industrial goods', 'capital goods', 'aerospace & defense', 'aerospace and defense', 'transportation', 'machinery', 'producer manufacturing', 'commercial services']);
+  add('Energy', ['oil & gas', 'oil and gas', 'oil', 'gas', 'oil, gas & consumable fuels', 'energy minerals']);
+  add('Basic Materials', ['materials', 'material', 'basic material', 'chemicals', 'metals & mining', 'metals and mining', 'mining', 'precious metals', 'non-energy minerals']);
+  add('Real Estate', ['reit', 'reits', 'real-estate', 'property', 'real estate investment trusts']);
+  add('Utilities', ['utility', 'electric utilities', 'power', 'renewable utilities']);
+  add('ETFs & Funds', ['etf', 'etfs', 'fund', 'funds', 'index fund', 'mutual fund', 'diversified', 'exchange traded fund', 'exchange-traded fund', 'miscellaneous']);
+  add('Bonds & Income', ['bond', 'bonds', 'fixed income', 'treasury', 'treasuries', 'fixed-income', 'income']);
+  add('Gold & Commodities', ['commodity', 'commodities', 'gold', 'gold & precious metals', 'bullion']);
+  add('Crypto', ['cryptocurrency', 'crypto assets', 'bitcoin', 'digital assets', 'blockchain']);
+  // Playbook thesis shorthand used inside HOLDINGS / NEW_PICKS / HEDGES.
+  add('Technology', ['ai / cloud', 'ai semi', 'ai infrastructure', 'semi equipment', 'foundry', 'cybersecurity', 'bitcoin proxy']);
+  add('Healthcare', ['defensive equity']);
+  add('Industrials', ['power infra', 'defense', 'defense etf']);
+  add('Utilities', ['nuclear power', 'nuclear-ai']);
+  add('Gold & Commodities', ['physical gold']);
+  add('Bonds & Income', ['intermediate duration']);
+  add('ETFs & Funds', ['low-vol equity', 'low vol equity']);
+  return m;
+})();
+
+window.PB_DATA.normalizeSector = function (raw) {
+  if (raw == null) return 'Other';
+  const s = String(raw).trim();
+  if (!s) return 'Other';
+  const hit = window.PB_DATA._SECTOR_ALIASES[s.toLowerCase()];
+  if (hit) return hit;
+  // Tolerate qualifiers like "Financials (sector)" or "Technology Sector".
+  const cleaned = s.toLowerCase().replace(/\s*\(.*?\)\s*$/, '').replace(/\s+sector$/, '').trim();
+  return window.PB_DATA._SECTOR_ALIASES[cleaned] || 'Other';
+};
+
+// Curated US ticker → canonical sector map. Covers the user's playbook universe
+// plus several hundred of the most commonly-held US equities and ETFs, so the
+// allocator resolves a real sector offline without waiting on a fundamentals
+// fetch. Single-sector ETFs map to the sector they track; broad/multi-sector
+// funds, bonds, commodities and crypto vehicles get their own buckets.
+window.PB_DATA._US_SECTORS = (function () {
+  const groups = {
+    'Technology': 'AAPL MSFT NVDA AVGO ORCL ADBE CRM ACN AMD CSCO IBM INTU QCOM TXN NOW AMAT ADI MU LRCX KLAC SNPS CDNS INTC PANW ANET PLTR APP DELL SMCI ARM MRVL NXPI MCHP ON STM SWKS QRVO TER ENTG MPWR WOLF CRWD ZS S NET DDOG MDB SNOW DOCN ESTC GTLB FROG PATH AI BBAI SOUN TSM ASML UMC GFS NBIS WDC STX HPQ HPE JNPR FFIV AKAM CIEN COHR LITE NTAP PSTG VRT WIT INFY SHOP TOST ADSK WDAY ZM DOCU OKTA TWLO HUBS BILL APPN ASAN MNDY CFLT U TTD UBER FSLR ENPH SEDG GLW KEYS TYL ZBRA PTC ANSS FICO IT VRSN GEN AKAM',
+    'Communication Services': 'GOOGL GOOG META NFLX DIS CMCSA TMUS VZ T CHTR WBD PARA FOXA FOX NWSA NWS OMC IPG TTWO EA RBLX SPOT PINS SNAP MTCH BIDU NTES TCEHY SE ROKU LYV Z ZG NYT WMG DASH',
+    'Consumer Cyclical': 'AMZN TSLA HD MCD NKE LOW SBUX BKNG TJX ABNB CMG MAR ORLY AZO ROST YUM HLT RCL CCL NCLH LVS WYNN MGM DKNG F GM RIVN LCID NIO LI XPEV STLA TM RACE LULU DECK ULTA EBAY ETSY W CHWY CPRT DHI LEN PHM NVR TOL GRMN APTV LKQ BBY EXPE POOL TSCO DPZ DRI GPC BABA JD PDD MELI',
+    'Consumer Defensive': 'WMT COST PG KO PEP PM MO MDLZ CL KMB GIS KHC HSY STZ KDP MNST SYY ADM KR DG DLTR TGT EL CLX CHD MKC HRL TSN K CAG CPB SJM TAP BF-B KVUE BUD DEO WBA',
+    'Healthcare': 'LLY UNH JNJ MRK ABBV TMO ABT DHR PFE AMGN ISRG BSX SYK MDT GILD VRTX REGN CI CVS HCA ELV ZTS BDX HUM CNC MCK COR BMY BIIB MRNA IDXX IQV DXCM EW WST RMD GEHC ALGN MTD WAT PODD HOLX BAX CAH ZBH STE VTRS LH DGX RVTY CRL TECH MOH BNTX CRSP NTLA BEAM VKTX HIMS NBIX EXAS SRPT RARE',
+    'Financial Services': 'BRK-B BRK-A JPM V MA BAC WFC GS MS AXP SPGI BLK C SCHW CB MMC PGR CME ICE AON PNC USB TFC COF BK AIG MET PRU TRV ALL AFL MSCI MCO AJG FIS FI GPN COIN HOOD SOFI PYPL AFRM UPST XYZ KKR BX APO ARES OWL CG NDAQ CBOE MKTX FCNCA RJF SYF DFS ALLY NU MARA RIOT CLSK HUT BITF WBS FITB HBAN RF CFG KEY MTB',
+    'Industrials': 'GE CAT BA HON UNP RTX LMT UPS DE ETN ADP NOC GD EMR ITW CSX FDX NSC WM PH GEV MMM TDG TT CMI CTAS PCAR ROP CARR OTIS PWR URI GWW FAST AME ODFL VRSK EFX IR DOV XYL HWM AXON LHX HII TXT LDOS BAH CACI PNR ROK FTV AOS NDSN SWK PAYX RSG WCN JCI MAS ALLE DAL UAL AAL LUV PLUG BE SMR OKLO',
+    'Energy': 'XOM CVX COP SLB EOG MPC PSX VLO OXY WMB OKE KMI HES DVN FANG HAL BKR TRGP CTRA MRO APA EQT AR CHK RRC OVV MUR SM CIVI PR DINO CCJ UEC DNN NXE UUUU LEU',
+    'Basic Materials': 'LIN APD SHW ECL FCX NEM NUE DOW DD PPG CTVA VMC MLM ALB CF MOS FMC IFF EMN CE CMC RPM AVTR SQM GOLD AEM KGC AU HMY WPM FNV RGLD PAAS AG HL CDE MP ASPI',
+    'Real Estate': 'PLD AMT EQIX CCI PSA O SPG DLR WELL VICI SBAC EXR AVB EQR ARE INVH MAA UDR ESS KIM REG FRT BXP HST VTR IRM CPT WY DOC CUBE NLY AGNC STWD',
+    'Utilities': 'NEE DUK SO D AEP SRE EXC XEL ED PEG WEC ES AEE CEG ETR FE PPL CMS DTE AES LNT NI EVRG CNP ATO PNW NRG VST PCG EIX AWK',
+    'ETFs & Funds': 'SPY VOO IVV VTI QQQ QQQM DIA IWM VT VXUS VEU VEA VWO EFA EEM ACWI SCHB SCHX SPLG RSP SCHD VIG VYM DGRO NOBL USMV SPLV QUAL MTUM VUG VTV IWF IWD MGK MGV SCHG SPYG SPYV ITOT IJH IJR IWB IWV VO VB VTWO SCHA SCHM ARKK ARKW ARKF ARKG ARKQ MAGS XLG OEF VONE SPMO COWZ JEPI JEPQ DVY SDY IEFA IEMG ACWX FNDX',
+    'Bonds & Income': 'IEF TLT SHY AGG BND BNDX LQD HYG JNK TIP MUB VCIT VCSH SHV BIL SGOV GOVT TLH IEI VGIT VGLT VGSH MBB VTEB PFF SCHP FLOT USHY EMB',
+    'Gold & Commodities': 'GLD IAU GLDM SGOL IAUM SLV SIVR PPLT PALL PDBC DBC USO UNG BNO UGA GLTR CPER DBA DBB GSG',
+    'Crypto': 'IBIT FBTC GBTC BITO BITB ARKB BTCO HODL BRRR EZBC ETHA ETHE FETH ETHW BITX',
+    // Single-sector ETFs — counted as exposure to the sector they track.
+  };
+  // Sector-tracking ETFs folded into their underlying sector.
+  groups['Technology'] += ' XLK VGT SMH SOXX IGV SKYY HACK CIBR BUG WCLD FDN';
+  groups['Communication Services'] += ' XLC VOX';
+  groups['Consumer Cyclical'] += ' XLY VCR XRT';
+  groups['Consumer Defensive'] += ' XLP VDC';
+  groups['Healthcare'] += ' XLV VHT IBB XBI IHI';
+  groups['Financial Services'] += ' XLF VFH KRE KBE IAI KIE FINX IPAY';
+  groups['Industrials'] += ' XLI VIS ITA PPA XAR JETS';
+  groups['Energy'] += ' XLE VDE OIH XOP AMLP URA URNM';
+  groups['Basic Materials'] += ' XLB VAW GDX GDXJ SIL SILJ LIT COPX REMX SLX';
+  groups['Real Estate'] += ' XLRE VNQ SCHH IYR';
+  groups['Utilities'] += ' XLU VPU NLR';
+  const out = {};
+  for (const sec of Object.keys(groups)) groups[sec].split(/\s+/).forEach(t => { if (t) out[t] = sec; });
+  return out;
+})();
+
+// Curated international ticker → sector map, keyed "MARKET:TICKER" because the
+// same symbol means different companies across exchanges (e.g. VOD = Vodacom on
+// the JSE, Vodafone on the LSE). Index constituents already resolve via the
+// heatmaps; this fills the rest of the suggestion-list universe.
+window.PB_DATA._INTL_SECTORS = (function () {
+  const groups = {
+    'JSE': {
+      'Financial Services': 'CPI FSR SBK NED ABG INP DSY SLM OMU', 'Basic Materials': 'BHG BHP AGL GLN GFI ANG IMP AMS SSW',
+      'Communication Services': 'NPN PRX MTN VOD', 'Consumer Defensive': 'SHP BID WHL', 'Consumer Cyclical': 'CFR', 'Energy': 'SOL', 'Healthcare': 'APN'
+    },
+    'LSE': {
+      'Financial Services': 'HSBA LLOY BARC NWG STAN INVP LSEG LSE', 'Energy': 'BP SHEL', 'Healthcare': 'AZN GSK',
+      'Consumer Defensive': 'ULVR DGE', 'Basic Materials': 'RIO AAL GLEN', 'Communication Services': 'VOD BT-A WPP',
+      'Industrials': 'REL EXPN', 'Utilities': 'NG SSE', 'Consumer Cyclical': 'CPG BKG'
+    },
+    'ASX': {
+      'Financial Services': 'CBA ANZ WBC NAB MQG APT ZIP', 'Basic Materials': 'BHP RIO FMG', 'Healthcare': 'CSL',
+      'Consumer Defensive': 'WES WOW COL', 'Industrials': 'TCL', 'Real Estate': 'GMG', 'Communication Services': 'REA TLS',
+      'Consumer Cyclical': 'ALL', 'Technology': 'XRO APX'
+    },
+    'FRA': {
+      'Technology': 'SAP', 'Industrials': 'SIE', 'Financial Services': 'ALV DBK', 'Communication Services': 'DTE',
+      'Consumer Cyclical': 'BMW VOW3 MBG', 'Basic Materials': 'BAS', 'Healthcare': 'BAYN'
+    },
+    'PAR': {
+      'Industrials': 'AIR SU', 'Energy': 'TTE', 'Healthcare': 'SAN', 'Financial Services': 'BNP',
+      'Consumer Cyclical': 'MC', 'Consumer Defensive': 'OR', 'Basic Materials': 'AI'
+    },
+    'AMS': { 'Technology': 'ASML', 'Healthcare': 'PHIA', 'Financial Services': 'INGA', 'Consumer Defensive': 'HEIA' },
+    'TFSA': {
+      'ETFs & Funds': 'STX40 STX500 STXNDQ STXWDM STXEMG STXSWX STXDIV STXRAF CSEW40 CSTOP50 CSNDQ CSP500 GLODIV NFEMOM NFSWIX NFEDEF SYG500 SYGSW4 SYG4IR ETFWLD ASHT40',
+      'Real Estate': 'STXPRO CSPROP SYGP', 'Industrials': 'STXIND', 'Financial Services': 'STXFIN', 'Basic Materials': 'STXRES', 'Gold & Commodities': 'ETFGRE'
+    }
+  };
+  const out = {};
+  for (const mkt of Object.keys(groups)) {
+    const byTicker = groups[mkt];
+    for (const sec of Object.keys(byTicker)) byTicker[sec].split(/\s+/).forEach(t => { if (t) out[mkt + ':' + t] = sec; });
+  }
+  return out;
+})();
+
+// Resolve a position to a canonical sector. Layered, most-authoritative-first:
+//   1. curated master map (offline, GICS-correct, broad)
+//   2. heatmap index constituents (real industry granularity)
+//   3. live fundamentals hint, when the caller has one cached
+//   4. playbook thesis shorthand on the user's own holdings / picks / hedges
+// Only genuinely unknown symbols fall through to "Other".
+window.PB_DATA.findSector = function (ticker, market, hint) {
+  const N = window.PB_DATA.normalizeSector;
+  if (!ticker) return { sector: 'Other', industry: 'Other' };
+  const t = String(ticker).toUpperCase().trim();
+  const mkt = market || 'US';
+  // 1. Curated master map.
+  if (mkt === 'US') {
+    const s = window.PB_DATA._US_SECTORS[t];
+    if (s) return { sector: s, industry: s };
+  } else {
+    let s = window.PB_DATA._INTL_SECTORS[mkt + ':' + t];
+    // A tax-free account holds JSE-listed shares, so reuse the JSE map for them.
+    if (!s && mkt === 'TFSA') s = window.PB_DATA._INTL_SECTORS['JSE:' + t];
+    if (s) return { sector: s, industry: s };
+  }
+  // 2. Heatmap constituents (already GICS, with a real industry label).
+  const direct = window.PB_DATA._sectorLookup[mkt + ':' + t]
+    || (mkt === 'TFSA' ? window.PB_DATA._sectorLookup['JSE:' + t] : null);
+  if (direct) return { sector: N(direct.sector), industry: direct.industry || direct.sector };
+  // 3. Live fundamentals hint (authoritative for odd names the caller has opened).
+  if (hint) { const h = N(hint); if (h !== 'Other') return { sector: h, industry: typeof hint === 'string' ? hint : h }; }
+  // 4. Playbook thesis shorthand.
+  const holding = window.PB_DATA.HOLDINGS.find(h => h.ticker === t) || window.PB_DATA.NEW_PICKS.find(p => p.ticker === t);
+  if (holding && holding.sector) { const s = N(holding.sector); if (s !== 'Other') return { sector: s, industry: holding.sector }; }
+  const hedge = window.PB_DATA.HEDGES.find(h => h.ticker === t);
+  if (hedge) { const s = N(hedge.role); return { sector: s !== 'Other' ? s : 'ETFs & Funds', industry: hedge.role || 'Fund' }; }
   return { sector: 'Other', industry: 'Other' };
 };

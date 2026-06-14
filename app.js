@@ -1212,6 +1212,24 @@ async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
   if (perplexityKey) return await fetchFundamentalsPerplexity(ticker, market, companyName, perplexityKey);
   return null;
 }
+// Lightweight sector/industry lookup for the background allocator fill — one
+// CORS-open request to stockanalysis.com (US listings). Used to self-heal any
+// holding the static map can't classify, so the dashboard stops dumping odd
+// tickers into "Other". Returns raw labels; the caller normalises them.
+async function fetchSectorStockAnalysis(ticker) {
+  try {
+    const r = await fetch(`https://stockanalysis.com/api/symbol/s/${encodeURIComponent(String(ticker).toUpperCase())}/overview`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    const o = j && j.data ? j.data : null;
+    if (!o || !Array.isArray(o.infoTable)) return null;
+    const sector = o.infoTable.find(x => x.t === 'Sector')?.v || null;
+    const industry = o.infoTable.find(x => x.t === 'Industry')?.v || null;
+    return sector ? { sector, industry } : null;
+  } catch (_e) {
+    return null;
+  }
+}
 async function fetchPerplexityNews(ticker, market, companyName, apiKey) {
   if (!apiKey) return [];
   const name = companyName || ticker;
@@ -1914,6 +1932,10 @@ function usePortfolio(fxRates, toast) {
   const [alerts, setAlerts] = usePersistedState('pb.alerts.v2', []);
   const [contributions, setContributions] = usePersistedState('pb.contributions.v1', []);
   const [transactions, setTransactions] = usePersistedState('pb.transactions.v1', []);
+  // Background-resolved sectors for holdings the static map can't classify,
+  // keyed "MARKET:TICKER" → { sector, industry, at }. Persisted so the dashboard
+  // allocation stays accurate across reloads without re-fetching.
+  const [sectorCache, setSectorCache] = usePersistedState('pb.sectorCache.v1', {});
   useEffect(() => {
     setPositions(prev => {
       const merged = [];
@@ -2070,6 +2092,24 @@ function usePortfolio(fxRates, toast) {
     setContributions(prev => prev.filter(c => c.id !== id));
     toast('Contribution removed');
   };
+  // Bulk-add deposits/withdrawals from an import. Each entry's amount is already
+  // signed (positive = deposit, negative = withdrawal).
+  const importContributions = (entries) => {
+    const rates = fxRates?.rates || {};
+    const mapped = (entries || []).map(e => ({
+      id: uid(),
+      amount: parseFloat(e.amount),
+      currency: e.currency || 'USD',
+      date: e.date,
+      note: e.note || '',
+      fxRateAtContrib: rates[e.currency || 'USD'] || null,
+      fxBase: 'USD'
+    })).filter(e => isFinite(e.amount) && e.amount !== 0 && e.date);
+    if (mapped.length === 0) return 0;
+    setContributions(prev => [...prev, ...mapped]);
+    toast(`Imported ${mapped.length} ${mapped.length === 1 ? 'entry' : 'entries'}`);
+    return mapped.length;
+  };
   const addWatch = (ticker, market, name) => {
     ticker = ticker.toUpperCase();
     if (watchlist.some(w => w.ticker === ticker && w.market === market)) {
@@ -2114,8 +2154,9 @@ function usePortfolio(fxRates, toast) {
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
+    sectorCache, setSectorCache,
     addPosition, updatePosition, removePosition, sellPosition, importPositions,
-    addContribution, removeContribution,
+    addContribution, removeContribution, importContributions,
     addWatch, removeWatch,
     addAlert, removeAlert
   };
@@ -2201,14 +2242,42 @@ function App() {
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
+    sectorCache, setSectorCache,
     addPosition, updatePosition, removePosition, sellPosition, importPositions,
-    addContribution, removeContribution,
+    addContribution, removeContribution, importContributions,
     addWatch, removeWatch,
     addAlert, removeAlert
   } = usePortfolio(fxRates, toast);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+  // Self-healing sector fill: any US holding the static classifier can't place
+  // (→ "Other") gets one lightweight stockanalysis.com lookup, normalised and
+  // persisted, so the allocation chart converges on real GICS sectors instead
+  // of a fat "Other" wedge. Already-classified or already-attempted symbols are
+  // skipped, so for most portfolios this does nothing.
+  useEffect(() => {
+    const pending = positions.filter(p => {
+      if (p.market !== 'US') return false;
+      const key = priceKey(p.market, p.ticker);
+      if (sectorCache[key]) return false;
+      return DATA.findSector(p.ticker, p.market).sector === 'Other';
+    });
+    if (pending.length === 0) return;
+    let alive = true;
+    (async () => {
+      for (const p of pending) {
+        if (!alive) break;
+        const got = await fetchSectorStockAnalysis(p.ticker).catch(() => null);
+        if (!alive) break;
+        setSectorCache(prev => ({
+          ...prev,
+          [priceKey(p.market, p.ticker)]: { sector: got?.sector || null, industry: got?.industry || null, at: Date.now() }
+        }));
+      }
+    })();
+    return () => { alive = false; };
+  }, [positions, sectorCache, setSectorCache]);
   const refreshFx = useCallback(async () => {
     const r = await fetchFxRates();
     if (r) setFxRates(r);
@@ -2450,10 +2519,13 @@ function App() {
       contributions: contributions,
       onAddContribution: addContribution,
       onRemoveContribution: removeContribution,
+      onImportContributions: importContributions,
       transactions: transactions,
       displayCurrency: displayCurrency,
       onSetDisplayCurrency: setDisplayCurrency,
-      fxRates: fxRates
+      fxRates: fxRates,
+      sectorCache: sectorCache,
+      fundamentals: fundamentalsByTicker
     }),
     current: React.createElement(CurrentView, {
       prices: prices,
@@ -3060,11 +3132,30 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
     )
   );
 }
+// Resolve a held position to a canonical sector. Prefers a live/cached
+// classification — the persisted background fill or an opened-stock fundamentals
+// fetch — over the static map, so the allocation chart reflects real GICS
+// sectors and keeps "Other" to genuinely unknown symbols only.
+function resolvePositionSector(ticker, market, sectorCache, fundamentals) {
+  const key = priceKey(market, ticker);
+  const cached = sectorCache && sectorCache[key];
+  if (cached && cached.sector) {
+    const s = DATA.normalizeSector(cached.sector);
+    if (s !== 'Other') return { sector: s, industry: cached.industry || s };
+  }
+  const fund = fundamentals && fundamentals[key] && fundamentals[key].data;
+  if (fund && fund.sector) {
+    const s = DATA.normalizeSector(fund.sector);
+    if (s !== 'Other') return { sector: s, industry: fund.industry || s };
+  }
+  return DATA.findSector(ticker, market);
+}
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
-function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail }) {
+function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
+  const [openSector, setOpenSector] = useState(null);
   const modes = [
     { key: 'ticker', label: 'Holdings' },
     { key: 'sector', label: 'Sector' },
@@ -3080,12 +3171,14 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     const val = convertCcy(p.shares * q.price, native, displayCurrency, rates);
     if (val != null && val > 0) {
       const info = DATA.findInfo(p.ticker, p.market) || {};
-      const sectorInfo = DATA.findSector(p.ticker, p.market) || {};
+      const sectorInfo = resolvePositionSector(p.ticker, p.market, sectorCache, fundamentals) || {};
       posVals.push({ ticker: p.ticker, market: p.market, value: val, name: info.name || p.ticker, sector: sectorInfo.sector || 'Other' });
     }
   });
-  // Group by mode
+  // Group by mode, and (for the sector view) keep the member holdings per sector
+  // so a tap can open a breakdown of exactly which stocks make up each wedge.
   const grouped = {};
+  const sectorMembers = {};
   posVals.forEach(pv => {
     let key;
     if (mode === 'sector') key = pv.sector;
@@ -3093,13 +3186,28 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     else key = pv.ticker;
     if (!grouped[key]) grouped[key] = { label: key, value: 0, market: pv.market, ticker: pv.ticker };
     grouped[key].value += pv.value;
+    (sectorMembers[pv.sector] = sectorMembers[pv.sector] || []).push(pv);
   });
-  const slices = Object.values(grouped).sort((a, b) => b.value - a.value);
+  Object.values(sectorMembers).forEach(list => list.sort((a, b) => b.value - a.value));
+  // Sort by weight, but always sink "Other" to the bottom so it reads as the
+  // residual it is rather than competing with real sectors near the top.
+  const slices = Object.values(grouped).sort((a, b) => {
+    const ao = a.label === 'Other', bo = b.label === 'Other';
+    if (ao !== bo) return ao ? 1 : -1;
+    return b.value - a.value;
+  });
   let total = slices.reduce((s, sl) => s + sl.value, 0);
   if (slices.length === 0) {
     return React.createElement("div", { className: "chart-empty" },
       React.createElement("div", { className: "text-dim text-sm" }, "Add positions to see allocation breakdown."));
   }
+  // Clicking a wedge/legend row: holdings → open the stock; sector → open the
+  // sector members popup; market → no drill-down.
+  const clickable = mode === 'ticker' || mode === 'sector';
+  const handleSlice = (a) => {
+    if (mode === 'ticker') onOpenDetail(a.ticker, a.market);
+    else if (mode === 'sector') setOpenSector(a.label);
+  };
   const COLORS = [
     'var(--blue)', 'var(--emerald)', 'var(--rose)', 'var(--amber)',
     'var(--purple)', '#06b6d4', '#ec4899', '#84cc16',
@@ -3141,16 +3249,16 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
             ? React.createElement("circle", {
                 cx: CX, cy: CY, r: RING_R, fill: "none",
                 stroke: arcs[0].color, strokeWidth: RING_W,
-                style: { cursor: mode === 'ticker' ? 'pointer' : 'default' },
-                onClick: () => mode === 'ticker' ? onOpenDetail(arcs[0].ticker, arcs[0].market) : null
+                style: { cursor: clickable ? 'pointer' : 'default' },
+                onClick: () => clickable ? handleSlice(arcs[0]) : null
               })
             : arcs.map((a, i) => React.createElement("path", {
                 key: i, d: a.d, fill: a.color,
                 stroke: "var(--bg-raised)", strokeWidth: "1.5",
-                style: { cursor: 'pointer', opacity: hovered != null && hovered !== i ? 0.4 : 1, transition: 'opacity 0.2s' },
+                style: { cursor: clickable ? 'pointer' : 'default', opacity: hovered != null && hovered !== i ? 0.4 : 1, transition: 'opacity 0.2s' },
                 onMouseEnter: () => setHovered(i),
                 onMouseLeave: () => setHovered(null),
-                onClick: () => mode === 'ticker' ? onOpenDetail(a.ticker, a.market) : null
+                onClick: () => clickable ? handleSlice(a) : null
               }))),
         React.createElement("div", { className: "chart-pie-center" },
           hovered != null
@@ -3164,15 +3272,90 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
       ),
       React.createElement("div", { className: "chart-pie-legend" },
         arcs.map((a, i) => React.createElement("button", {
-          key: i, className: "chart-pie-legend-item",
+          key: i, className: "chart-pie-legend-item" + (clickable ? " is-clickable" : ""),
           onMouseEnter: () => setHovered(i),
           onMouseLeave: () => setHovered(null),
-          onClick: () => mode === 'ticker' ? onOpenDetail(a.ticker, a.market) : null
+          onClick: () => clickable ? handleSlice(a) : null,
+          title: mode === 'sector' ? 'See holdings in ' + a.label : undefined
         },
           React.createElement("span", { className: "chart-pie-legend-dot", style: { background: a.color } }),
           React.createElement("span", { className: "chart-pie-legend-tkr" }, a.label),
-          React.createElement("span", { className: "chart-pie-legend-pct" }, a.pct.toFixed(1) + '%')
+          React.createElement("span", { className: "chart-pie-legend-pct" }, a.pct.toFixed(1) + '%'),
+          mode === 'sector' ? React.createElement(Icon, { name: "chevron", size: 11, className: "chart-pie-legend-go" }) : null
         ))
+      )
+    ),
+    // Sector → "which of my stocks make up this" floating breakdown.
+    openSector && mode === 'sector' ? React.createElement(SectorHoldingsPopup, {
+      sectorName: openSector,
+      members: sectorMembers[openSector] || [],
+      sectorValue: (grouped[openSector] && grouped[openSector].value) || 0,
+      portfolioTotal: total,
+      displayCurrency: displayCurrency,
+      onOpenDetail: onOpenDetail,
+      onClose: () => setOpenSector(null)
+    }) : null
+  );
+}
+// Floating breakdown of exactly which holdings make up a sector wedge — opened
+// by tapping a sector in the allocation chart. Lists each position with its
+// value, share of the sector, and a proportional bar; tapping a row dives into
+// that stock. Mirrors the heatmap's SectorDetailModal pop-in animation.
+function SectorHoldingsPopup({ sectorName, members, sectorValue, portfolioTotal, displayCurrency, onOpenDetail, onClose }) {
+  const [closing, setClosing] = useState(false);
+  const close = useCallback(() => { setClosing(true); setTimeout(onClose, 200); }, [onClose]);
+  useBodyScrollLock();
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [close]);
+  const sym = CURRENCY_SYMBOLS[displayCurrency] || '$';
+  const fmtMoney = v => sym + Math.round(v).toLocaleString('en-US');
+  const pctPort = portfolioTotal > 0 ? (sectorValue / portfolioTotal * 100) : 0;
+  const top = members[0];
+  return React.createElement("div", { className: "sector-modal" + (closing ? " closing" : "") },
+    React.createElement("div", { className: "sector-modal-backdrop", onClick: close }),
+    React.createElement("div", { className: "sector-modal-panel sh-panel", role: "dialog", "aria-label": sectorName + " holdings" },
+      React.createElement("div", { className: "sector-modal-header" },
+        React.createElement("div", { className: "sector-modal-titles" },
+          React.createElement("div", { className: "sector-modal-title" }, sectorName),
+          React.createElement("div", { className: "sector-modal-sub" },
+            members.length, members.length === 1 ? " holding" : " holdings",
+            " · ", pctPort.toFixed(1), "% of portfolio")),
+        React.createElement("button", { className: "modal-close", onClick: close, "aria-label": "Close" },
+          React.createElement(Icon, { name: "x" }))),
+      React.createElement("div", { className: "sector-modal-body" },
+        React.createElement("div", { className: "sh-summary" },
+          React.createElement("div", { className: "sh-summary-cell" },
+            React.createElement("div", { className: "sh-summary-label" }, "Sector value"),
+            React.createElement("div", { className: "sh-summary-val" }, fmtMoney(sectorValue))),
+          React.createElement("div", { className: "sh-summary-cell" },
+            React.createElement("div", { className: "sh-summary-label" }, "Holdings"),
+            React.createElement("div", { className: "sh-summary-val" }, members.length)),
+          React.createElement("div", { className: "sh-summary-cell" },
+            React.createElement("div", { className: "sh-summary-label" }, "Largest"),
+            React.createElement("div", { className: "sh-summary-val" }, top ? top.ticker : "—"))),
+        React.createElement("div", { className: "sh-list" },
+          members.length === 0
+            ? React.createElement("div", { className: "text-dim text-sm", style: { padding: 16, textAlign: 'center' } }, "No holdings in this sector.")
+            : members.map((m, i) => {
+                const wSector = sectorValue > 0 ? (m.value / sectorValue * 100) : 0;
+                return React.createElement("button", {
+                  key: m.market + ':' + m.ticker + ':' + i, className: "sh-row",
+                  onClick: () => { if (onOpenDetail) onOpenDetail(m.ticker, m.market); close(); }
+                },
+                  React.createElement("div", { className: "sh-row-top" },
+                    React.createElement("div", { className: "sh-row-id" },
+                      React.createElement("span", { className: "sh-row-tkr" }, m.ticker),
+                      React.createElement("span", { className: "sh-row-mkt" }, MARKET_LABELS[m.market] || m.market),
+                      React.createElement("span", { className: "sh-row-name" }, m.name)),
+                    React.createElement("div", { className: "sh-row-figs" },
+                      React.createElement("span", { className: "sh-row-val" }, fmtMoney(m.value)),
+                      React.createElement("span", { className: "sh-row-wt" }, wSector.toFixed(1), "%"))),
+                  React.createElement("div", { className: "sh-bar" },
+                    React.createElement("div", { className: "sh-bar-fill", style: { width: Math.max(2, Math.min(100, wSector)) + '%' } })));
+              }))
       )
     )
   );
@@ -3185,10 +3368,13 @@ function DashboardView(_ref6) {
     contributions,
     onAddContribution,
     onRemoveContribution,
+    onImportContributions,
     transactions,
     displayCurrency,
     onSetDisplayCurrency,
-    fxRates
+    fxRates,
+    sectorCache,
+    fundamentals
   } = _ref6;
   const computeStats = list => {
     let cost = 0, value = 0, hasAllPrices = true;
@@ -3236,6 +3422,7 @@ function DashboardView(_ref6) {
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = totalCost > 0 ? totalPnl / totalCost * 100 : 0;
   const [contribModalOpen, setContribModalOpen] = useState(false);
+  const [contribImportOpen, setContribImportOpen] = useState(false);
   const [showContribHistory, setShowContribHistory] = useState(false);
   const [showTxHistory, setShowTxHistory] = useState(false);
   const [txFilter, setTxFilter] = useState('all');
@@ -3301,15 +3488,18 @@ function DashboardView(_ref6) {
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail })),
+        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
           React.createElement("div", null,
             React.createElement("div", { className: "growth-tracker-title" }, "Growth Tracker"),
             React.createElement("div", { className: "growth-tracker-subtitle" }, "Performance & returns")),
-          React.createElement("button", { className: "growth-deposit-btn", onClick: () => setContribModalOpen(true) },
-            React.createElement(Icon, { name: "plus", size: 11 }), "Log deposit")),
+          React.createElement("div", { className: "growth-tracker-actions" },
+            onImportContributions ? React.createElement("button", { className: "growth-deposit-btn ghost", onClick: () => setContribImportOpen(true), title: "Import deposits & withdrawals" },
+              React.createElement(Icon, { name: "download", size: 11 }), "Import") : null,
+            React.createElement("button", { className: "growth-deposit-btn", onClick: () => setContribModalOpen(true) },
+              React.createElement(Icon, { name: "plus", size: 11 }), "Log deposit"))),
         React.createElement("div", { className: "growth-stats-grid" },
           React.createElement("div", { className: "growth-stat" },
             React.createElement("div", { className: "growth-stat-header" },
@@ -3418,7 +3608,13 @@ function DashboardView(_ref6) {
       // Contribution modal
       contribModalOpen ? React.createElement(ContributionModal, {
         onClose: () => setContribModalOpen(false),
+        onOpenImport: onImportContributions ? () => setContribImportOpen(true) : null,
         onSave: (amount, currency, date, note) => { onAddContribution(amount, currency, date, note); setContribModalOpen(false); }
+      }) : null,
+      // Deposit / withdrawal bulk import
+      contribImportOpen ? React.createElement(ContributionImportModal, {
+        onClose: () => setContribImportOpen(false),
+        onImport: (entries) => { if (onImportContributions) onImportContributions(entries); setContribImportOpen(false); }
       }) : null,
       ));
 }
@@ -4011,6 +4207,157 @@ async function parseImportFile(file) {
   }
   const text = await file.text();
   return parseHoldingsFromText(text);
+}
+
+// ── Deposit / withdrawal (cash-flow) import ────────────────────────────────
+// Brokers and spreadsheets emit dates and amounts in wildly different shapes;
+// these parsers are deliberately tolerant so a user can paste almost anything —
+// "2026-01-15, 1000", "15/01/2026 R1 000 deposit", "Withdrawal,01 Feb 2026,500"
+// — and get back clean { date, amount(signed), currency, note } rows.
+const _MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function mkDate(y, mo, d) {
+  if (!(y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+function parseFlexibleDate(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  let m;
+  // Spreadsheet serial date (days since 1899-12-30), e.g. 45292 → 2024-01-01.
+  if (/^\d{5}$/.test(s)) {
+    const n = parseInt(s, 10);
+    if (n > 20000 && n < 60000) { const d = new Date(Date.UTC(1899, 11, 30) + n * 86400000); return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10); }
+  }
+  // ISO-ish: YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+  if ((m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/))) return mkDate(+m[1], +m[2], +m[3]);
+  // D-M-Y or M-D-Y with a 4-digit year (default to international D/M/Y).
+  if ((m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/))) {
+    const a = +m[1], b = +m[2];
+    if (b > 12 && a <= 12) return mkDate(+m[3], a, b);
+    return mkDate(+m[3], b, a);
+  }
+  // D-M-Y with a 2-digit year.
+  if ((m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$/))) {
+    const yr = (+m[3] <= 79 ? 2000 : 1900) + +m[3];
+    const a = +m[1], b = +m[2];
+    if (b > 12 && a <= 12) return mkDate(yr, a, b);
+    return mkDate(yr, b, a);
+  }
+  // "15 Jan 2026" / "15 January 2026"
+  if ((m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\.?,?\s+(\d{4})$/))) { const mo = _MONTHS[m[2].slice(0, 3).toLowerCase()]; if (mo != null) return mkDate(+m[3], mo + 1, +m[1]); }
+  // "Jan 15, 2026" / "January 15 2026"
+  if ((m = s.match(/^([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{4})$/))) { const mo = _MONTHS[m[1].slice(0, 3).toLowerCase()]; if (mo != null) return mkDate(+m[3], mo + 1, +m[2]); }
+  return null;
+}
+const _CCY_WORD = { usd: 'USD', zar: 'ZAR', gbp: 'GBP', aud: 'AUD', eur: 'EUR' };
+function detectCurrencyToken(s) {
+  if (!s) return null;
+  const t = String(s).trim().toLowerCase();
+  if (_CCY_WORD[t]) return _CCY_WORD[t];
+  if (t === '$' || t === 'us$') return 'USD';
+  if (t === '£') return 'GBP';
+  if (t === '€') return 'EUR';
+  if (t === 'a$') return 'AUD';
+  if (t === 'r') return 'ZAR';
+  return null;
+}
+function currencyInString(s) {
+  if (/£/.test(s)) return 'GBP';
+  if (/€/.test(s)) return 'EUR';
+  if (/\bUSD\b/i.test(s) || /us\$/i.test(s)) return 'USD';
+  if (/\bZAR\b/i.test(s)) return 'ZAR';
+  if (/\bGBP\b/i.test(s)) return 'GBP';
+  if (/\bAUD\b/i.test(s) || /a\$/i.test(s)) return 'AUD';
+  if (/\bEUR\b/i.test(s)) return 'EUR';
+  if (/^\s*r\s*[\d]/i.test(s)) return 'ZAR';
+  if (/\$/.test(s)) return 'USD';
+  return null;
+}
+// Decide whether a single cell is a money amount, returning its magnitude, sign
+// and any embedded currency. Rejects tickers, quarters, share counts, etc.
+function parseAmountCell(c) {
+  if (!c || !/\d/.test(c)) return null;
+  const trimmed = c.trim();
+  const negative = /^\(.*\)$/.test(trimmed) || /^-/.test(trimmed) || /-$/.test(trimmed);
+  const stripped = trimmed.replace(/[()\s]/g, '');
+  // Optional currency marker, digits with separators, optional trailing code.
+  if (!/^[-+]?(?:us\$|a\$|[$£€r])?[\d.,]+(?:usd|zar|gbp|aud|eur|\$|£|€)?$/i.test(stripped)) return null;
+  const v = parseDecimal(trimmed);
+  if (!isFinite(v) || v === 0) return null;
+  return { value: Math.abs(v), negative: negative || v < 0, currency: currencyInString(trimmed) };
+}
+const _WITHDRAW_RE = /\b(withdraw|withdrawal|withdrawn|outflow|debit|redeem|redemption|disburse|disbursement|cash[\s-]?out)\b/i;
+const _DEPOSIT_RE = /\b(deposit|contribution|contribute|inflow|credit|top[\s-]?up|funding|paid[\s-]?in)\b/i;
+function parseCashFlowRows(rows) {
+  const flows = [];
+  for (const cells of rows) {
+    if (!cells) continue;
+    const clean = cells.map(c => String(c == null ? '' : c).trim()).filter(c => c !== '');
+    if (clean.length === 0) continue;
+    const joined = clean.join(' ');
+    let date = null, amount = null, amountNeg = false, currency = null;
+    const noteParts = [];
+    for (const c of clean) {
+      if (!date) { const d = parseFlexibleDate(c); if (d) { date = d; continue; } }
+      if (amount == null) { const a = parseAmountCell(c); if (a) { amount = a.value; amountNeg = a.negative; if (a.currency) currency = a.currency; continue; } }
+      const ccy = detectCurrencyToken(c);
+      if (ccy && !currency) { currency = ccy; continue; }
+      noteParts.push(c);
+    }
+    if (date == null || amount == null) continue; // header row or unparseable
+    const isWithdraw = _WITHDRAW_RE.test(joined) && !_DEPOSIT_RE.test(joined);
+    const negative = amountNeg || isWithdraw;
+    const note = noteParts.join(' ').replace(/\s+/g, ' ').trim();
+    flows.push({ date, amount: (negative ? -1 : 1) * Math.abs(amount), currency: currency || null, type: negative ? 'withdrawal' : 'deposit', note });
+  }
+  return flows;
+}
+// Pasted (comma-delimited) text fragments commas that live *inside* a value —
+// a written date ("Jan 5, 2026") or a thousands-grouped amount ("$1,250.50").
+// Stitch those neighbours back together before the row is interpreted. Only used
+// for free text; spreadsheet cells already arrive intact.
+function coalesceCashCells(cells) {
+  const out = [];
+  for (let i = 0; i < cells.length; i++) {
+    const cur = cells[i], next = cells[i + 1];
+    // "Mon D" + "YYYY"  or  "D Mon" + "YYYY"
+    if (next && /^\d{4}$/.test(next) && (/^[A-Za-z]{3,9}\.?\s+\d{1,2}$/.test(cur) || /^\d{1,2}\s+[A-Za-z]{3,9}\.?$/.test(cur))) { out.push(cur + ' ' + next); i++; continue; }
+    // thousands-grouped number: "1" + "250.50", "$1" + "200" + "000", "(1" + "250)"
+    if (next && /^[-+(]?\s*(?:us\$|a\$|[$£€r])?\s*\d{1,3}$/i.test(cur) && /^\d{3}(?:\.\d+)?\)?$/.test(next)) {
+      let merged = cur;
+      while (i + 1 < cells.length && /^\d{3}(?:\.\d+)?\)?$/.test(cells[i + 1])) { merged += cells[i + 1]; i++; if (/[.)]/.test(cells[i])) break; }
+      out.push(merged); continue;
+    }
+    out.push(cur);
+  }
+  return out;
+}
+function parseCashFlowsFromText(text) {
+  if (!text) return [];
+  const rows = text.replace(/\r\n?/g, '\n').split('\n').map(stripListMarker).filter(l => l.trim() !== '').map(l => coalesceCashCells(splitLine(l)));
+  return parseCashFlowRows(rows);
+}
+async function parseCashFlowFile(file) {
+  const name = (file.name || '').toLowerCase();
+  if (name.endsWith('.xlsx') || name.endsWith('.xls') || /sheet|excel/.test(file.type)) {
+    await loadScriptOnce(XLSX_CDN);
+    const XLSX = window.XLSX;
+    if (!XLSX) throw new Error('Spreadsheet reader failed to load.');
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    for (const sheetName of wb.SheetNames) {
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, blankrows: false, raw: false });
+      const flows = parseCashFlowRows(aoa);
+      if (flows.length > 0) return flows;
+    }
+    return [];
+  }
+  if (name.endsWith('.pdf') || file.type === 'application/pdf') {
+    throw new Error('PDF statements aren’t supported for cash flows — export to CSV/Excel, or paste the rows instead.');
+  }
+  const text = await file.text();
+  return parseCashFlowsFromText(text);
 }
 
 function MarketPicker({ value, onChange, disabled, style }) {
@@ -6718,7 +7065,8 @@ function AlertsModal(_ref11) {
     size: 12
   })))))))));
 }
-function ContributionModal({ onClose, onSave }) {
+function ContributionModal({ onClose, onSave, onOpenImport }) {
+  const [flow, setFlow] = useState('deposit'); // 'deposit' | 'withdraw'
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('USD');
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -6726,10 +7074,13 @@ function ContributionModal({ onClose, onSave }) {
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
+  const isWithdraw = flow === 'withdraw';
   const submit = () => {
     const a = parseDecimal(amount);
     if (!isFinite(a) || a <= 0) return;
-    onSave(a, currency, date, note);
+    // Withdrawals are stored as negative cash flows so the contribution history
+    // and overall-return maths net them out automatically.
+    onSave(isWithdraw ? -a : a, currency, date, note);
   };
   const ccy = currency === 'ZAR' ? 'R' : '$';
   return React.createElement("div", { className: "modal" },
@@ -6738,14 +7089,28 @@ function ContributionModal({ onClose, onSave }) {
       React.createElement("div", { className: "modal-handle" }),
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,
-          React.createElement("div", { className: "modal-title" }, "Log contribution"),
-          React.createElement("div", { className: "modal-subtitle" }, "Record cash deposited from outside your portfolio")
+          React.createElement("div", { className: "modal-title" }, isWithdraw ? "Log withdrawal" : "Log deposit"),
+          React.createElement("div", { className: "modal-subtitle" }, isWithdraw ? "Record cash taken out of your portfolio" : "Record cash deposited from outside your portfolio")
         ),
         React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
           React.createElement(Icon, { name: "x" })
         )
       ),
       React.createElement("div", { className: "modal-body" },
+        React.createElement("div", { className: "flow-toggle" },
+          React.createElement("button", {
+            type: "button", className: "flow-toggle-btn" + (!isWithdraw ? " active deposit" : ""),
+            onClick: () => setFlow('deposit')
+          }, React.createElement(Icon, { name: "plus", size: 12 }), "Deposit"),
+          React.createElement("button", {
+            type: "button", className: "flow-toggle-btn" + (isWithdraw ? " active withdraw" : ""),
+            onClick: () => setFlow('withdraw')
+          }, React.createElement(Icon, { name: "minus", size: 12 }), "Withdrawal")
+        ),
+        onOpenImport ? React.createElement("button", {
+          className: "contrib-import-link", type: "button",
+          onClick: () => { onClose(); onOpenImport(); }
+        }, React.createElement(Icon, { name: "download", size: 12 }), "Import deposits & withdrawals from a file or list") : null,
         React.createElement("div", { className: "form-group" },
           React.createElement("label", { className: "form-label" }, "Currency"),
           React.createElement("select", { value: currency, onChange: e => setCurrency(e.target.value) },
@@ -6783,11 +7148,153 @@ function ContributionModal({ onClose, onSave }) {
         ),
         React.createElement("div", { className: "form-actions" },
           React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"),
-          React.createElement("button", { className: "btn btn-primary", onClick: submit }, "Save")
+          React.createElement("button", { className: "btn btn-primary", onClick: submit }, isWithdraw ? "Add withdrawal" : "Add deposit")
         )
       )
     )
   );
+}
+// Import a batch of deposits / withdrawals from pasted text or a CSV/XLSX file.
+// Two stages: paste/drop → an editable review table where each dated amount can
+// be flipped between deposit and withdrawal and re-currencied before committing.
+function ContributionImportModal({ onClose, onImport }) {
+  const [stage, setStage] = useState('input'); // 'input' | 'review'
+  const [rows, setRows] = useState([]);
+  const [pasteText, setPasteText] = useState('');
+  const [parseError, setParseError] = useState('');
+  const [parsing, setParsing] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [defaultCurrency, setDefaultCurrency] = useState('USD');
+  const fileRef = useRef(null);
+  const panelRef = useRef(null);
+  useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
+  useBodyScrollLock();
+
+  const toRows = (flows) => flows.map(f => ({
+    id: uid(),
+    date: f.date || '',
+    amount: f.amount != null ? String(Math.abs(f.amount)) : '',
+    type: ((f.amount != null && f.amount < 0) || f.type === 'withdrawal') ? 'withdrawal' : 'deposit',
+    currency: f.currency || defaultCurrency,
+    note: f.note || '',
+    include: true
+  }));
+  const handleParsed = (flows) => {
+    if (!flows || flows.length === 0) {
+      setParseError("Couldn't find any dated amounts. Paste rows like “2026-01-15, 1000” or “15 Jan 2026, 500, withdrawal”.");
+      return;
+    }
+    setRows(toRows(flows));
+    setStage('review');
+    setParseError('');
+  };
+  const handlePaste = () => {
+    if (!pasteText.trim()) return;
+    setParsing(true); setParseError('');
+    try { handleParsed(parseCashFlowsFromText(pasteText)); }
+    catch (e) { setParseError('Could not parse that text.'); }
+    finally { setParsing(false); }
+  };
+  const handleFiles = async (files) => {
+    const file = files && files[0];
+    if (!file) return;
+    setParsing(true); setParseError('');
+    try { handleParsed(await parseCashFlowFile(file)); }
+    catch (e) { setParseError(e?.message || 'Could not read that file. Try CSV, XLSX, or paste the rows instead.'); }
+    finally { setParsing(false); }
+  };
+
+  const updateRow = (id, patch) => setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+  const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
+  const rowValid = (r) => r.include && r.date && isFinite(parseDecimal(r.amount)) && parseDecimal(r.amount) > 0;
+  const validRows = rows.filter(rowValid);
+  const sym = (c) => CURRENCY_SYMBOLS[c] || '';
+  const deposits = validRows.filter(r => r.type === 'deposit');
+  const withdrawals = validRows.filter(r => r.type === 'withdrawal');
+
+  const doImport = () => {
+    const entries = validRows.map(r => ({
+      amount: (r.type === 'withdrawal' ? -1 : 1) * Math.abs(parseDecimal(r.amount)),
+      currency: r.currency, date: r.date, note: r.note
+    }));
+    if (entries.length === 0) return;
+    onImport(entries);
+    onClose();
+  };
+
+  const CCYS = ['USD', 'ZAR', 'GBP', 'AUD', 'EUR'];
+  const inputStage = React.createElement(React.Fragment, null,
+    React.createElement("div", { className: "form-group" },
+      React.createElement("label", { className: "form-label" }, "Default currency"),
+      React.createElement("select", { value: defaultCurrency, onChange: e => setDefaultCurrency(e.target.value) },
+        CCYS.map(c => React.createElement("option", { key: c, value: c }, c + ' (' + (CURRENCY_SYMBOLS[c] || '') + ')')))),
+    React.createElement("div", {
+      className: "import-drop" + (dragOver ? " over" : ""),
+      onClick: () => fileRef.current && fileRef.current.click(),
+      onDragOver: e => { e.preventDefault(); setDragOver(true); },
+      onDragLeave: () => setDragOver(false),
+      onDrop: e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }
+    },
+      React.createElement(Icon, { name: parsing ? "refresh" : "download", size: 24, className: parsing ? "spin" : "" }),
+      React.createElement("div", { className: "import-drop-title" }, parsing ? "Reading…" : "Drop a CSV or Excel file, or tap to browse"),
+      React.createElement("div", { className: "import-drop-sub" }, "Columns in any order: date · amount · type · currency · note"),
+      React.createElement("input", {
+        ref: fileRef, type: "file", accept: ".csv,.tsv,.txt,.xlsx,.xls", style: { display: 'none' },
+        onChange: e => { handleFiles(e.target.files); e.target.value = ''; }
+      })),
+    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste rows")),
+    React.createElement("textarea", {
+      className: "import-paste", value: pasteText, placeholder: "2026-01-15, 1000, deposit, Monthly DCA\n2026-02-20, 500, withdrawal\n15 Mar 2026, R2 500, deposit",
+      onChange: e => setPasteText(e.target.value), rows: 5
+    }),
+    parseError ? React.createElement("div", { className: "verify-error", style: { marginTop: 10 } }, parseError) : null,
+    React.createElement("div", { className: "form-actions" },
+      React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"),
+      React.createElement("button", { className: "btn btn-primary", onClick: handlePaste, disabled: parsing || !pasteText.trim() }, parsing ? "Reading…" : "Review")));
+
+  const reviewStage = React.createElement(React.Fragment, null,
+    React.createElement("div", { className: "cfi-summary" },
+      React.createElement("span", null, validRows.length, " of ", rows.length, " ready"),
+      React.createElement("span", { className: "cfi-summary-sep" }, "·"),
+      React.createElement("span", { className: "up" }, deposits.length, " deposit", deposits.length === 1 ? "" : "s"),
+      React.createElement("span", { className: "cfi-summary-sep" }, "·"),
+      React.createElement("span", { className: "down" }, withdrawals.length, " withdrawal", withdrawals.length === 1 ? "" : "s")),
+    React.createElement("div", { className: "cfi-list" },
+      rows.map(r => React.createElement("div", { className: "cfi-row" + (r.include ? "" : " excluded") + (r.include && !rowValid(r) ? " invalid" : ""), key: r.id },
+        React.createElement("div", { className: "cfi-row-head" },
+          React.createElement("button", {
+            className: "cfi-type-toggle " + r.type, type: "button",
+            onClick: () => updateRow(r.id, { type: r.type === 'withdrawal' ? 'deposit' : 'withdrawal' }),
+            title: "Toggle deposit / withdrawal"
+          }, React.createElement(Icon, { name: r.type === 'withdrawal' ? 'minus' : 'plus', size: 11 }), r.type === 'withdrawal' ? 'Out' : 'In'),
+          React.createElement("input", { className: "cfi-date", type: "date", value: r.date, onChange: e => updateRow(r.id, { date: e.target.value }) }),
+          React.createElement("button", { className: "cfi-remove", onClick: () => removeRow(r.id), "aria-label": "Remove" }, React.createElement(Icon, { name: "x", size: 12 }))),
+        React.createElement("div", { className: "cfi-row-body" },
+          React.createElement("div", { className: "cfi-amount-wrap" },
+            React.createElement("span", { className: "cfi-amount-sym" }, sym(r.currency)),
+            React.createElement("input", {
+              className: "cfi-amount", type: "text", inputMode: "decimal", value: r.amount, placeholder: "0.00",
+              onChange: e => updateRow(r.id, { amount: sanitizeDecimalInput(e.target.value) })
+            })),
+          React.createElement("select", { className: "cfi-ccy", value: r.currency, onChange: e => updateRow(r.id, { currency: e.target.value }) },
+            CCYS.map(c => React.createElement("option", { key: c, value: c }, c))),
+          React.createElement("input", { className: "cfi-note", type: "text", value: r.note, placeholder: "Note", maxLength: 100, onChange: e => updateRow(r.id, { note: e.target.value }) })))),
+    ),
+    React.createElement("div", { className: "form-actions" },
+      React.createElement("button", { className: "btn btn-ghost", onClick: () => setStage('input') }, "Back"),
+      React.createElement("button", { className: "btn btn-primary", onClick: doImport, disabled: validRows.length === 0 },
+        "Import ", validRows.length, " ", validRows.length === 1 ? "entry" : "entries")));
+
+  return React.createElement("div", { className: "modal" },
+    React.createElement("div", { className: "modal-backdrop", onClick: () => { if (stage === 'input') onClose(); } }),
+    React.createElement("div", { className: "modal-panel", style: { maxWidth: 520 }, ref: panelRef },
+      React.createElement("div", { className: "modal-handle" }),
+      React.createElement("div", { className: "modal-header" },
+        React.createElement("div", null,
+          React.createElement("div", { className: "modal-title" }, "Import deposits & withdrawals"),
+          React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "Paste a list or drop a file — amounts and dates" : "Check each row, flip deposits/withdrawals, then import")),
+        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))),
+      React.createElement("div", { className: "modal-body" }, stage === 'input' ? inputStage : reviewStage)));
 }
 function ImportModal({ onClose, onImport }) {
   const [stage, setStage] = useState('input'); // 'input' | 'review'
