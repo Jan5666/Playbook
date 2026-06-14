@@ -541,7 +541,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 
 /* Modal — bottom sheet on mobile, side panel on desktop */
 .modal {
-  position: fixed; inset: 0; z-index: 50;
+  position: fixed; inset: 0; z-index: 95;
   display: flex; justify-content: center; align-items: flex-end;
 }
 .modal-backdrop {
@@ -2313,6 +2313,10 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .import-alt:hover { background: var(--bg-elev); border-color: var(--border); }
 .import-alt-tkr { font-family: var(--mono); font-weight: 700; font-size: 12px; color: var(--text); flex: 0 0 auto; min-width: 48px; }
 .import-alt-name { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.import-alts-toggle.active { background: var(--accent-soft, var(--bg-elev)); color: var(--accent, var(--text)); }
+.import-manual-search { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px; background: var(--bg-raised); border: 1px solid var(--border); }
+.import-manual-hint { font-size: 11px; color: var(--text-muted); }
+.import-manual-search .ticker-search-input { width: 100%; }
 .import-card-qty { display: grid; grid-template-columns: 1fr 1.3fr; gap: 8px; }
 .import-qty-field { display: flex; flex-direction: column; gap: 3px; }
 .import-qty-label { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); font-family: var(--mono); }

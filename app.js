@@ -219,20 +219,38 @@ function useSwipeDownToClose(panelRef, onClose) {
           if (done) return;
           done = true;
           // Trigger the close (which unmounts the modal) while the panel is
-          // still translated off-screen. Do NOT reset transform here — doing so
-          // snaps the panel back to its open position for one frame before the
-          // unmount commits, which is the "flickers on before closing" glitch.
-          // Only restore styles if, a beat later, the panel is somehow still in
-          // the DOM (e.g. a guarded onClose that didn't actually close).
+          // still translated off-screen. We must NOT reset the transform until
+          // we KNOW the close failed to unmount the panel. The old code did this
+          // on a fixed 80ms timer, which races React's commit: when the stock
+          // card is heavy (charts/fundamentals) or the scroll-restore stalls the
+          // frame, the unmount lands later than 80ms, so the panel first slides
+          // back into view and only then disappears — the "closes, flickers on,
+          // closes again" glitch. Instead, watch the DOM: the instant React
+          // removes the panel we stand down and leave it off-screen (no flicker).
+          // Only a genuinely guarded onClose (e.g. import review ignores swipe)
+          // leaves the node attached, and a long fallback glides it home.
           closeRef.current();
-          setTimeout(() => {
+          let settled = false;
+          let guard = 0;
+          const standDown = () => {
+            if (settled) return; settled = true;
+            try { obs.disconnect(); } catch (_e) {}
+            clearTimeout(guard);
+          };
+          const obs = typeof MutationObserver !== 'undefined'
+            ? new MutationObserver(() => { if (!panel.isConnected) standDown(); })
+            : null;
+          if (obs) { try { obs.observe(document.documentElement, { childList: true, subtree: true }); } catch (_e) {} }
+          // Fallback: if the panel is still mounted well after the close (guarded
+          // onClose, or no MutationObserver support), glide it back into place.
+          guard = setTimeout(() => {
+            if (settled) return; settled = true;
+            try { obs && obs.disconnect(); } catch (_e) {}
             if (!panel.isConnected) return;
-            // Modal didn't unmount (guarded onClose) — glide it back up rather
-            // than leaving it stranded off-screen.
             panel.style.transition = `transform 0.3s ${EASE}`;
             panel.style.transform = '';
             if (bd && bd.isConnected) { bd.style.transition = 'opacity 0.3s ease'; bd.style.opacity = ''; }
-          }, 80);
+          }, 600);
         };
         panel.addEventListener('transitionend', cb, { once: true });
         setTimeout(cb, 320);
@@ -277,6 +295,15 @@ const MARKETS = [
   { value: 'PAR', label: 'PAR', country: 'France',      exchange: 'Euronext Paris' },
   { value: 'AMS', label: 'AMS', country: 'Netherlands', exchange: 'Euronext Amsterdam' },
 ];
+// JSE and TFSA are the same underlying exchange — a TFSA account just tracks
+// JSE-listed shares (.JO) tax-free — so a JSE-listed search result is valid for
+// either account. Used so picking a listing never silently flips the account
+// the user explicitly chose (e.g. TFSA → JSE) when both map to the same listing.
+function sameUnderlyingExchange(a, b) {
+  if (a === b) return true;
+  const norm = m => (m === 'TFSA' ? 'JSE' : m);
+  return norm(a) === norm(b);
+}
 const DISPLAY_CURRENCIES = [
   { code: 'USD', sym: '$',  label: 'US Dollar' },
   { code: 'ZAR', sym: 'R',  label: 'South African Rand' },
@@ -1791,7 +1818,92 @@ function useAlertEngine(alerts, prices, fireNotification) {
       newTriggers.forEach(t => fireNotification(t));
     }
   }, [prices, alerts, fireNotification, setAlertSeenMap, setTriggered]);
-  return { triggered, setTriggered, alertSeenMap };
+  return { triggered, setTriggered, alertSeenMap, setAlertSeenMap };
+}
+// ─── Background price alerts ────────────────────────────────────────────────
+// Mirror the alert config into IndexedDB (a store the service worker can also
+// read) and register Periodic Background Sync, so the SW can fetch quotes and
+// fire alert notifications even when the app is closed. On focus we reconcile
+// any triggers the SW fired while we were away into the in-app history, and
+// adopt its seen-map so the foreground engine doesn't re-fire them.
+const BG_DB = 'playbook-bg', BG_STORE = 'kv', BG_KEY = 'alertState';
+function bgIdbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(BG_DB, 1);
+    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(BG_STORE)) req.result.createObjectStore(BG_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function bgIdbGet(key) {
+  return bgIdbOpen().then(db => new Promise((resolve, reject) => {
+    const r = db.transaction(BG_STORE, 'readonly').objectStore(BG_STORE).get(key);
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  }));
+}
+function bgIdbSet(key, val) {
+  return bgIdbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(BG_STORE, 'readwrite');
+    tx.objectStore(BG_STORE).put(val, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+async function bgWriteConfig(alerts, seen) {
+  if (typeof indexedDB === 'undefined') return;
+  try {
+    const prev = (await bgIdbGet(BG_KEY)) || {};
+    await bgIdbSet(BG_KEY, { ...prev, alerts, seen, updatedAt: Date.now() });
+  } catch (_e) {}
+}
+async function registerPeriodicAlertSync() {
+  try {
+    if (!('serviceWorker' in navigator)) return;
+    const reg = await navigator.serviceWorker.ready;
+    if (!('periodicSync' in reg)) return;
+    let status = { state: 'granted' };
+    try { status = await navigator.permissions.query({ name: 'periodic-background-sync' }); } catch (_e) {}
+    if (status.state === 'denied') return;
+    await reg.periodicSync.register('check-alerts', { minInterval: 15 * 60 * 1000 });
+  } catch (_e) {}
+}
+function useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered, notifPerm) {
+  // 1. Keep the SW's copy of the alert config current.
+  useEffect(() => { bgWriteConfig(alerts, alertSeenMap); }, [alerts, alertSeenMap]);
+  // 2. Register periodic background sync once notifications are allowed.
+  useEffect(() => { if (notifPerm === 'granted') registerPeriodicAlertSync(); }, [notifPerm]);
+  // 3. On mount + every time we return to the foreground, drain anything the
+  //    SW fired while closed into the in-app history and adopt its seen-map.
+  useEffect(() => {
+    let alive = true;
+    const drain = async () => {
+      if (typeof indexedDB === 'undefined') return;
+      try {
+        const st = await bgIdbGet(BG_KEY);
+        if (!alive || !st) return;
+        const fired = st.bgTriggered || [];
+        if (st.seen) setAlertSeenMap(prev => ({ ...prev, ...st.seen }));
+        if (fired.length) {
+          setTriggered(prev => {
+            const have = new Set(prev.map(t => t.id + '|' + t.triggeredAt));
+            const fresh = fired.filter(t => !have.has(t.id + '|' + t.triggeredAt));
+            return fresh.length ? [...fresh, ...prev].slice(0, MAX_TRIGGER_HISTORY) : prev;
+          });
+          await bgIdbSet(BG_KEY, { ...st, bgTriggered: [] });
+        }
+      } catch (_e) {}
+    };
+    drain();
+    const onVis = () => {
+      if (!document.hidden) { drain(); return; }
+      // Going to background — ask the SW to run one check now (covers the window
+      // before periodic sync first fires, while the SW is still alive).
+      try { navigator.serviceWorker.controller?.postMessage({ type: 'check-alerts' }); } catch (_e) {}
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { alive = false; document.removeEventListener('visibilitychange', onVis); };
+  }, [setAlertSeenMap, setTriggered]);
 }
 // Owns positions/watchlist/contributions/alerts + CRUD. fxRates is needed for
 // purchase-date FX resolution; toast is injected for user-facing feedback.
@@ -2196,7 +2308,10 @@ function App() {
     } catch (e) {}
     toast(`${title}: ${body}`);
   }, [toast]);
-  const { triggered, setTriggered } = useAlertEngine(alerts, prices, fireNotification);
+  const { triggered, setTriggered, alertSeenMap, setAlertSeenMap } = useAlertEngine(alerts, prices, fireNotification);
+  // Background price-alert delivery: mirror config to the SW, register periodic
+  // sync, and reconcile anything fired while the app was closed.
+  useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered, notifPerm);
   const requestNotifPerm = useCallback(async () => {
     if (typeof Notification === 'undefined') {
       toast('Notifications not supported in this browser');
@@ -3935,7 +4050,7 @@ function MarketPicker({ value, onChange, disabled, style }) {
   );
 }
 
-function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabled }) {
+function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnter, disabled }) {
   const [query, setQuery] = useState(value || '');
   const [suggestions, setSuggestions] = useState([]);
   const [remoteLoading, setRemoteLoading] = useState(false);
@@ -3999,16 +4114,36 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
     remoteReqId.current++;
     setQuery(s.ticker);
     onChange(s.ticker);
-    onMarketChange(s.market);
+    // Respect the account the user explicitly chose. A JSE-listed result is
+    // valid for both a JSE and a TFSA account, so don't yank a TFSA selection
+    // over to plain JSE — only switch when the listing is on a genuinely
+    // different exchange than the one currently selected.
+    if (onMarketChange && !sameUnderlyingExchange(s.market, market)) onMarketChange(s.market);
+    if (onSelect) onSelect(s);
     setSuggestions([]);
     setOpen(false);
   };
 
+  // Surface listings on the account the user already chose first, so the right
+  // exchange's row is the obvious tap (and the default keyboard pick) instead of
+  // a same-name foreign listing that would silently change their market.
+  const ordered = useMemo(() => {
+    if (!market || suggestions.length < 2) return suggestions;
+    return suggestions
+      .map((s, i) => ({ s, i }))
+      .sort((a, b) => {
+        const am = sameUnderlyingExchange(a.s.market, market) ? 0 : 1;
+        const bm = sameUnderlyingExchange(b.s.market, market) ? 0 : 1;
+        return am - bm || a.i - b.i;
+      })
+      .map(x => x.s);
+  }, [suggestions, market]);
+
   const handleKeyDown = (e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, suggestions.length - 1)); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, ordered.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, -1)); }
     else if (e.key === 'Enter') {
-      if (open && activeIdx >= 0) { e.preventDefault(); selectSuggestion(suggestions[activeIdx]); }
+      if (open && activeIdx >= 0) { e.preventDefault(); selectSuggestion(ordered[activeIdx]); }
       else if (onEnter) { setOpen(false); onEnter(); }
     } else if (e.key === 'Escape') { setOpen(false); }
   };
@@ -4034,8 +4169,8 @@ function TickerSearch({ value, onChange, market, onMarketChange, onEnter, disabl
       autoComplete: 'off',
       style: { width: '100%' }
     }),
-    open && (suggestions.length > 0 || remoteLoading) && React.createElement('div', { className: 'ticker-dropdown' },
-      suggestions.map((s, i) =>
+    open && (ordered.length > 0 || remoteLoading) && React.createElement('div', { className: 'ticker-dropdown' },
+      ordered.map((s, i) =>
         React.createElement('div', {
           key: priceKey(s.market, s.ticker),
           className: 'ticker-suggestion' + (i === activeIdx ? ' active' : ''),
@@ -5249,7 +5384,10 @@ function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDet
                   lockScroll: false,
                   stageClass: "sector-zoom-stage",
                   contentClass: "heatmap-fs-content",
-                  onOpenDetail: (tk, mk) => { close(); onOpenDetail && onOpenDetail(tk, mk); }
+                  // Keep the sector popup mounted underneath so closing the
+                  // stock card returns the user to the sector exactly where they
+                  // left off. The stock card (z-index 95) layers above it.
+                  onOpenDetail: (tk, mk) => { onOpenDetail && onOpenDetail(tk, mk); }
                 }))
             : React.createElement("div", { className: "text-dim text-sm" }, "No live data for this sector yet.")))));
 }
@@ -6462,7 +6600,7 @@ function AlertsModal(_ref11) {
     size: 14
   }), " Notifications enabled"), React.createElement("div", {
     className: "perm-body"
-  }, "Alerts fire when the app is open or recently backgrounded. For reliable lock-screen delivery, keep the app open or recently used.")) : notifPerm === 'denied' ? React.createElement("div", {
+  }, "Alerts fire while the app is open, and in the background when it's installed to your home screen — Android/Chrome checks your alerts periodically even when the app is closed. On iPhone, background checks aren't supported, so keep the app recently used for lock-screen delivery.")) : notifPerm === 'denied' ? React.createElement("div", {
     className: "perm-box err"
   }, React.createElement("div", {
     className: "perm-title"
@@ -6924,8 +7062,14 @@ function ImportModal({ onClose, onImport }) {
         }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value }, m.label))),
         alts.length > 0 ? React.createElement("button", {
           className: "btn btn-ghost btn-xs import-alts-toggle",
-          onClick: () => updateRow(r.id, { showAlts: !r.showAlts })
-        }, r.showAlts ? "Hide" : "Change") : React.createElement("button", {
+          onClick: () => updateRow(r.id, { showAlts: !r.showAlts, manualSearch: false })
+        }, r.showAlts ? "Hide" : "Change") : null,
+        React.createElement("button", {
+          className: "btn btn-ghost btn-xs import-alts-toggle" + (r.manualSearch ? " active" : ""),
+          onClick: () => updateRow(r.id, { manualSearch: !r.manualSearch, showAlts: false }),
+          title: "Search live listings and pick the exact one"
+        }, r.manualSearch ? "Close" : (r.status === 'notfound' ? "Find" : "Search")),
+        React.createElement("button", {
           className: "btn btn-ghost btn-xs import-alts-toggle",
           onClick: () => reResolveRow(r.id), title: "Re-match"
         }, React.createElement(Icon, { name: "refresh", size: 12 }))
@@ -6938,6 +7082,18 @@ function ImportModal({ onClose, onImport }) {
           React.createElement("span", { className: "import-alt-tkr" }, c.ticker),
           React.createElement("span", { className: "market-badge" }, c.market),
           React.createElement("span", { className: "import-alt-name" }, c.name)))
+      ) : null,
+      // Manual matcher: search every live exchange by name or symbol and pick the
+      // exact listing when auto-matching missed or the user wants a different one.
+      r.manualSearch ? React.createElement("div", { className: "import-manual-search" },
+        React.createElement("div", { className: "import-manual-hint" }, "Search by company name or symbol, then tap the right listing:"),
+        React.createElement(TickerSearch, {
+          value: r.query,
+          market: r.market,
+          onChange: () => {},
+          onMarketChange: () => {},
+          onSelect: (sel) => { updateRow(r.id, { manualSearch: false }); chooseCandidate(r.id, { ticker: sel.ticker, market: sel.market, name: sel.name }); }
+        })
       ) : null,
       React.createElement("div", { className: "import-card-qty" },
         React.createElement("div", { className: "import-qty-field" },

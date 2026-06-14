@@ -6,7 +6,10 @@
       "Bash(node -e ':*)",
       "Bash(node:*)",
       "Bash(awk \"/id:'nasdaq100'/,/id:'dow'/\" data.js)",
-      "Bash(xargs echo \"tests passing:\")"
+      "Bash(xargs echo \"tests passing:\")",
+      "Bash(sort -t: -k3 -n)",
+      "Bash(awk 'NR>=810 && NR<=819' styles.css)",
+      "Bash(awk 'NR>=1480 && NR<=1489' styles.css)"
     ]
   }
 }
