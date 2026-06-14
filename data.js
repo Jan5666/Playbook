@@ -779,34 +779,60 @@ window.PB_DATA._US_SECTORS = (function () {
 // the JSE, Vodafone on the LSE). Index constituents already resolve via the
 // heatmaps; this fills the rest of the suggestion-list universe.
 window.PB_DATA._INTL_SECTORS = (function () {
+  // South-African ETFs are JSE-listed, so they live under JSE (a tax-free
+  // account inherits them via the JSE fallback in findSector). ETF codes are
+  // folded directly into each JSE sector string so they don't clobber equities.
   const groups = {
     'JSE': {
-      'Financial Services': 'CPI FSR SBK NED ABG INP DSY SLM OMU', 'Basic Materials': 'BHG BHP AGL GLN GFI ANG IMP AMS SSW',
-      'Communication Services': 'NPN PRX MTN VOD', 'Consumer Defensive': 'SHP BID WHL', 'Consumer Cyclical': 'CFR', 'Energy': 'SOL', 'Healthcare': 'APN'
+      'Financial Services': 'CPI FSR SBK NED ABG INP INL DSY SLM OMU MTM RMH RMI REM CML PSG KST QLT SNT OUT BGA STXFIN',
+      'Basic Materials': 'BHG BHP AGL GLN GFI ANG IMP AMS SSW HAR DRD PAN EXX KIO ARI ARM AFE RBP MNP NHM STXRES',
+      'Communication Services': 'NPN PRX MTN VOD TKG MCG',
+      'Consumer Defensive': 'SHP SPP PIK WHL BID AVI TBS RFG CLS LBR DCP',
+      'Consumer Cyclical': 'CFR TFG MRP TRU CSB ITE',
+      'Industrials': 'BVT MUR GND RLO WBO BAW KAP SUR MTH HCI STXIND',
+      'Healthcare': 'APN NTC LHC ADH AEL',
+      'Real Estate': 'GRT RDF RES HYP SSS VKE EQU MSP NRP LTE ATT TEX FFB STXPRO CSPROP SYGP STXLIS GLPROP',
+      'Energy': 'SOL',
+      'ETFs & Funds': 'STX40 STX500 STXNDQ STXWDM STXEMG STXSWX STXDIV STXRAF STXQUA STXILB CSEW40 CSTOP50 CSNDQ CSP500 GLODIV NFEMOM NFSWIX NFEDEF NFTRCI SYG500 SYGSW4 SYG4IR SYGWD SYGEU SYGUK SYGJP ETFWLD ETF500 ETFSAP ASHT40 ASHGEQ ASHMID STX100',
+      'Gold & Commodities': 'ETFGRE GLD NGPLT ETFPLD ETFPLT ETFRHO SYGGLD'
     },
     'LSE': {
-      'Financial Services': 'HSBA LLOY BARC NWG STAN INVP LSEG LSE', 'Energy': 'BP SHEL', 'Healthcare': 'AZN GSK',
-      'Consumer Defensive': 'ULVR DGE', 'Basic Materials': 'RIO AAL GLEN', 'Communication Services': 'VOD BT-A WPP',
-      'Industrials': 'REL EXPN', 'Utilities': 'NG SSE', 'Consumer Cyclical': 'CPG BKG'
+      'Financial Services': 'HSBA LLOY BARC NWG STAN INVP LSEG LSE PRU AV LGEN SDR III ABDN STJ PHNX ICG',
+      'Energy': 'BP SHEL HBR', 'Healthcare': 'AZN GSK SN HIK',
+      'Consumer Defensive': 'ULVR DGE RKT IMB BATS TSCO SBRY ABF',
+      'Basic Materials': 'RIO AAL GLEN ANTO FRES MNDI CRDA',
+      'Communication Services': 'VOD BT-A WPP ITV PSON',
+      'Industrials': 'REL EXPN BA RR SMIN BNZL RTO IAG DCC',
+      'Utilities': 'NG SSE CNA SVT UU',
+      'Consumer Cyclical': 'CPG BKG NXT JD BDEV PSN TW WTB',
+      'Technology': 'SGE', 'Real Estate': 'LAND BLND SGRO UTG'
     },
     'ASX': {
-      'Financial Services': 'CBA ANZ WBC NAB MQG APT ZIP', 'Basic Materials': 'BHP RIO FMG', 'Healthcare': 'CSL',
-      'Consumer Defensive': 'WES WOW COL', 'Industrials': 'TCL', 'Real Estate': 'GMG', 'Communication Services': 'REA TLS',
-      'Consumer Cyclical': 'ALL', 'Technology': 'XRO APX'
+      'Financial Services': 'CBA ANZ WBC NAB MQG APT ZIP SUN QBE IAG',
+      'Basic Materials': 'BHP RIO FMG NST S32 MIN PLS IGO LYC',
+      'Healthcare': 'CSL COH RMD RHC PME SHL',
+      'Consumer Defensive': 'WES WOW COL A2M TWE',
+      'Industrials': 'TCL BXB QAN', 'Real Estate': 'GMG SCG SGP GPT MGR',
+      'Communication Services': 'REA TLS CAR SEK',
+      'Consumer Cyclical': 'ALL JBH HVN DMP',
+      'Technology': 'XRO APX WTC ALU', 'Energy': 'WDS STO WHC'
     },
     'FRA': {
-      'Technology': 'SAP', 'Industrials': 'SIE', 'Financial Services': 'ALV DBK', 'Communication Services': 'DTE',
-      'Consumer Cyclical': 'BMW VOW3 MBG', 'Basic Materials': 'BAS', 'Healthcare': 'BAYN'
+      'Technology': 'SAP IFX', 'Industrials': 'SIE', 'Financial Services': 'ALV DBK MUV2',
+      'Communication Services': 'DTE', 'Consumer Cyclical': 'BMW VOW3 MBG PAH3 P911 CON',
+      'Consumer Defensive': 'HEN3 BEI', 'Basic Materials': 'BAS', 'Healthcare': 'BAYN FRE', 'Utilities': 'RWE EOAN'
     },
     'PAR': {
-      'Industrials': 'AIR SU', 'Energy': 'TTE', 'Healthcare': 'SAN', 'Financial Services': 'BNP',
-      'Consumer Cyclical': 'MC', 'Consumer Defensive': 'OR', 'Basic Materials': 'AI'
+      'Industrials': 'AIR SU SAF VIE', 'Energy': 'TTE', 'Healthcare': 'SAN',
+      'Financial Services': 'BNP GLE ACA CS', 'Consumer Cyclical': 'MC RMS KER EL',
+      'Consumer Defensive': 'OR BN RI', 'Basic Materials': 'AI', 'Communication Services': 'ORA PUB VIV',
+      'Utilities': 'ENGI', 'Technology': 'CAP'
     },
-    'AMS': { 'Technology': 'ASML', 'Healthcare': 'PHIA', 'Financial Services': 'INGA', 'Consumer Defensive': 'HEIA' },
-    'TFSA': {
-      'ETFs & Funds': 'STX40 STX500 STXNDQ STXWDM STXEMG STXSWX STXDIV STXRAF CSEW40 CSTOP50 CSNDQ CSP500 GLODIV NFEMOM NFSWIX NFEDEF SYG500 SYGSW4 SYG4IR ETFWLD ASHT40',
-      'Real Estate': 'STXPRO CSPROP SYGP', 'Industrials': 'STXIND', 'Financial Services': 'STXFIN', 'Basic Materials': 'STXRES', 'Gold & Commodities': 'ETFGRE'
+    'AMS': {
+      'Technology': 'ASML ADYEN', 'Healthcare': 'PHIA', 'Financial Services': 'INGA ABN AGN NN',
+      'Consumer Defensive': 'HEIA AD', 'Communication Services': 'PRX UMG', 'Basic Materials': 'AKZA', 'Industrials': 'WKL RAND'
     }
+    // TFSA holdings (JSE-listed shares & ETFs) resolve via the JSE fallback in findSector.
   };
   const out = {};
   for (const mkt of Object.keys(groups)) {

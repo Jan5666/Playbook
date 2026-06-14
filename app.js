@@ -2020,11 +2020,11 @@ function usePortfolio(fxRates, toast) {
           const ex = next[idx];
           const totalShares = ex.shares + r.shares;
           const avgCost = totalShares > 0 ? (ex.shares * ex.costBasis + r.shares * r.costBasis) / totalShares : ex.costBasis;
-          next[idx] = { ...ex, shares: totalShares, costBasis: avgCost, fxRateAtCost: r.rateAtCost || ex.fxRateAtCost };
+          next[idx] = { ...ex, shares: totalShares, costBasis: avgCost, name: ex.name || r.name || null, fxRateAtCost: r.rateAtCost || ex.fxRateAtCost };
           merged++;
         } else {
           next.push({
-            id: uid(), ticker: tickerUp, market: r.market,
+            id: uid(), ticker: tickerUp, market: r.market, name: r.name || null,
             shares: r.shares, costBasis: r.costBasis,
             notes: r.notes || '', addedAt: new Date().toISOString(),
             purchaseDate: r.purchaseDate || today,
@@ -2278,6 +2278,22 @@ function App() {
     })();
     return () => { alive = false; };
   }, [positions, sectorCache, setSectorCache]);
+  // Persist any sector learned from an opened stock's fundamentals (Yahoo /
+  // stockanalysis / Perplexity). This is how international holdings the static
+  // map and the US-only background fill can't reach get permanently classified
+  // once the user views them — the allocation chart then stops showing "Other".
+  useEffect(() => {
+    const updates = {};
+    positions.forEach(p => {
+      const key = priceKey(p.market, p.ticker);
+      if (sectorCache[key] && sectorCache[key].sector) return;
+      const fund = fundamentalsByTicker[key]?.data;
+      if (fund && fund.sector && DATA.normalizeSector(fund.sector) !== 'Other') {
+        updates[key] = { sector: fund.sector, industry: fund.industry || null, at: Date.now() };
+      }
+    });
+    if (Object.keys(updates).length) setSectorCache(prev => ({ ...prev, ...updates }));
+  }, [fundamentalsByTicker, positions, sectorCache, setSectorCache]);
   const refreshFx = useCallback(async () => {
     const r = await fetchFxRates();
     if (r) setFxRates(r);
@@ -3170,9 +3186,12 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     const native = marketCurrency(p.market);
     const val = convertCcy(p.shares * q.price, native, displayCurrency, rates);
     if (val != null && val > 0) {
-      const info = DATA.findInfo(p.ticker, p.market) || {};
       const sectorInfo = resolvePositionSector(p.ticker, p.market, sectorCache, fundamentals) || {};
-      posVals.push({ ticker: p.ticker, market: p.market, value: val, name: info.name || p.ticker, sector: sectorInfo.sector || 'Other' });
+      // Best available display name for ANY instrument (stock, ETF, trust): the
+      // name saved at import, then the live quote's company name, then the
+      // curated lists — never the bare ticker unless nothing else is known.
+      const nm = p.name || resolveTickerName(p.ticker, p.market, q) || p.ticker;
+      posVals.push({ ticker: p.ticker, market: p.market, value: val, name: nm, sector: sectorInfo.sector || 'Other' });
     }
   });
   // Group by mode, and (for the sector view) keep the member holdings per sector
@@ -3184,7 +3203,7 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     if (mode === 'sector') key = pv.sector;
     else if (mode === 'market') key = MARKET_LABELS[pv.market] || pv.market;
     else key = pv.ticker;
-    if (!grouped[key]) grouped[key] = { label: key, value: 0, market: pv.market, ticker: pv.ticker };
+    if (!grouped[key]) grouped[key] = { label: key, value: 0, market: pv.market, ticker: pv.ticker, name: pv.name };
     grouped[key].value += pv.value;
     (sectorMembers[pv.sector] = sectorMembers[pv.sector] || []).push(pv);
   });
@@ -3270,16 +3289,20 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
                 React.createElement("div", { className: "chart-pie-center-val" }, fmtTotal(total)))
         )
       ),
-      React.createElement("div", { className: "chart-pie-legend" },
+      React.createElement("div", { className: "chart-pie-legend" + (mode === 'ticker' ? " named" : "") },
         arcs.map((a, i) => React.createElement("button", {
           key: i, className: "chart-pie-legend-item" + (clickable ? " is-clickable" : ""),
           onMouseEnter: () => setHovered(i),
           onMouseLeave: () => setHovered(null),
           onClick: () => clickable ? handleSlice(a) : null,
-          title: mode === 'sector' ? 'See holdings in ' + a.label : undefined
+          title: mode === 'sector' ? 'See holdings in ' + a.label : (mode === 'ticker' && a.name && a.name !== a.label ? a.name : undefined)
         },
           React.createElement("span", { className: "chart-pie-legend-dot", style: { background: a.color } }),
           React.createElement("span", { className: "chart-pie-legend-tkr" }, a.label),
+          // Holdings view: show the company / instrument name beside the ticker,
+          // in a fixed column so every name starts at the same x.
+          mode === 'ticker' && a.name && a.name !== a.label
+            ? React.createElement("span", { className: "chart-pie-legend-co" }, a.name) : null,
           React.createElement("span", { className: "chart-pie-legend-pct" }, a.pct.toFixed(1) + '%'),
           mode === 'sector' ? React.createElement(Icon, { name: "chevron", size: 11, className: "chart-pie-legend-go" }) : null
         ))
@@ -3341,15 +3364,17 @@ function SectorHoldingsPopup({ sectorName, members, sectorValue, portfolioTotal,
             ? React.createElement("div", { className: "text-dim text-sm", style: { padding: 16, textAlign: 'center' } }, "No holdings in this sector.")
             : members.map((m, i) => {
                 const wSector = sectorValue > 0 ? (m.value / sectorValue * 100) : 0;
+                const hasName = m.name && m.name !== m.ticker;
                 return React.createElement("button", {
                   key: m.market + ':' + m.ticker + ':' + i, className: "sh-row",
                   onClick: () => { if (onOpenDetail) onOpenDetail(m.ticker, m.market); close(); }
                 },
                   React.createElement("div", { className: "sh-row-top" },
+                    // Ticker — Company / instrument name. Ticker sits in a fixed
+                    // column so every name lines up at the same x down the list.
                     React.createElement("div", { className: "sh-row-id" },
                       React.createElement("span", { className: "sh-row-tkr" }, m.ticker),
-                      React.createElement("span", { className: "sh-row-mkt" }, MARKET_LABELS[m.market] || m.market),
-                      React.createElement("span", { className: "sh-row-name" }, m.name)),
+                      hasName ? React.createElement("span", { className: "sh-row-name" }, m.name) : null),
                     React.createElement("div", { className: "sh-row-figs" },
                       React.createElement("span", { className: "sh-row-val" }, fmtMoney(m.value)),
                       React.createElement("span", { className: "sh-row-wt" }, wSector.toFixed(1), "%"))),
@@ -7376,27 +7401,34 @@ function ImportModal({ onClose, onImport }) {
     const market = r.market;
     const remote = await searchListingsMulti(r.query, r.tickerHint, market).catch(() => []);
     const ranked = rankImportCandidates(r.query, r.tickerHint, market, remote);
-    let pick = ranked.find(c => c.market === market) || ranked[0] || null;
-    let q = pick ? await fetchQuote(pick.ticker, pick.market).catch(() => null) : null;
-    if (!q && r.tickerHint) {
-      const hq = await fetchQuote(r.tickerHint, market).catch(() => null);
-      if (hq) { pick = { ticker: r.tickerHint, market, name: resolveTickerName(r.tickerHint, market, hq) || r.query, nameScore: 1 }; q = hq; }
-    }
-    if (!q && ranked.length) {
-      for (const c of ranked.slice(0, 4)) {
-        const cq = await fetchQuote(c.ticker, c.market).catch(() => null);
-        if (cq) { pick = c; q = cq; break; }
-      }
+    // A symbol-like query / hint is the user's intended ticker on the chosen
+    // market. Try the chosen market first and only drift off-market as a last
+    // resort, so a US ticker is never booked as its European cross-listing (EUR).
+    const symHint = (r.tickerHint && looksLikeTickerToken(r.tickerHint)) ? String(r.tickerHint).toUpperCase()
+                  : (looksLikeTickerToken(r.query) ? String(r.query).toUpperCase() : null);
+    const onMarket = ranked.filter(c => c.market === market);
+    const offMarketRanked = ranked.filter(c => c.market !== market);
+    const attempts = [];
+    const pushAttempt = (c) => { if (c && c.ticker && !attempts.some(a => a.ticker === c.ticker && a.market === c.market)) attempts.push(c); };
+    if (onMarket[0]) pushAttempt(onMarket[0]);                                   // best name match on the chosen market
+    if (symHint) pushAttempt({ ticker: symHint, market, name: null, nameScore: null }); // the bare symbol on the chosen market
+    onMarket.slice(1).forEach(pushAttempt);                                     // other chosen-market candidates
+    offMarketRanked.forEach(pushAttempt);                                       // finally, anything elsewhere
+    let pick = null, q = null;
+    for (const c of attempts.slice(0, 6)) {
+      const cq = await fetchQuote(c.ticker, c.market).catch(() => null);
+      if (cq) { pick = c; q = cq; break; }
     }
     // Confidence = how well the matched listing's name fits the query. Low
     // confidence (or a pick that landed off the chosen market) is surfaced so
     // the user can sanity-check or pick an alternative.
-    const conf = q && pick ? (pick.nameScore != null ? pick.nameScore : companyNameScore(r.query, pick.name || '')) : 0;
+    const resolvedName = q && pick ? (pick.name || resolveTickerName(pick.ticker, pick.market, q) || r.query) : r.resolvedName;
+    const conf = q && pick ? (pick.nameScore != null ? pick.nameScore : companyNameScore(r.query, resolvedName)) : 0;
     const offMarket = !!(q && pick && pick.market !== market);
     return {
       ticker: q && pick ? pick.ticker : (r.tickerHint || ''),
       market: q && pick ? pick.market : market,
-      resolvedName: q && pick ? (pick.name || resolveTickerName(pick.ticker, pick.market, q) || r.query) : r.resolvedName,
+      resolvedName,
       currentPrice: q ? q.price : null,
       status: q ? 'ok' : 'notfound',
       confidence: conf,
@@ -7469,6 +7501,7 @@ function ImportModal({ onClose, onImport }) {
       await onImport(validRows.map(r => ({
         ticker: r.ticker.trim().toUpperCase(),
         market: r.market,
+        name: r.resolvedName || null,
         shares: parseDecimal(r.shares),
         costBasis: parseDecimal(r.costBasis),
         purchaseDate: r.purchaseDate || null,
