@@ -9,7 +9,18 @@
       "Bash(xargs echo \"tests passing:\")",
       "Bash(sort -t: -k3 -n)",
       "Bash(awk 'NR>=810 && NR<=819' styles.css)",
-      "Bash(awk 'NR>=1480 && NR<=1489' styles.css)"
+      "Bash(awk 'NR>=1480 && NR<=1489' styles.css)",
+      "Bash(curl -s -m 15 \"https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1wk&range=max\" -H \"User-Agent: Mozilla/5.0\")",
+      "Bash(curl -s -m 20 \"https://api.codetabs.com/v1/proxy?quest=https%3A%2F%2Fquery1.finance.yahoo.com%2Fv8%2Ffinance%2Fchart%2FAAPL%3Finterval%3D1wk%26range%3Dmax\")",
+      "Bash(ls *.mjs *.cjs test* harness* render*)",
+      "Bash(ls \"/c/Program Files \\(x86\\)/Microsoft/Edge/Application/msedge.exe\" \"/c/Program Files/Google/Chrome/Application/chrome.exe\")",
+      "Bash(where.exe msedge *)",
+      "Bash(where.exe chrome *)",
+      "WebSearch",
+      "WebFetch(domain:etfsa.co.za)",
+      "WebFetch(domain:satrix.co.za)",
+      "Bash(cd /tmp)",
+      "Bash(curl -s -m 12 \"https://query1.finance.yahoo.com/v8/finance/chart/STX40.JO?range=1d&interval=1d\" -H \"User-Agent: Mozilla/5.0\" -o /tmp/y.json)"
     ]
   }
 }
