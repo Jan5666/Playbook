@@ -96,38 +96,108 @@ window.PB_DATA = {
     { ticker:'XLV', name:'Health Care Select Sector', allocation:4, role:'Defensive equity', rationale:'Underowned, undervalued. Aging demographic plus GLP-1 tailwind.' },
     { ticker:'USMV', name:'iShares MSCI USA Min Vol', allocation:3, role:'Low-vol equity', rationale:'0.15% fee beats SPLV. Stays invested with lower drawdown.' }
   ],
+  // TFSA-eligible JSE ETFs (82), validated live on Yahoo .JO 2026-06-14.
   TFSA_SUGGESTIONS: [
-    {ticker:'STX40',name:'Satrix 40 ETF'},{ticker:'STX500',name:'Satrix 500 ETF'},
-    {ticker:'STXNDQ',name:'Satrix Nasdaq 100 ETF'},{ticker:'STXWDM',name:'Satrix World ETF'},
-    {ticker:'STXEMG',name:'Satrix Emerging Markets ETF'},{ticker:'STXSWX',name:'Satrix SWIX 40 ETF'},
-    {ticker:'STXDIV',name:'Satrix Divi Plus ETF'},{ticker:'STXPRO',name:'Satrix Property ETF'},
-    {ticker:'STXIND',name:'Satrix Industrial 25 ETF'},{ticker:'STXFIN',name:'Satrix Financial 15 ETF'},
-    {ticker:'STXRES',name:'Satrix Resource 10 ETF'},{ticker:'STXRAF',name:'Satrix RAFI 40 ETF'},
-    {ticker:'CSEW40',name:'CoreShares Equal Weight 40 ETF'},{ticker:'CSTOP50',name:'CoreShares Top 50 ETF'},
-    {ticker:'CSNDQ',name:'CoreShares Nasdaq 100 ETF'},{ticker:'CSPROP',name:'CoreShares SA Property ETF'},
-    {ticker:'CSP500',name:'CoreShares S&P 500 ETF'},{ticker:'GLODIV',name:'CoreShares Global Dividend ETF'},
-    {ticker:'NFEMOM',name:'Newfunds Equity Momentum ETF'},{ticker:'NFSWIX',name:'Newfunds SWIX 40 ETF'},
-    {ticker:'NFEDEF',name:'Newfunds Equity Defence ETF'},{ticker:'SYG500',name:'Sygnia S&P 500 ETF'},
-    {ticker:'SYGSW4',name:'Sygnia SWIX 40 ETF'},{ticker:'SYG4IR',name:'Sygnia 4th Industrial Rev ETF'},
-    {ticker:'SYGP',name:'Sygnia Property ETF'},{ticker:'ETFWLD',name:'1nvest World ETF'},
-    {ticker:'ETFGRE',name:'1nvest Gold ETF'},{ticker:'ASHT40',name:'Ashburton 1200 ETF'},
-    {ticker:'NPN',name:'Naspers'},{ticker:'PRX',name:'Prosus'},{ticker:'CPI',name:'Capitec'},
-    {ticker:'FSR',name:'FirstRand'},{ticker:'SBK',name:'Standard Bank'},{ticker:'SHP',name:'Shoprite'},
-    {ticker:'CFR',name:'Richemont'},{ticker:'DSY',name:'Discovery'},{ticker:'SLM',name:'Sanlam'},
-    {ticker:'GFI',name:'Gold Fields'},{ticker:'ANG',name:'AngloGold Ashanti'},
-    {ticker:'NED',name:'Nedbank'},{ticker:'ABG',name:'Absa Group'},{ticker:'MTN',name:'MTN Group'},
-    {ticker:'VOD',name:'Vodacom'},{ticker:'SOL',name:'Sasol'},{ticker:'BID',name:'Bid Corp'},
-    {ticker:'APN',name:'Aspen Pharmacare'},{ticker:'WHL',name:'Woolworths Holdings'}
+    {ticker:'AAGEET',name:'Anchor EasyETFs Aspirant Global ETF'},{ticker:'AASAET',name:'Anchor EasyETFs Aspirant SA Equity ETF'},{ticker:'APACXJ',name:'10X All Asia ex-Japan ETF'},
+    {ticker:'CARTBL',name:'Cartesian EasyETFs Balanced ETF'},{ticker:'COGEM',name:'Coronation Global Emerging Markets ETF'},{ticker:'COGES',name:'Coronation Global Equity Select ETF'},
+    {ticker:'COGMAN',name:'Coronation Global Managed ETF'},{ticker:'COGOE',name:'Coronation Global Opportunities Equity ETF'},{ticker:'COOPTI',name:'Coronation Optimum Growth ETF'},
+    {ticker:'CSP500',name:'10X S&P 500 ETF'},{ticker:'CSPROP',name:'10X SA Property Income ETF'},{ticker:'CTOP50',name:'10X Top 50 ETF'},
+    {ticker:'DIVTRX',name:'CoreShares DivTrax ETF'},{ticker:'EASY5',name:'EasyETFs CPI + 5% ETF'},{ticker:'EASYAI',name:'EasyETFs AI World ETF'},
+    {ticker:'EASYBF',name:'EasyETFs Balanced ETF'},{ticker:'EASYGE',name:'EasyETFs Global Equity ETF'},{ticker:'ETF500',name:'1nvest S&P 500 ETF'},
+    {ticker:'ETF5IT',name:'1nvest S&P 500 Info Tech ETF'},{ticker:'ETFBND',name:'1nvest SA Bond ETF'},{ticker:'ETFEMA',name:'1nvest MSCI EM Asia ETF'},
+    {ticker:'ETFGGB',name:'1nvest Global Government Bond ETF'},{ticker:'ETFGRE',name:'1nvest Global REIT ETF'},{ticker:'ETFSAP',name:'1nvest SA Property ETF'},
+    {ticker:'ETFSRI',name:'1nvest MSCI World SRI ETF'},{ticker:'ETFSWX',name:'1nvest Capped SWIX ETF'},{ticker:'ETFT40',name:'1nvest Top 40 ETF'},
+    {ticker:'ETFWLD',name:'1nvest MSCI World ETF'},{ticker:'FNBEMG',name:'FNB MSCI Emerging Markets Feeder ETF'},{ticker:'FNBINF',name:'FNB Government Inflation-Linked Bond ETF'},
+    {ticker:'FNBMID',name:'FNB MidCap ETF'},{ticker:'FNBT40',name:'FNB Top 40 ETF'},{ticker:'GLOBAL',name:'10X Total World Stock ETF'},
+    {ticker:'GLODIV',name:'10X Global Dividend ETF'},{ticker:'GLPROP',name:'10X Global Property ETF'},{ticker:'INCOME',name:'10X Income ETF'},
+    {ticker:'PCWGE',name:'PortfolioMetrix Global Equity ETF'},{ticker:'RWDVF',name:'Reitway Diversified Property ETF'},{ticker:'RWGPR',name:'Reitway Global Property ETF'},
+    {ticker:'RWINC',name:'Reitway Global Income ETF'},{ticker:'STX40',name:'Satrix 40 ETF'},{ticker:'STX500',name:'Satrix S&P 500 Feeder ETF'},
+    {ticker:'STXACW',name:'Satrix MSCI ACWI ETF'},{ticker:'STXCAP',name:'Satrix Capped All Share ETF'},{ticker:'STXCHN',name:'Satrix MSCI China ETF'},
+    {ticker:'STXDIV',name:'Satrix Divi Plus ETF'},{ticker:'STXEME',name:'Satrix MSCI EM ESG ETF'},{ticker:'STXEMG',name:'Satrix MSCI Emerging Markets ETF'},
+    {ticker:'STXFIN',name:'Satrix FINI (Financial 15) ETF'},{ticker:'STXGBD',name:'Satrix Global Bond ETF'},{ticker:'STXGOV',name:'Satrix SA Bond ETF'},
+    {ticker:'STXID',name:'Satrix Inclusion & Diversity ETF'},{ticker:'STXIFR',name:'Satrix Global Infrastructure ETF'},{ticker:'STXILB',name:'Satrix Inflation-Linked Bond ETF'},
+    {ticker:'STXIND',name:'Satrix INDI (Industrial 25) ETF'},{ticker:'STXJGE',name:'Satrix JSE Global Equity ETF'},{ticker:'STXLVL',name:'Satrix Low Volatility ETF'},
+    {ticker:'STXMMT',name:'Satrix Momentum ETF'},{ticker:'STXNDA',name:'Satrix MSCI India ETF'},{ticker:'STXNDQ',name:'Satrix Nasdaq 100 ETF'},
+    {ticker:'STXPRO',name:'Satrix Property ETF'},{ticker:'STXQUA',name:'Satrix Quality SA ETF'},{ticker:'STXRAF',name:'Satrix RAFI 40 ETF'},
+    {ticker:'STXRES',name:'Satrix RESI (Resource 10) ETF'},{ticker:'STXSHA',name:'Satrix Shariah Top 40 ETF'},{ticker:'STXWDM',name:'Satrix MSCI World ETF'},
+    {ticker:'SYFANG',name:'Sygnia Itrix FANG.AI ETF'},{ticker:'SYG4IR',name:'Sygnia Itrix 4th Industrial Revolution Global ETF'},{ticker:'SYG500',name:'Sygnia Itrix S&P 500 ETF'},
+    {ticker:'SYGCN',name:'Sygnia Itrix China Feeder ETF'},{ticker:'SYGEMF',name:'Sygnia Itrix MSCI Emerging Markets 50 ETF'},{ticker:'SYGEU',name:'Sygnia Itrix EuroStoxx 50 ETF'},
+    {ticker:'SYGH',name:'Sygnia Itrix Health Innovation ETF'},{ticker:'SYGJP',name:'Sygnia Itrix MSCI Japan ETF'},{ticker:'SYGP',name:'Sygnia Itrix Global Property ETF'},
+    {ticker:'SYGT40',name:'Sygnia Itrix Top 40 ETF'},{ticker:'SYGUK',name:'Sygnia Itrix FTSE 100 ETF'},{ticker:'SYGUS',name:'Sygnia Itrix MSCI US ETF'},
+    {ticker:'SYGWD',name:'Sygnia Itrix MSCI World ETF'},{ticker:'VUNGLE',name:'Vunani Global Equity ETF'},{ticker:'WNXT40',name:'10X Next 40 ETF'},
+    {ticker:'WTOP20',name:'10X Wealth Top 20 ETF'}
   ],
+  // All JSE instruments: ETFs/ETPs (90) + equities (115), validated live on Yahoo .JO.
   JSE_SUGGESTIONS: [
-    {ticker:'NPN',name:'Naspers'},{ticker:'PRX',name:'Prosus'},{ticker:'BHG',name:'BHP Group'},
-    {ticker:'AGL',name:'Anglo American'},{ticker:'GLN',name:'Glencore'},{ticker:'CPI',name:'Capitec'},
-    {ticker:'FSR',name:'FirstRand'},{ticker:'SBK',name:'Standard Bank'},{ticker:'SHP',name:'Shoprite'},
-    {ticker:'CFR',name:'Richemont'},{ticker:'MTN',name:'MTN Group'},{ticker:'VOD',name:'Vodacom'},
-    {ticker:'SOL',name:'Sasol'},{ticker:'GFI',name:'Gold Fields'},{ticker:'ANG',name:'AngloGold Ashanti'},
-    {ticker:'IMP',name:'Impala Platinum'},{ticker:'AMS',name:'Anglo Plat'},{ticker:'SSW',name:'Sibanye-Stillwater'},
-    {ticker:'NED',name:'Nedbank'},{ticker:'ABG',name:'Absa Group'},{ticker:'INP',name:'Investec plc'},
-    {ticker:'DSY',name:'Discovery'},{ticker:'SLM',name:'Sanlam'},{ticker:'OMU',name:'Old Mutual'}
+    {ticker:'AAGEET',name:'Anchor EasyETFs Aspirant Global ETF'},{ticker:'AASAET',name:'Anchor EasyETFs Aspirant SA Equity ETF'},{ticker:'APACXJ',name:'10X All Asia ex-Japan ETF'},
+    {ticker:'CARTBL',name:'Cartesian EasyETFs Balanced ETF'},{ticker:'COGEM',name:'Coronation Global Emerging Markets ETF'},{ticker:'COGES',name:'Coronation Global Equity Select ETF'},
+    {ticker:'COGMAN',name:'Coronation Global Managed ETF'},{ticker:'COGOE',name:'Coronation Global Opportunities Equity ETF'},{ticker:'COOPTI',name:'Coronation Optimum Growth ETF'},
+    {ticker:'CSP500',name:'10X S&P 500 ETF'},{ticker:'CSPROP',name:'10X SA Property Income ETF'},{ticker:'CTOP50',name:'10X Top 50 ETF'},
+    {ticker:'DIVTRX',name:'CoreShares DivTrax ETF'},{ticker:'EASY5',name:'EasyETFs CPI + 5% ETF'},{ticker:'EASYAI',name:'EasyETFs AI World ETF'},
+    {ticker:'EASYBF',name:'EasyETFs Balanced ETF'},{ticker:'EASYGE',name:'EasyETFs Global Equity ETF'},{ticker:'ETF500',name:'1nvest S&P 500 ETF'},
+    {ticker:'ETF5IT',name:'1nvest S&P 500 Info Tech ETF'},{ticker:'ETFBND',name:'1nvest SA Bond ETF'},{ticker:'ETFEMA',name:'1nvest MSCI EM Asia ETF'},
+    {ticker:'ETFGGB',name:'1nvest Global Government Bond ETF'},{ticker:'ETFGLD',name:'1nvest Gold ETF'},{ticker:'ETFGRE',name:'1nvest Global REIT ETF'},
+    {ticker:'ETFPLD',name:'1nvest Palladium ETF'},{ticker:'ETFPLT',name:'1nvest Platinum ETF'},{ticker:'ETFRHO',name:'1nvest Rhodium ETF'},
+    {ticker:'ETFSAP',name:'1nvest SA Property ETF'},{ticker:'ETFSRI',name:'1nvest MSCI World SRI ETF'},{ticker:'ETFSWX',name:'1nvest Capped SWIX ETF'},
+    {ticker:'ETFT40',name:'1nvest Top 40 ETF'},{ticker:'ETFWLD',name:'1nvest MSCI World ETF'},{ticker:'FNBEMG',name:'FNB MSCI Emerging Markets Feeder ETF'},
+    {ticker:'FNBINF',name:'FNB Government Inflation-Linked Bond ETF'},{ticker:'FNBMID',name:'FNB MidCap ETF'},{ticker:'FNBT40',name:'FNB Top 40 ETF'},
+    {ticker:'GLD',name:'NewGold ETF'},{ticker:'GLOBAL',name:'10X Total World Stock ETF'},{ticker:'GLODIV',name:'10X Global Dividend ETF'},
+    {ticker:'GLPROP',name:'10X Global Property ETF'},{ticker:'INCOME',name:'10X Income ETF'},{ticker:'NEWUSD',name:'NewWave USD ETN'},
+    {ticker:'NGPLD',name:'NewGold Palladium ETF'},{ticker:'NGPLT',name:'NewGold Platinum ETF'},{ticker:'PCWGE',name:'PortfolioMetrix Global Equity ETF'},
+    {ticker:'RWDVF',name:'Reitway Diversified Property ETF'},{ticker:'RWGPR',name:'Reitway Global Property ETF'},{ticker:'RWINC',name:'Reitway Global Income ETF'},
+    {ticker:'STX40',name:'Satrix 40 ETF'},{ticker:'STX500',name:'Satrix S&P 500 Feeder ETF'},{ticker:'STXACW',name:'Satrix MSCI ACWI ETF'},
+    {ticker:'STXCAP',name:'Satrix Capped All Share ETF'},{ticker:'STXCHN',name:'Satrix MSCI China ETF'},{ticker:'STXDIV',name:'Satrix Divi Plus ETF'},
+    {ticker:'STXEME',name:'Satrix MSCI EM ESG ETF'},{ticker:'STXEMG',name:'Satrix MSCI Emerging Markets ETF'},{ticker:'STXFIN',name:'Satrix FINI (Financial 15) ETF'},
+    {ticker:'STXGBD',name:'Satrix Global Bond ETF'},{ticker:'STXGOV',name:'Satrix SA Bond ETF'},{ticker:'STXID',name:'Satrix Inclusion & Diversity ETF'},
+    {ticker:'STXIFR',name:'Satrix Global Infrastructure ETF'},{ticker:'STXILB',name:'Satrix Inflation-Linked Bond ETF'},{ticker:'STXIND',name:'Satrix INDI (Industrial 25) ETF'},
+    {ticker:'STXJGE',name:'Satrix JSE Global Equity ETF'},{ticker:'STXLVL',name:'Satrix Low Volatility ETF'},{ticker:'STXMMT',name:'Satrix Momentum ETF'},
+    {ticker:'STXNDA',name:'Satrix MSCI India ETF'},{ticker:'STXNDQ',name:'Satrix Nasdaq 100 ETF'},{ticker:'STXPRO',name:'Satrix Property ETF'},
+    {ticker:'STXQUA',name:'Satrix Quality SA ETF'},{ticker:'STXRAF',name:'Satrix RAFI 40 ETF'},{ticker:'STXRES',name:'Satrix RESI (Resource 10) ETF'},
+    {ticker:'STXSHA',name:'Satrix Shariah Top 40 ETF'},{ticker:'STXWDM',name:'Satrix MSCI World ETF'},{ticker:'SYFANG',name:'Sygnia Itrix FANG.AI ETF'},
+    {ticker:'SYG4IR',name:'Sygnia Itrix 4th Industrial Revolution Global ETF'},{ticker:'SYG500',name:'Sygnia Itrix S&P 500 ETF'},{ticker:'SYGCN',name:'Sygnia Itrix China Feeder ETF'},
+    {ticker:'SYGEMF',name:'Sygnia Itrix MSCI Emerging Markets 50 ETF'},{ticker:'SYGEU',name:'Sygnia Itrix EuroStoxx 50 ETF'},{ticker:'SYGH',name:'Sygnia Itrix Health Innovation ETF'},
+    {ticker:'SYGJP',name:'Sygnia Itrix MSCI Japan ETF'},{ticker:'SYGP',name:'Sygnia Itrix Global Property ETF'},{ticker:'SYGT40',name:'Sygnia Itrix Top 40 ETF'},
+    {ticker:'SYGUK',name:'Sygnia Itrix FTSE 100 ETF'},{ticker:'SYGUS',name:'Sygnia Itrix MSCI US ETF'},{ticker:'SYGWD',name:'Sygnia Itrix MSCI World ETF'},
+    {ticker:'VUNGLE',name:'Vunani Global Equity ETF'},{ticker:'WNXT40',name:'10X Next 40 ETF'},{ticker:'WTOP20',name:'10X Wealth Top 20 ETF'},
+    {ticker:'ABG',name:'Absa Group'},{ticker:'ADH',name:'ADvTECH'},{ticker:'AEL',name:'Altron'},
+    {ticker:'AFE',name:'AECI'},{ticker:'AFH',name:'Alexander Forbes Group Holdings'},{ticker:'AGL',name:'Anglo American'},
+    {ticker:'ANG',name:'AngloGold Ashanti'},{ticker:'APH',name:'Alphamin Resources'},{ticker:'APN',name:'Aspen Pharmacare Holdings'},
+    {ticker:'ARI',name:'African Rainbow Minerals'},{ticker:'ARL',name:'Astral Foods'},{ticker:'AVI',name:'AVI'},
+    {ticker:'BAT',name:'Brait'},{ticker:'BHG',name:'BHP Group'},{ticker:'BID',name:'Bid Corporation'},
+    {ticker:'BLU',name:'Blue Label Telecoms'},{ticker:'BTI',name:'British American Tobacco'},{ticker:'BVT',name:'Bidvest Group'},
+    {ticker:'BYI',name:'Bytes Technology Group'},{ticker:'CFR',name:'Richemont'},{ticker:'CGR',name:'Calgro M3 Holdings'},
+    {ticker:'CLS',name:'Clicks Group'},{ticker:'CMH',name:'Combined Motor Holdings'},{ticker:'CML',name:'Coronation Fund Managers'},
+    {ticker:'CPI',name:'Capitec Bank'},{ticker:'DCP',name:'Dis-Chem Pharmacies'},{ticker:'DRD',name:'DRD Gold'},
+    {ticker:'DSY',name:'Discovery'},{ticker:'DTC',name:'Datatec'},{ticker:'EQU',name:'Equites Property Fund'},
+    {ticker:'EXX',name:'Exxaro Resources'},{ticker:'FBR',name:'Famous Brands'},{ticker:'FFB',name:'Fortress REIT B'},
+    {ticker:'FSR',name:'FirstRand'},{ticker:'GFI',name:'Gold Fields'},{ticker:'GLN',name:'Glencore'},
+    {ticker:'GND',name:'Grindrod'},{ticker:'GRT',name:'Growthpoint Properties'},{ticker:'HAR',name:'Harmony Gold'},
+    {ticker:'HCI',name:'Hosken Consolidated Investments'},{ticker:'HDC',name:'Hudaco Industries'},{ticker:'HMN',name:'Hammerson'},
+    {ticker:'HYP',name:'Hyprop Investments'},{ticker:'IMP',name:'Impala Platinum'},{ticker:'INL',name:'Investec'},
+    {ticker:'INP',name:'Investec plc'},{ticker:'ITE',name:'Italtile'},{ticker:'JSE',name:'JSE'},
+    {ticker:'KAP',name:'KAP'},{ticker:'KIO',name:'Kumba Iron Ore'},{ticker:'KRO',name:'Karooooo'},
+    {ticker:'KST',name:'PSG Financial Services'},{ticker:'LBR',name:'Libstar Holdings'},{ticker:'LHC',name:'Life Healthcare Group'},
+    {ticker:'LTE',name:'Lighthouse Properties'},{ticker:'MNP',name:'Mondi'},{ticker:'MRP',name:'Mr Price Group'},
+    {ticker:'MSP',name:'MAS'},{ticker:'MTA',name:'Metair Investments'},{ticker:'MTH',name:'Motus Holdings'},
+    {ticker:'MTM',name:'Momentum Group'},{ticker:'MTN',name:'MTN Group'},{ticker:'NED',name:'Nedbank Group'},
+    {ticker:'NPH',name:'Northam Platinum'},{ticker:'NPK',name:'Nampak'},{ticker:'NPN',name:'Naspers'},
+    {ticker:'NRP',name:'NEPI Rockcastle'},{ticker:'NTC',name:'Netcare'},{ticker:'OCE',name:'Oceana Group'},
+    {ticker:'OMN',name:'Omnia Holdings'},{ticker:'OMU',name:'Old Mutual'},{ticker:'OUT',name:'OUTsurance Group'},
+    {ticker:'PAN',name:'Pan African Resource'},{ticker:'PIK',name:'Pick n Pay'},{ticker:'PPC',name:'PPC'},
+    {ticker:'PPH',name:'Pepkor Holdings'},{ticker:'PRX',name:'Prosus'},{ticker:'QLT',name:'Quilter'},
+    {ticker:'RBX',name:'Raubex Group'},{ticker:'RCL',name:'RCL Foods'},{ticker:'RDF',name:'Redefine Properties'},
+    {ticker:'REM',name:'Remgro'},{ticker:'RES',name:'Resilient REIT'},{ticker:'RLO',name:'Reunert'},
+    {ticker:'RNI',name:'Reinet Investments'},{ticker:'SAC',name:'SA Corporate Real Estate'},{ticker:'SAP',name:'Sappi'},
+    {ticker:'SBK',name:'Standard Bank Group'},{ticker:'SEA',name:'Spear REIT'},{ticker:'SHC',name:'Shaftesbury Capital'},
+    {ticker:'SHG',name:'Sea Harvest Group'},{ticker:'SHP',name:'Shoprite Holdings'},{ticker:'SLM',name:'Sanlam'},
+    {ticker:'SNT',name:'Santam'},{ticker:'SOH',name:'South Ocean Holdings'},{ticker:'SOL',name:'Sasol'},
+    {ticker:'SPP',name:'Spar Group'},{ticker:'SSU',name:'Southern Sun'},{ticker:'SSW',name:'Sibanye-Stillwater'},
+    {ticker:'SUI',name:'Sun International'},{ticker:'SUR',name:'Spur'},{ticker:'SYG',name:'Sygnia'},
+    {ticker:'TBS',name:'Tiger Brands'},{ticker:'TFG',name:'The Foschini Group'},{ticker:'TGA',name:'Thungela Resources'},
+    {ticker:'THA',name:'Tharisa'},{ticker:'TKG',name:'Telkom'},{ticker:'TRU',name:'Truworths'},
+    {ticker:'VAL',name:'Valterra Platinum'},{ticker:'VKE',name:'Vukile Property Fund'},{ticker:'VOD',name:'Vodacom Group'},
+    {ticker:'WBO',name:'Wilson Bayly Holmes-Ovcon'},{ticker:'WHL',name:'Woolworths Holdings'},{ticker:'YRK',name:'York Timber Holdings'},
+    {ticker:'ZED',name:'Zeder Investments'}
   ],
   LSE_SUGGESTIONS: [
     {ticker:'HSBA',name:'HSBC Holdings'},{ticker:'BP',name:'BP plc'},{ticker:'SHEL',name:'Shell'},
@@ -733,6 +803,44 @@ window.PB_DATA.normalizeSector = function (raw) {
   return window.PB_DATA._SECTOR_ALIASES[cleaned] || 'Other';
 };
 
+// Last-resort classifier that reads the instrument's *name* when the ticker maps
+// and live fundamentals both came up empty ("Other"). Most leftover "Other"
+// holdings are funds/bonds/gold/crypto/REITs (whose names announce the bucket) or
+// foreign equities whose names carry an obvious GICS keyword ("… Bank", "… Mining",
+// "… Pharmaceuticals"). Checked vehicle-first, then sector-themed funds &
+// equities, then broad funds — so "iShares Healthcare ETF" → Healthcare while
+// "Vanguard S&P 500 ETF" → ETFs & Funds. Returns a canonical sector or "Other".
+window.PB_DATA.classifySectorByName = function (name) {
+  const s = String(name || '').toLowerCase();
+  if (!s) return 'Other';
+  const has = (re) => re.test(s);
+  // 1. Crypto vehicles.
+  if (has(/\b(bitcoin|ethereum|ether|crypto|blockchain|digital asset|solana|web3)\b/)) return 'Crypto';
+  // 2. Fixed income.
+  if (has(/\b(bond|bonds|treasury|treasuries|gilt|gilts|fixed[ -]?income|aggregate bond|t[- ]?bill|govie|government bond|corporate bond|high[- ]?yield bond|money market|ultrashort|ultra[- ]?short|short[- ]?duration|investment grade|munis?|municipal|debenture|income fund)\b/)) return 'Bonds & Income';
+  // 3. Precious metals & commodities — vehicles (a gold *miner* is Basic
+  //    Materials and is handled below; only physical/ETF exposure lands here).
+  if (has(/\b(gold|silver|platinum|palladium)\b/) && has(/\b(etf|etc|etp|trust|fund|physical|bullion|shares?|holdings?)\b/)) return 'Gold & Commodities';
+  if (has(/\b(bullion|precious metal|broad commodit|commodities index|commodity index)\b/)) return 'Gold & Commodities';
+  // 4. Real estate.
+  if (has(/\b(reit|reits|real[- ]?estate|realty|property fund|property index|propert(y|ies))\b/)) return 'Real Estate';
+  // 5. Sector-themed funds AND foreign equities — a GICS keyword in the name.
+  if (has(/\b(bank|banks|banking|insurance|insurer|reinsurance|financial|financials|asset manager|capital markets|brokerage|fintech|payments?)\b/)) return 'Financial Services';
+  if (has(/\b(pharmaceutical|pharma|biotech|biotechnolog|healthcare|health care|medical|medicines?|hospital|life sciences|diagnostics?|therapeutics?|genomics?)\b/)) return 'Healthcare';
+  if (has(/\b(semiconductor|software|technolog|fintech|internet|cloud|cyber|cybersecurity|computing|data|digital|electronics?|hardware|it services|robotics|artificial intelligence)\b/)) return 'Technology';
+  if (has(/\b(telecom|telecommunication|wireless|broadband|media|broadcast|entertainment|publishing|streaming|communication services)\b/)) return 'Communication Services';
+  if (has(/\b(oil|gas|petroleum|energy|coal|uranium|drilling|refiner|refining|pipeline|midstream|offshore|exploration & production)\b/)) return 'Energy';
+  if (has(/\b(mining|miner|miners|mines|metals?|steel|copper|aluminium|aluminum|chemicals?|materials|fertili|paper|forest|lithium|platinum group|resources)\b/)) return 'Basic Materials';
+  if (has(/\b(utilit|electric|electricity|power|water|renewable|solar|wind|nuclear)\b/)) return 'Utilities';
+  if (has(/\b(aerospace|defense|defence|industrial|machinery|engineering|construction|transport|logistics|airline|airlines|railway|rail|freight|shipping|capital goods|manufactur)\b/)) return 'Industrials';
+  if (has(/\b(retail|retailer|apparel|clothing|luxury|automobile|automotive|auto|carmaker|restaurant|leisure|gaming|casino|hotel|travel|homebuilder|e[- ]?commerce|consumer discretionary|consumer cyclical)\b/)) return 'Consumer Cyclical';
+  if (has(/\b(food|beverage|brewer|brewing|distiller|tobacco|household|grocery|supermarket|staples|consumer staples|consumer defensive|agricultur)\b/)) return 'Consumer Defensive';
+  // 6. Anything else fund-shaped → the broad fund bucket.
+  if (has(/\b(etf|etn|etc|etp|ucits|sicav|index fund|tracker|msci|s&p|sp500|s&p ?500|ftse|nasdaq[- ]?100|stoxx|russell|dividend|equal weight|all[- ]?world|total market|emerging markets?|developed markets?|momentum|quality|value|growth fund|small[- ]?cap|mid[- ]?cap|large[- ]?cap|multi[- ]?asset|balanced fund|portfolio fund)\b/)) return 'ETFs & Funds';
+  if (has(/\b(etf|fund|index|trust|portfolio)\b/)) return 'ETFs & Funds';
+  return 'Other';
+};
+
 // Curated US ticker → canonical sector map. Covers the user's playbook universe
 // plus several hundred of the most commonly-held US equities and ETFs, so the
 // allocator resolves a real sector offline without waiting on a fundamentals
@@ -740,17 +848,17 @@ window.PB_DATA.normalizeSector = function (raw) {
 // funds, bonds, commodities and crypto vehicles get their own buckets.
 window.PB_DATA._US_SECTORS = (function () {
   const groups = {
-    'Technology': 'AAPL MSFT NVDA AVGO ORCL ADBE CRM ACN AMD CSCO IBM INTU QCOM TXN NOW AMAT ADI MU LRCX KLAC SNPS CDNS INTC PANW ANET PLTR APP DELL SMCI ARM MRVL NXPI MCHP ON STM SWKS QRVO TER ENTG MPWR WOLF CRWD ZS S NET DDOG MDB SNOW DOCN ESTC GTLB FROG PATH AI BBAI SOUN TSM ASML UMC GFS NBIS WDC STX HPQ HPE JNPR FFIV AKAM CIEN COHR LITE NTAP PSTG VRT WIT INFY SHOP TOST ADSK WDAY ZM DOCU OKTA TWLO HUBS BILL APPN ASAN MNDY CFLT U TTD UBER FSLR ENPH SEDG GLW KEYS TYL ZBRA PTC ANSS FICO IT VRSN GEN AKAM',
-    'Communication Services': 'GOOGL GOOG META NFLX DIS CMCSA TMUS VZ T CHTR WBD PARA FOXA FOX NWSA NWS OMC IPG TTWO EA RBLX SPOT PINS SNAP MTCH BIDU NTES TCEHY SE ROKU LYV Z ZG NYT WMG DASH',
-    'Consumer Cyclical': 'AMZN TSLA HD MCD NKE LOW SBUX BKNG TJX ABNB CMG MAR ORLY AZO ROST YUM HLT RCL CCL NCLH LVS WYNN MGM DKNG F GM RIVN LCID NIO LI XPEV STLA TM RACE LULU DECK ULTA EBAY ETSY W CHWY CPRT DHI LEN PHM NVR TOL GRMN APTV LKQ BBY EXPE POOL TSCO DPZ DRI GPC BABA JD PDD MELI',
-    'Consumer Defensive': 'WMT COST PG KO PEP PM MO MDLZ CL KMB GIS KHC HSY STZ KDP MNST SYY ADM KR DG DLTR TGT EL CLX CHD MKC HRL TSN K CAG CPB SJM TAP BF-B KVUE BUD DEO WBA',
-    'Healthcare': 'LLY UNH JNJ MRK ABBV TMO ABT DHR PFE AMGN ISRG BSX SYK MDT GILD VRTX REGN CI CVS HCA ELV ZTS BDX HUM CNC MCK COR BMY BIIB MRNA IDXX IQV DXCM EW WST RMD GEHC ALGN MTD WAT PODD HOLX BAX CAH ZBH STE VTRS LH DGX RVTY CRL TECH MOH BNTX CRSP NTLA BEAM VKTX HIMS NBIX EXAS SRPT RARE',
-    'Financial Services': 'BRK-B BRK-A JPM V MA BAC WFC GS MS AXP SPGI BLK C SCHW CB MMC PGR CME ICE AON PNC USB TFC COF BK AIG MET PRU TRV ALL AFL MSCI MCO AJG FIS FI GPN COIN HOOD SOFI PYPL AFRM UPST XYZ KKR BX APO ARES OWL CG NDAQ CBOE MKTX FCNCA RJF SYF DFS ALLY NU MARA RIOT CLSK HUT BITF WBS FITB HBAN RF CFG KEY MTB',
-    'Industrials': 'GE CAT BA HON UNP RTX LMT UPS DE ETN ADP NOC GD EMR ITW CSX FDX NSC WM PH GEV MMM TDG TT CMI CTAS PCAR ROP CARR OTIS PWR URI GWW FAST AME ODFL VRSK EFX IR DOV XYL HWM AXON LHX HII TXT LDOS BAH CACI PNR ROK FTV AOS NDSN SWK PAYX RSG WCN JCI MAS ALLE DAL UAL AAL LUV PLUG BE SMR OKLO',
+    'Technology': 'AAPL MSFT NVDA AVGO ORCL ADBE CRM ACN AMD CSCO IBM INTU QCOM TXN NOW AMAT ADI MU LRCX KLAC SNPS CDNS INTC PANW ANET PLTR APP DELL SMCI ARM MRVL NXPI MCHP ON STM SWKS QRVO TER ENTG MPWR WOLF CRWD ZS S NET DDOG MDB SNOW DOCN ESTC GTLB FROG PATH AI BBAI SOUN TSM ASML UMC GFS NBIS WDC STX HPQ HPE JNPR FFIV AKAM CIEN COHR LITE NTAP PSTG VRT WIT INFY SHOP TOST ADSK WDAY ZM DOCU OKTA TWLO HUBS BILL APPN ASAN MNDY CFLT U TTD UBER FSLR ENPH SEDG GLW KEYS TYL ZBRA PTC ANSS FICO IT VRSN GEN AKAM DUOL IONQ RGTI QBTS CRDO ALAB APLD INOD AUR KVYO',
+    'Communication Services': 'GOOGL GOOG META NFLX DIS CMCSA TMUS VZ T CHTR WBD PARA FOXA FOX NWSA NWS OMC IPG TTWO EA RBLX SPOT PINS SNAP MTCH BIDU NTES TCEHY SE ROKU LYV Z ZG NYT WMG DASH RDDT ASTS BMBL CARG IQ',
+    'Consumer Cyclical': 'AMZN TSLA HD MCD NKE LOW SBUX BKNG TJX ABNB CMG MAR ORLY AZO ROST YUM HLT RCL CCL NCLH LVS WYNN MGM DKNG F GM RIVN LCID NIO LI XPEV STLA TM RACE LULU DECK ULTA EBAY ETSY W CHWY CPRT DHI LEN PHM NVR TOL GRMN APTV LKQ BBY EXPE POOL TSCO DPZ DRI GPC BABA JD PDD MELI CVNA CART GRAB SN ONON BIRK',
+    'Consumer Defensive': 'WMT COST PG KO PEP PM MO MDLZ CL KMB GIS KHC HSY STZ KDP MNST SYY ADM KR DG DLTR TGT EL CLX CHD MKC HRL TSN K CAG CPB SJM TAP BF-B KVUE BUD DEO WBA CELH ELF BYND FRPT',
+    'Healthcare': 'LLY UNH JNJ MRK ABBV TMO ABT DHR PFE AMGN ISRG BSX SYK MDT GILD VRTX REGN CI CVS HCA ELV ZTS BDX HUM CNC MCK COR BMY BIIB MRNA IDXX IQV DXCM EW WST RMD GEHC ALGN MTD WAT PODD HOLX BAX CAH ZBH STE VTRS LH DGX RVTY CRL TECH MOH BNTX CRSP NTLA BEAM VKTX HIMS NBIX EXAS SRPT RARE TEM RXRX NNOX TGTX HALO DVAX ARWR ALNY INSM CYTK',
+    'Financial Services': 'BRK-B BRK-A JPM V MA BAC WFC GS MS AXP SPGI BLK C SCHW CB MMC PGR CME ICE AON PNC USB TFC COF BK AIG MET PRU TRV ALL AFL MSCI MCO AJG FIS FI GPN COIN HOOD SOFI PYPL AFRM UPST XYZ KKR BX APO ARES OWL CG NDAQ CBOE MKTX FCNCA RJF SYF DFS ALLY NU MARA RIOT CLSK HUT BITF WBS FITB HBAN RF CFG KEY MTB CIFR WULF IREN CORZ BMNR GLXY',
+    'Industrials': 'GE CAT BA HON UNP RTX LMT UPS DE ETN ADP NOC GD EMR ITW CSX FDX NSC WM PH GEV MMM TDG TT CMI CTAS PCAR ROP CARR OTIS PWR URI GWW FAST AME ODFL VRSK EFX IR DOV XYL HWM AXON LHX HII TXT LDOS BAH CACI PNR ROK FTV AOS NDSN SWK PAYX RSG WCN JCI MAS ALLE DAL UAL AAL LUV PLUG BE SMR OKLO RKLB JOBY ACHR LUNR RDW KTOS AVAV',
     'Energy': 'XOM CVX COP SLB EOG MPC PSX VLO OXY WMB OKE KMI HES DVN FANG HAL BKR TRGP CTRA MRO APA EQT AR CHK RRC OVV MUR SM CIVI PR DINO CCJ UEC DNN NXE UUUU LEU',
     'Basic Materials': 'LIN APD SHW ECL FCX NEM NUE DOW DD PPG CTVA VMC MLM ALB CF MOS FMC IFF EMN CE CMC RPM AVTR SQM GOLD AEM KGC AU HMY WPM FNV RGLD PAAS AG HL CDE MP ASPI',
     'Real Estate': 'PLD AMT EQIX CCI PSA O SPG DLR WELL VICI SBAC EXR AVB EQR ARE INVH MAA UDR ESS KIM REG FRT BXP HST VTR IRM CPT WY DOC CUBE NLY AGNC STWD',
-    'Utilities': 'NEE DUK SO D AEP SRE EXC XEL ED PEG WEC ES AEE CEG ETR FE PPL CMS DTE AES LNT NI EVRG CNP ATO PNW NRG VST PCG EIX AWK',
+    'Utilities': 'NEE DUK SO D AEP SRE EXC XEL ED PEG WEC ES AEE CEG ETR FE PPL CMS DTE AES LNT NI EVRG CNP ATO PNW NRG VST PCG EIX AWK TLN NNE',
     'ETFs & Funds': 'SPY VOO IVV VTI QQQ QQQM DIA IWM VT VXUS VEU VEA VWO EFA EEM ACWI SCHB SCHX SPLG RSP SCHD VIG VYM DGRO NOBL USMV SPLV QUAL MTUM VUG VTV IWF IWD MGK MGV SCHG SPYG SPYV ITOT IJH IJR IWB IWV VO VB VTWO SCHA SCHM ARKK ARKW ARKF ARKG ARKQ MAGS XLG OEF VONE SPMO COWZ JEPI JEPQ DVY SDY IEFA IEMG ACWX FNDX',
     'Bonds & Income': 'IEF TLT SHY AGG BND BNDX LQD HYG JNK TIP MUB VCIT VCSH SHV BIL SGOV GOVT TLH IEI VGIT VGLT VGSH MBB VTEB PFF SCHP FLOT USHY EMB',
     'Gold & Commodities': 'GLD IAU GLDM SGOL IAUM SLV SIVR PPLT PALL PDBC DBC USO UNG BNO UGA GLTR CPER DBA DBB GSG',
@@ -769,6 +877,23 @@ window.PB_DATA._US_SECTORS = (function () {
   groups['Basic Materials'] += ' XLB VAW GDX GDXJ SIL SILJ LIT COPX REMX SLX';
   groups['Real Estate'] += ' XLRE VNQ SCHH IYR';
   groups['Utilities'] += ' XLU VPU NLR';
+  // Supplemental breadth — more commonly-held US equities & ETFs so the allocator
+  // resolves them offline instead of dumping them into "Other".
+  groups['Technology'] += ' GLW TEAM FTNT CYBR TENB RNG PD AYX SUMO BAND DBX BOX WK PCTY PAYC CDW SAIC EPAM CTSH GLOB DXC NTNX RBRK FRSH INTA APPF BSY GDDY WIX SQSP BRZE INFA MBLY INDI POET KOPN LASR VUZI AMBA SITM RMBS LSCC FORM CRUS DIOD POWI SLAB CEVA AOSL';
+  groups['Communication Services'] += ' WBD FWONK FWONA LSXMK LSXMA BATRK MSGS MSGE LYV EDR GENI ROKU FUBO CURI GLBE PERI CMCSA';
+  groups['Consumer Cyclical'] += ' RVLV REAL FIGS WRBY GOOS YETI CROX SKX VFC PVH RL TPR CPRI HBI UAA UA GPS ANF AEO URBN BURL DDS M JWN KSS GME BBWI VSCO LEVI HAS MAT FUN SIX SEAS PLAY BLMN EAT CAKE WING SHAK TXRH JACK WEN QSR DNUT FIVE OLLI BIG MODG GOLF';
+  groups['Consumer Defensive'] += ' KVUE COTY EPC ENR CENT POST FLO LANC THS UTZ SMPL HAIN NAPA VITL OLPX KDP CASY ACI GIS PFGC USFD CHEF';
+  groups['Healthcare'] += ' DOCS HIMS OSCR ALHC PHR CERT DH AMWL OMCL EVH ASTH PRVA NEOG NVCR PEN SWAV NARI INSP TNDM SENS LNTH NEO GH NTRA CDNA FLGT PGNY OPCH ENSG CHE AMED ADUS UHS THC DVA';
+  groups['Financial Services'] += ' AFRM JEF LAZ EVR PJT MC HLI SF AMP RJF VOYA PFG PRU BEN TROW IVZ STT NTRS BRO WTW ERIE CINF AIZ KMPR AFG ORI RLI MKL WRB ACGL RNR EG GSHD LMND ROOT TREE ENVA WD COIN HOOD SOFI BULL TW VIRT MORN FDS ENV';
+  groups['Industrials'] += ' GGG NDSN ITT CR FLS PNR IEX XYL WTS AOS WMS AGCO LII BLDR BLD IBP TREX AZEK MAS FBIN OC EXP USLM SUM VMI ACM J PWR EME MTZ FIX STRL DY PRIM TTEK GVA ROAD CSWI FELE GTLS CW HEI TDY DRS CAE BWXT MOG-A WWD HXL SPR HON GE WAB TRN GBX SAIA WERN ODFL KNX CHRW LSTR XPO RXO ARCB MATX ZTO';
+  groups['Energy'] += ' LNG TPL VNOM AROC KGS PBA ENB TRP EPD ET MPLX PAA WES DTM AM HESM NS CQP GLP SUN DKL TRGP CRGY GPOR MGY NOG CRK BTU ARLP AMR HCC METC WFRD NOV CHX PTEN HP LBRT NINE OII RES';
+  groups['Basic Materials'] += ' SCCO TECK VALE BHP RIO GGB SID CLF X STLD RS ATI CRS HAYN WOR TMC LAC SGML PLL EXK GATO BTG NGD OR SAND AGI EQX IAG SSRM SBSW DRD FUL OLN WLK LYB CC HUN ASIX KRO TROX SXT NTR SMG ICL';
+  groups['Real Estate'] += ' SPG O PLD AMT CCI EQIX DLR PSA EXR AVB EQR INVH AMH WELL VTR PEAK DOC OHI SBRA CTRE LTC NHI MPW GMRE CUBE LSI NSA REXR FR STAG TRNO EGP KRC HIW CUZ JBGS DEI ESRT VNO SLG PGRE HPP BDN OPI WPC NNN ADC EPRT FCPT GTY SRC PINE STAG ELS SUI EXR CPT AIRC';
+  groups['Utilities'] += ' AEP WEC ETR FE PPL CMS DTE NI LNT EVRG PNW IDA NWE POR BKH AVA OGE ALE MGEE NWN SR SWX OGS NJR SJW AWR CWT MSEX YORW ARTNA UTL CPK NFG HASI ORA';
+  groups['ETFs & Funds'] += ' SCHF SCHE SCHC GWX DLS DGS DEM DGRW DON DES FNDF FNDC FNDE FNDA FNDB AVUV AVDV AVUS AVDE AVEM DFAC DFAU DFAX DFAE DFAI DFIV DFUS DFAS VBR VBK VOE VOT IJK IJJ IJS IJT IWN IWO IWP IWS SMMV SPSM SPMD VONG VONV VTHR IXUS IEUR IPAC VPL VGK BBEU BBJP EWJ EWG EWU EWQ EWL EWP EWI EWN EWD EWA EWC EWZ EWW EWY EWT EWH EWS INDA FLIN MCHI KWEB CQQQ ASHR FXI EZU HEDJ DXJ IDV';
+  groups['Bonds & Income'] += ' BSV BIV BLV VGIT VGLT VGSH VTIP STIP SCHO SCHR SCHQ SPTL SPTI SPTS SPSB SPIB SPBO GVI USIG SUSC IGSB IGIB IGLB ILTB IMTB ISTB FBND FLRN ICSH NEAR JPST GSY MINT BSCO BSCP BSCQ BSJO BSJP IBDR IBDS IBDT VWOB EMHY PCY EMLC LEMB EBND BWX IGOV WIP PFFD VRP ANGL FALN BKLN SRLN SJNK HYLB SPHY PGX PFXF';
+  groups['Gold & Commodities'] += ' BAR OUNZ AAAU SGOL GLTR PPLT PALL CPER UNG UGA BNO USL DBO DBE CORN WEAT SOYB COW NIB JO BAL CANE WOOD WEAT KOLD BOIL UCO SCO PDBC FTGC COMT BCI GCC DJP';
+  groups['Crypto'] += ' BTC ETHV BTCW DEFI BITS BTF BITI BTOP SATO BLOK BKCH DAPP WGMI BITQ IBLC';
   const out = {};
   for (const sec of Object.keys(groups)) groups[sec].split(/\s+/).forEach(t => { if (t) out[t] = sec; });
   return out;
@@ -784,17 +909,22 @@ window.PB_DATA._INTL_SECTORS = (function () {
   // folded directly into each JSE sector string so they don't clobber equities.
   const groups = {
     'JSE': {
-      'Financial Services': 'CPI FSR SBK NED ABG INP INL DSY SLM OMU MTM RMH RMI REM CML PSG KST QLT SNT OUT BGA STXFIN',
-      'Basic Materials': 'BHG BHP AGL GLN GFI ANG IMP AMS SSW HAR DRD PAN EXX KIO ARI ARM AFE RBP MNP NHM STXRES',
-      'Communication Services': 'NPN PRX MTN VOD TKG MCG',
-      'Consumer Defensive': 'SHP SPP PIK WHL BID AVI TBS RFG CLS LBR DCP',
-      'Consumer Cyclical': 'CFR TFG MRP TRU CSB ITE',
-      'Industrials': 'BVT MUR GND RLO WBO BAW KAP SUR MTH HCI STXIND',
-      'Healthcare': 'APN NTC LHC ADH AEL',
-      'Real Estate': 'GRT RDF RES HYP SSS VKE EQU MSP NRP LTE ATT TEX FFB STXPRO CSPROP SYGP STXLIS GLPROP',
-      'Energy': 'SOL',
-      'ETFs & Funds': 'STX40 STX500 STXNDQ STXWDM STXEMG STXSWX STXDIV STXRAF STXQUA STXILB CSEW40 CSTOP50 CSNDQ CSP500 GLODIV NFEMOM NFSWIX NFEDEF NFTRCI SYG500 SYGSW4 SYG4IR SYGWD SYGEU SYGUK SYGJP ETFWLD ETF500 ETFSAP ASHT40 ASHGEQ ASHMID STX100',
-      'Gold & Commodities': 'ETFGRE GLD NGPLT ETFPLD ETFPLT ETFRHO SYGGLD'
+      'Financial Services': 'CPI FSR SBK NED ABG INP INL DSY SLM OMU MTM RMH RMI REM CML PSG KST QLT SNT OUT BGA STXFIN RNI NIN N91 JSE AIL TCP AFH BAT SYG',
+      'Basic Materials': 'BHG BHP AGL GLN GFI ANG IMP AMS SSW HAR DRD PAN EXX KIO ARI ARM AFE RBP MNP NHM STXRES S32 NPH PPC OMN SEP JBL SAP APH NPK YRK',
+      'Communication Services': 'NPN PRX MTN VOD TKG MCG BLU',
+      'Consumer Defensive': 'SHP SPP PIK WHL BID AVI TBS RFG CLS LBR DCP OCE RCL BTI SHG',
+      'Consumer Cyclical': 'CFR TFG MRP TRU CSB ITE PPH SUI TSG LEW GPI CMH ADH SSU',
+      'Industrials': 'BVT MUR GND RLO WBO BAW KAP SUR MTH HCI STXIND SPG AEG IVT ART ENX HDC RBX',
+      'Technology': 'EOH DTC AEL BYI KRO EASYAI ETF5IT SYFANG',
+      'Healthcare': 'APN NTC LHC AIP SYGH',
+      'Real Estate': 'GRT RDF RES HYP SSS VKE EQU MSP NRP LTE ATT TEX FFB STXPRO CSPROP SYGP STXLIS GLPROP APF OCT SAC EMI DIB DIA TWR SEA FFA BWN CGR ETFGRE ETFSAP RWDVF RWGPR RWINC',
+      'Energy': 'SOL TGA',
+      // Broad/multi-region equity index funds, balanced & multi-asset funds land
+      // here; single-sector SA ETFs (Info Tech, AI, Health, property, bond, gold)
+      // are folded into the sector they track in the buckets above/below.
+      'ETFs & Funds': 'STX40 STX500 STXNDQ STXWDM STXEMG STXSWX STXDIV STXRAF STXQUA CSEW40 CSTOP50 CSNDQ CSP500 GLODIV NFEMOM NFSWIX NFEDEF NFTRCI SYG500 SYGSW4 SYG4IR SYGWD SYGEU SYGUK SYGJP ETFWLD ETF500 ASHT40 ASHGEQ ASHMID STX100 STXMMT ETFT40 ETFEMA AAGEET AASAET APACXJ CARTBL COGEM COGES COGMAN COGOE COOPTI CTOP50 DIVTRX EASY5 EASYBF EASYGE ETFSRI ETFSWX FNBEMG FNBMID FNBT40 GLOBAL PCWGE STXACW STXCAP STXCHN STXEME STXID STXIFR STXJGE STXLVL STXNDA STXSHA SYGCN SYGEMF SYGT40 SYGUS VUNGLE WNXT40 WTOP20',
+      'Bonds & Income': 'STXGOV STXILB NFGOVI NFILBI ETFBND ETFGGB FNBINF INCOME STXGBD NEWUSD',
+      'Gold & Commodities': 'GLD NGPLT ETFPLD ETFPLT ETFRHO SYGGLD ETFGLD NGPLD'
     },
     'LSE': {
       'Financial Services': 'HSBA LLOY BARC NWG STAN INVP LSEG LSE PRU AV LGEN SDR III ABDN STJ PHNX ICG',
@@ -834,10 +964,63 @@ window.PB_DATA._INTL_SECTORS = (function () {
     }
     // TFSA holdings (JSE-listed shares & ETFs) resolve via the JSE fallback in findSector.
   };
+  // Supplemental international breadth — more of each exchange's commonly-held
+  // shares & ETFs so the allocator places them offline instead of in "Other".
+  const extra = {
+    'JSE': {
+      'Financial Services': 'GML PPE TGA SSW MSP ZED LHG MTA RMB ABSP CPIP AIH SHC',
+      'Consumer Cyclical': 'MRP TFG WHL TRU CLS MTH ITE TSG SPG FBR VAL HCI TGO',
+      'Consumer Defensive': 'ARL LBR DCP SOH PFG ASR CRG',
+      'Industrials': 'GND RBX RLO INV TGA RTO AVL TKG MND GRT',
+      'Basic Materials': 'AMS GFI SSW HAR DRD SOL ARI ARM IMP THA TGM AGL ANG GLN BHG THX SSC ORN',
+      'Communication Services': 'NPN PRX MTN VOD TKG BLU EOH',
+      'Healthcare': 'APN NTC LHC MEI ADV',
+      'Real Estate': 'GRT RDF RES HYP SSS VKE EQU MSP NRP LTE ATT FFB RPL EMI BWN OCT SAC',
+      'Technology': 'KGD ALT PSV',
+      'ETFs & Funds': 'STXEMG STXWDM SYG500 SYGEU SYG4IR GLPROP STXILB ETF500 CSP500 CSEW40 NFGOVI ETFGGB STX40 STXNDQ STXSWX'
+    },
+    'LSE': {
+      'Financial Services': 'HSX ADM SDR SDRC OSB PAGE BGEO CBG IGG AJB QQ NWG ABDN MNG',
+      'Consumer Defensive': 'CCH HLMA OCDO',
+      'Consumer Cyclical': 'BME FRAS ABF WTB FLTR ENT GAW WIZ TUI HSV PETS',
+      'Industrials': 'EXPN SPX MGGT WEIR ROR ULE BAB IMI SXS HWDN MRO',
+      'Healthcare': 'GSK AZN HIK GNS CTEC',
+      'Technology': 'SGE AVST KNOS',
+      'Basic Materials': 'EVR FXPO POLY HOC SXX',
+      'Energy': 'BP SHEL HBR ENQ TLW',
+      'Utilities': 'NG SSE CNA SVT UU PNN DRX',
+      'Real Estate': 'BLND LAND SGRO BBOX UTG TRY GRI PHP'
+    },
+    'FRA': {
+      'Technology': 'SAP IFX', 'Industrials': 'SIE MTX AIR HEI HOT', 'Financial Services': 'ALV DBK MUV2 CBK DB1 HNR1',
+      'Communication Services': 'DTE', 'Consumer Cyclical': 'BMW VOW3 MBG PAH3 P911 CON ADS PUM ZAL',
+      'Consumer Defensive': 'HEN3 BEI HFG', 'Basic Materials': 'BAS LIN SY1 COV', 'Healthcare': 'BAYN FRE SHL MRK QIA',
+      'Utilities': 'RWE EOAN', 'Real Estate': 'VNA LEG'
+    },
+    'PAR': {
+      'Industrials': 'AIR SU SAF VIE LR ALO', 'Energy': 'TTE', 'Healthcare': 'SAN',
+      'Financial Services': 'BNP GLE ACA CS AMUN', 'Consumer Cyclical': 'MC RMS KER EL HO STLAP',
+      'Consumer Defensive': 'OR BN RI', 'Basic Materials': 'AI ERA', 'Communication Services': 'ORA PUB VIV TFI ATO',
+      'Utilities': 'ENGI', 'Technology': 'CAP DSY STMPA', 'Real Estate': 'URW GFC'
+    },
+    'AMS': {
+      'Technology': 'ASML ADYEN BESI ASM', 'Healthcare': 'PHIA', 'Financial Services': 'INGA ABN AGN NN ASRNL',
+      'Consumer Defensive': 'HEIA AD JDEP', 'Communication Services': 'PRX UMG', 'Basic Materials': 'AKZA OCI',
+      'Industrials': 'WKL RAND AALB', 'Consumer Cyclical': 'PNL TKWY'
+    }
+  };
   const out = {};
   for (const mkt of Object.keys(groups)) {
     const byTicker = groups[mkt];
     for (const sec of Object.keys(byTicker)) byTicker[sec].split(/\s+/).forEach(t => { if (t) out[mkt + ':' + t] = sec; });
+  }
+  // Merge supplemental entries without clobbering a curated primary mapping.
+  for (const mkt of Object.keys(extra)) {
+    const byTicker = extra[mkt];
+    for (const sec of Object.keys(byTicker)) byTicker[sec].split(/\s+/).forEach(t => {
+      const key = mkt + ':' + t.toUpperCase();
+      if (t && !out[key]) out[key] = sec;
+    });
   }
   return out;
 })();

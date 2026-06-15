@@ -385,6 +385,46 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 .btn-remove-inline:active { color: var(--rose); border-color: color-mix(in srgb, var(--rose) 40%, transparent); background: color-mix(in srgb, var(--rose) 12%, transparent); }
+/* Buy more — inline action shown beside Sell on a holding row */
+.btn-buy-inline {
+  display: inline-flex; align-items: center;
+  font-weight: 600; font-family: var(--sans);
+  border-radius: 5px; border: 1px solid color-mix(in srgb, var(--blue) 40%, transparent);
+  background: color-mix(in srgb, var(--blue) 10%, transparent); color: var(--blue);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.btn-buy-inline:active { background: color-mix(in srgb, var(--blue) 25%, transparent); }
+/* Holding-row action buttons sit on their own line under the meta */
+.row-actions { display: flex; gap: 6px; margin-top: 8px; }
+.row-actions .btn-sell-inline, .row-actions .btn-buy-inline { margin-left: 0; padding: 4px 12px; font-size: 11px; }
+/* Three-zone holding row: name (left, main) · gain/loss (middle) · value (right) */
+.holding-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; }
+/* Let the full company name wrap across lines instead of being clipped to
+   "Sygnia Itrix 4th Indu…" — the row is grid-aligned, so a taller name cell
+   just grows the row and stays vertically centred against value/gain. */
+.hold-name {
+  font-size: 15px; font-weight: 600; line-height: 1.25;
+  white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+}
+.hold-tkr { font-family: var(--mono); font-weight: 700; font-size: 11px; color: var(--text-muted); letter-spacing: 0.02em; }
+.holding-gl { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; text-align: right; }
+.holding-gl-amt { font-size: 13px; font-weight: 700; }
+.holding-gl-pct { font-size: 11px; font-weight: 600; }
+/* Right zone: current value large, the day's move small underneath.
+   Extra left margin sets the value apart from the gain/loss column. */
+.holding-row .row-right { margin-left: 14px; }
+.holding-value { font-family: var(--mono); font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.holding-day { font-family: var(--mono); font-size: 11px; font-weight: 500; margin-top: 3px; }
+@media (max-width: 380px) {
+  .holding-row { gap: 8px; }
+  .holding-row .row-right { margin-left: 8px; }
+  .holding-value { font-size: 14px; }
+  .holding-gl-amt { font-size: 12px; }
+}
+/* Buy-more preview card */
+.buy-preview { border-color: color-mix(in srgb, var(--blue) 25%, transparent); background: color-mix(in srgb, var(--blue) 5%, var(--bg-raised)); }
+.buy-preview-row { display: flex; justify-content: space-between; align-items: baseline; }
+.buy-preview-row + .buy-preview-row { margin-top: 6px; }
 .toggle-group-scroll {
   overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%;
   flex-wrap: nowrap; scrollbar-width: none;
@@ -848,6 +888,9 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .ticker-suggestion:last-child { border-bottom: none; }
 .ticker-suggestion:hover, .ticker-suggestion.active { background: var(--bg-elev); }
+/* Force-use-the-typed-symbol override row — visually set apart from real hits. */
+.ticker-suggestion-exact { background: color-mix(in srgb, var(--blue) 9%, transparent); }
+.ticker-suggestion-exact .ticker-sug-name { color: var(--blue); font-weight: 600; }
 .ticker-sug-name {
   font-size: 12px; color: var(--text-dim);
   min-width: 0;
@@ -1577,6 +1620,26 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   touch-action: pan-y;
 }
 .watchlist-list .pos-head { margin-bottom: 8px; }
+/* Watchlist card body: price (left, flexible) · today's move (fixed column) ·
+   alert bell (fixed). The day-change and bell sit in fixed-width tracks anchored
+   to the right, so the day change lines up in a column down the whole list
+   regardless of price width or whether a card has an alert badge. */
+.watch-body { display: grid; grid-template-columns: minmax(0, 1fr) 112px 30px; align-items: center; gap: 10px; }
+.watch-body .price-block-wrap { min-width: 0; }
+.watch-today {
+  text-align: right; min-width: 0; white-space: nowrap;
+  display: flex; flex-direction: column; gap: 1px; line-height: 1.2;
+}
+.watch-today-pct { font-size: 15px; font-weight: 700; }
+.watch-today-amt { font-size: 11px; font-weight: 500; opacity: 0.85; }
+.watch-today.up .watch-today-pct, .watch-today.up .watch-today-amt { color: var(--emerald); }
+.watch-today.down .watch-today-pct, .watch-today.down .watch-today-amt { color: var(--rose); }
+/* Bell in a fixed track so it never shifts the day-change column; badge floats. */
+.watch-body .card-alert-bell {
+  position: relative; top: auto; right: auto; flex: 0 0 auto;
+  width: 30px; height: 30px; padding: 0; justify-content: center;
+}
+.watch-body .card-alert-bell .card-alert-count { position: absolute; top: -3px; right: -3px; }
 @media (max-width: 640px) {
   .watchlist-list .pos-card { padding: 10px 12px; }
   .watchlist-list .pos-head { margin-bottom: 6px; }
@@ -1586,7 +1649,10 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .watchlist-list .ath-badge-label { font-size: 7px; }
   .watchlist-list .ath-badge-val { font-size: 10px; }
   .watchlist-list .price-lg { font-size: 17px; }
-  .watchlist-list .daily-row { display: none; }
+  .watch-body { grid-template-columns: minmax(0, 1fr) 92px 28px; gap: 8px; }
+  .watch-today-pct { font-size: 13px; }
+  .watch-today-amt { font-size: 10px; }
+  .watch-body .card-alert-bell { width: 28px; height: 28px; }
   .watchlist-list .market-badge { font-size: 8px; padding: 1px 5px; }
 }
 
@@ -1730,6 +1796,37 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   display: flex; flex-direction: column; align-items: center;
   gap: 10px; padding: 32px 0; color: var(--text-dim);
   font-size: 12px; text-align: center;
+}
+
+/* Settings → Holdings: per-market delete list */
+.del-group { display: flex; flex-direction: column; }
+.del-group + .del-group { margin-top: 14px; }
+.del-group-head {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 6px 4px; border-bottom: 1px solid var(--border);
+}
+.del-group-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.del-group-count {
+  margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+  background: var(--bg-raised); border-radius: 999px; padding: 1px 8px;
+}
+.del-rows { display: flex; flex-direction: column; }
+.del-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 7px 4px; border-radius: 6px; transition: background 0.12s;
+}
+.del-row:active { background: var(--bg-elev); }
+.del-row.sel { background: color-mix(in srgb, var(--rose) 10%, transparent); }
+.del-row-tkr { font-family: var(--mono); font-weight: 700; font-size: 12px; color: var(--text); flex: 0 0 auto; min-width: 58px; }
+.del-row-name { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; text-align: left; }
+.del-row-qty { font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex: 0 0 auto; }
+.del-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);
+  position: sticky; bottom: 0; background: var(--bg-raised);
 }
 
 /* Ribbon settings catalog */
@@ -2160,7 +2257,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
-  pointer-events: none;
+  text-align: center; pointer-events: none;
 }
 .chart-pie-center-label {
   font-size: 9px; text-transform: uppercase; letter-spacing: 0.15em;
@@ -2170,13 +2267,18 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   font-size: 14px; font-weight: 700; font-family: var(--mono);
   letter-spacing: -0.02em; color: var(--text);
 }
+/* Hovered label sits inside the donut hole (inner Ø ≈ 78px). It must wrap and
+   shrink so long sector names ("Communication Services") stay centred and never
+   spill over the ring — the font-size is set inline per label length. */
 .chart-pie-center-tkr {
-  font-size: 14px; font-weight: 700; font-family: var(--mono);
-  color: var(--text);
+  font-weight: 700; font-family: var(--mono); color: var(--text);
+  max-width: 76px; line-height: 1.12; text-align: center;
+  white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
 }
 .chart-pie-center-pct {
   font-size: 11px; font-family: var(--mono);
-  color: var(--text-muted);
+  color: var(--text-muted); margin-top: 1px;
 }
 .chart-pie-legend {
   flex: 1; min-width: 0;
@@ -2186,6 +2288,10 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .chart-pie-legend-item {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 6px; cursor: pointer;
+  /* It's a <button>, which defaults to text-align:center — that left the ticker
+     column centred (e.g. a lone "C" floating mid-column). Force left so tickers
+     read left-to-right like every other holdings list. */
+  text-align: left;
   transition: opacity 0.15s; border-radius: 6px;
 }
 .chart-pie-legend-item:hover { opacity: 0.7; }
@@ -2321,6 +2427,24 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .import-qty-field { display: flex; flex-direction: column; gap: 3px; }
 .import-qty-label { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); font-family: var(--mono); }
 .import-qty-field .import-input { width: 100%; }
+.import-date-field { margin-bottom: 8px; }
+.import-date-field .import-input { width: 100%; }
+/* Computed holding amount (shares × cost/share) shown under the qty inputs */
+.import-amount-line {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-top: 8px; font-size: 11px; color: var(--text-dim);
+}
+.import-amount-line .mono { color: var(--text); font-weight: 600; font-size: 13px; }
+/* "We don't know this sector — which is it?" prompt on an import row. */
+.import-sector-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  padding: 8px 10px; border-radius: 9px;
+  background: color-mix(in srgb, var(--amber, #f59e0b) 10%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--amber, #f59e0b) 30%, var(--border));
+}
+.import-sector-q { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); flex: 1; min-width: 0; }
+.import-sector-q svg { color: var(--amber, #f59e0b); flex-shrink: 0; }
+.import-sector-select { flex: 0 0 auto; max-width: 160px; }
 .import-gate-note {
   margin-top: 12px; padding: 9px 12px; border-radius: 9px;
   background: color-mix(in srgb, var(--amber, #f59e0b) 12%, var(--bg));
@@ -2387,8 +2511,8 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .chart-pie-legend-co {
   flex: 1; min-width: 0; font-size: 10px; color: var(--text-muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: left;
 }
-.chart-pie-legend-co::before { content: "— "; color: var(--text-dim); }
 .chart-pie-legend.named .chart-pie-legend-pct { margin-left: 8px; }
 
 .sh-panel { max-width: 460px; }
@@ -2408,8 +2532,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .sh-row-id { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
 /* Fixed-width ticker column → every company name starts at the same x. */
 .sh-row-tkr { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); flex: 0 0 auto; min-width: 62px; }
-.sh-row-name { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.sh-row-name::before { content: "— "; color: var(--text-dim); }
+.sh-row-name { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: left; }
 .sh-row-figs { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
 .sh-row-val { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); }
 .sh-row-wt { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }

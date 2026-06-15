@@ -2040,6 +2040,15 @@ function usePortfolio(fxRates, toast) {
       shares: r.shares, price: r.costBasis, notes: r.notes || '',
       date: r.purchaseDate || today, createdAt: new Date().toISOString()
     }))]);
+    // Learn any sector the user assigned to an unrecognised symbol during import,
+    // so the allocation chart classifies it from now on instead of "Other".
+    const learned = {};
+    for (const r of prepared) {
+      if (!r.sector) continue;
+      const s = DATA.normalizeSector(r.sector);
+      if (s && s !== 'Other') learned[priceKey(r.market, r.ticker.toUpperCase())] = { sector: s, industry: r.sector, at: Date.now() };
+    }
+    if (Object.keys(learned).length) setSectorCache(prev => ({ ...prev, ...learned }));
     toast(`Imported ${added} position${added !== 1 ? 's' : ''}${merged ? `, merged ${merged}` : ''}`);
     return { added, merged };
   };
@@ -2079,6 +2088,13 @@ function usePortfolio(fxRates, toast) {
   const removePosition = id => {
     setPositions(prev => prev.filter(p => p.id !== id));
     toast('Position removed');
+  };
+  // Bulk delete (Settings → Manage holdings). One state update for the whole set.
+  const removePositions = ids => {
+    const set = new Set(ids);
+    if (set.size === 0) return;
+    setPositions(prev => prev.filter(p => !set.has(p.id)));
+    toast(set.size === 1 ? 'Holding deleted' : set.size + ' holdings deleted');
   };
   const addContribution = (amount, currency, date, note) => {
     const rateAtContrib = fxRates?.rates?.[currency] || null;
@@ -2155,7 +2171,7 @@ function usePortfolio(fxRates, toast) {
     contributions, setContributions,
     transactions, setTransactions,
     sectorCache, setSectorCache,
-    addPosition, updatePosition, removePosition, sellPosition, importPositions,
+    addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
     addWatch, removeWatch,
     addAlert, removeAlert
@@ -2230,7 +2246,9 @@ function App() {
   const [posModalEditId, setPosModalEditId] = useState(null);
   const [posModalOpen, setPosModalOpen] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [importMarket, setImportMarket] = useState('US');
   const [sellModalPos, setSellModalPos] = useState(null);
+  const [buyModalPos, setBuyModalPos] = useState(null);
   const [notifPerm, setNotifPerm] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
   const [installEvent, setInstallEvent] = useState(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
@@ -2243,7 +2261,7 @@ function App() {
     contributions, setContributions,
     transactions, setTransactions,
     sectorCache, setSectorCache,
-    addPosition, updatePosition, removePosition, sellPosition, importPositions,
+    addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
     addWatch, removeWatch,
     addAlert, removeAlert
@@ -2261,7 +2279,11 @@ function App() {
       if (p.market !== 'US') return false;
       const key = priceKey(p.market, p.ticker);
       if (sectorCache[key]) return false;
-      return DATA.findSector(p.ticker, p.market).sector === 'Other';
+      if (DATA.findSector(p.ticker, p.market).sector !== 'Other') return false;
+      // The name classifier already places funds/bonds/gold/keyword names, so
+      // don't spend a network lookup on those — only genuinely unknown equities.
+      if (p.name && DATA.classifySectorByName(p.name) !== 'Other') return false;
+      return true;
     });
     if (pending.length === 0) return;
     let alive = true;
@@ -2553,9 +2575,9 @@ function App() {
         setPosModalEditId(null);
         setPosModalOpen(true);
       },
-      onImportPositions: () => setShowImport(true),
-      onSellPosition: pos => setSellModalPos(pos),
-      onRemovePosition: removePosition
+      onImportPositions: () => { setImportMarket(marketFilter); setShowImport(true); },
+      onBuyPosition: pos => setBuyModalPos(pos),
+      onSellPosition: pos => setSellModalPos(pos)
     }),
     watchlist: React.createElement(WatchlistView, {
       watchlist: watchlist,
@@ -2572,7 +2594,9 @@ function App() {
     heatmap: React.createElement(HeatmapView, {
       positions: positions,
       prices: prices,
-      onOpenDetail: openDetail
+      onOpenDetail: openDetail,
+      displayCurrency: displayCurrency,
+      fxRates: fxRates
     }),
     picks: React.createElement(PicksView, {
       prices: prices,
@@ -2587,6 +2611,7 @@ function App() {
       prices: prices,
       onOpenDetail: openDetail,
       onAddPosition: () => { setPosModalEditId(null); setPosModalOpen(true); },
+      onBuyPosition: pos => setBuyModalPos(pos),
       onSellPosition: pos => setSellModalPos(pos)
     }),
     rules: React.createElement(RulesView, null),
@@ -2691,6 +2716,7 @@ function App() {
     prices: prices,
     onExport: exportData,
     onImport: importData,
+    onDeleteHoldings: removePositions,
     ribbonItems: ribbonItems,
     onSetRibbonItems: setRibbonItems,
     ribbonMode: ribbonMode,
@@ -2720,6 +2746,7 @@ function App() {
       setPosModalOpen(false);
     }
   }), showImport && React.createElement(ImportModal, {
+    defaultMarket: importMarket,
     onClose: () => setShowImport(false),
     onImport: async (holdings) => {
       await importPositions(holdings);
@@ -2733,6 +2760,14 @@ function App() {
     onSell: (ticker, market, shares, price, date, notes) => {
       sellPosition(ticker, market, shares, price, date, notes);
       setSellModalPos(null);
+    }
+  }), buyModalPos && React.createElement(BuyModal, {
+    position: buyModalPos,
+    prices: prices,
+    onClose: () => setBuyModalPos(null),
+    onBuy: (ticker, market, shares, price, date, notes) => {
+      addPosition(ticker, market, shares, price, notes, date);
+      setBuyModalPos(null);
     }
   }), showInstallBanner && React.createElement(InstallBanner, {
     isIOS: /iphone|ipad|ipod/i.test(navigator.userAgent),
@@ -2829,7 +2864,8 @@ function PriceBlock(_ref5) {
   let {
     quote,
     size = 'md',
-    showDailyRow = false
+    showDailyRow = false,
+    hideChange = false
   } = _ref5;
   if (!quote) return React.createElement("span", {
     className: "mono text-dim"
@@ -2848,10 +2884,14 @@ function PriceBlock(_ref5) {
     className: "flex items-baseline gap-2"
   }, React.createElement("span", {
     className: klass
-  }, sym, quote.price.toFixed(2)), React.createElement("span", {
+  }, sym, quote.price.toFixed(2)),
+  // When the "Today" row is shown it carries the day's move (with the cash
+  // amount), so omit the inline chip here to avoid showing the % twice.
+  // hideChange renders the price alone (the caller shows the move elsewhere).
+  !showDailyRow && !hideChange && React.createElement("span", {
     className: `chg ${up ? 'up' : 'down'}`
   }, up ? '▲' : '▼', " ", up ? '+' : '', quote.changePct.toFixed(2), "%")),
-  showDailyRow && React.createElement("div", { className: "daily-row" },
+  showDailyRow && !hideChange && React.createElement("div", { className: "daily-row" },
     React.createElement("span", { className: "daily-label" }, "Today"),
     React.createElement("span", { className: `daily-val mono ${up ? 'up' : 'down'}` },
       (up ? '+' : '') + quote.changePct.toFixed(2) + '%',
@@ -2890,14 +2930,28 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
     const fetchAll = async () => {
       const needed = positions.filter(p => !historyCache[priceKey(p.market, p.ticker)]);
       if (needed.length === 0) { setLoading(false); return; }
+      // Fetch in small batches instead of one big Promise.all: firing 20+ history
+      // requests at once swamps the shared CORS proxies and most come back empty,
+      // which left the chart blank for larger portfolios. Batching + a retry pass
+      // mirrors the quote fetcher and lets the line paint in as data lands.
+      const BATCH = 5;
+      const fetchInto = async (list, store) => {
+        for (let i = 0; i < list.length; i += BATCH) {
+          if (cancelled) return;
+          const slice = list.slice(i, i + BATCH);
+          await Promise.all(slice.map(async p => {
+            const key = priceKey(p.market, p.ticker);
+            const data = await fetchHistory(p.ticker, p.market, 'max').catch(() => null);
+            if (data && data.points.length > 0) store[key] = data.points;
+          }));
+          if (!cancelled && Object.keys(store).length) setHistoryCache(prev => ({ ...prev, ...store }));
+        }
+      };
       const results = {};
-      await Promise.all(needed.map(async p => {
-        const key = priceKey(p.market, p.ticker);
-        const data = await fetchHistory(p.ticker, p.market, 'max');
-        if (data && data.points.length > 0) results[key] = data.points;
-      }));
+      await fetchInto(needed, results);
+      const missing = needed.filter(p => !results[priceKey(p.market, p.ticker)]);
+      if (missing.length) await fetchInto(missing, results);
       if (cancelled) return;
-      setHistoryCache(prev => ({ ...prev, ...results }));
       setLoading(false);
     };
     fetchAll();
@@ -2996,7 +3050,20 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
     }
 
     let all = Object.values(dateMap).sort((a, b) => a.date.localeCompare(b.date));
-    if (cutoff) all = all.filter(p => p.date >= cutoff);
+    if (cutoff) {
+      const before = all.filter(p => p.date < cutoff);
+      let within = all.filter(p => p.date >= cutoff);
+      // Don't let the range filter strip the series down to a single point (which
+      // renders as an empty chart): if there was data before the cutoff, anchor
+      // the window at the cutoff by carrying the last-known value forward. This is
+      // what makes short ranges — and the cost-basis fallback before history loads
+      // — still draw a line instead of collapsing.
+      if (before.length && (within.length === 0 || within[0].date > cutoff)) {
+        const carry = before[before.length - 1];
+        within = [{ date: cutoff, value: carry.value, contributed: carry.contributed }, ...within];
+      }
+      all = within;
+    }
     if (all.length > 300) {
       const step = Math.ceil(all.length / 300);
       const sampled = [all[0]];
@@ -3152,7 +3219,7 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
 // classification — the persisted background fill or an opened-stock fundamentals
 // fetch — over the static map, so the allocation chart reflects real GICS
 // sectors and keeps "Other" to genuinely unknown symbols only.
-function resolvePositionSector(ticker, market, sectorCache, fundamentals) {
+function resolvePositionSector(ticker, market, sectorCache, fundamentals, name) {
   const key = priceKey(market, ticker);
   const cached = sectorCache && sectorCache[key];
   if (cached && cached.sector) {
@@ -3164,7 +3231,16 @@ function resolvePositionSector(ticker, market, sectorCache, fundamentals) {
     const s = DATA.normalizeSector(fund.sector);
     if (s !== 'Other') return { sector: s, industry: fund.industry || s };
   }
-  return DATA.findSector(ticker, market);
+  const found = DATA.findSector(ticker, market);
+  if (found.sector !== 'Other') return found;
+  // Final fallback: read the instrument's display name. Catches funds, bonds,
+  // gold, crypto, REITs and keyword-bearing foreign equities the maps miss, so
+  // the allocation chart converges to ~zero "Other".
+  if (name) {
+    const byName = DATA.classifySectorByName(name);
+    if (byName && byName !== 'Other') return { sector: byName, industry: byName };
+  }
+  return found;
 }
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
@@ -3186,11 +3262,13 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     const native = marketCurrency(p.market);
     const val = convertCcy(p.shares * q.price, native, displayCurrency, rates);
     if (val != null && val > 0) {
-      const sectorInfo = resolvePositionSector(p.ticker, p.market, sectorCache, fundamentals) || {};
       // Best available display name for ANY instrument (stock, ETF, trust): the
       // name saved at import, then the live quote's company name, then the
       // curated lists — never the bare ticker unless nothing else is known.
       const nm = p.name || resolveTickerName(p.ticker, p.market, q) || p.ticker;
+      // Pass the name so the resolver's last-resort classifier can place funds /
+      // bonds / gold / foreign equities that the ticker maps don't cover.
+      const sectorInfo = resolvePositionSector(p.ticker, p.market, sectorCache, fundamentals, nm) || {};
       posVals.push({ ticker: p.ticker, market: p.market, value: val, name: nm, sector: sectorInfo.sector || 'Other' });
     }
   });
@@ -3255,6 +3333,20 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
   });
   const sym = CURRENCY_SYMBOLS[displayCurrency] || '$';
   const fmtTotal = v => sym + Math.round(v).toLocaleString('en-US');
+  // Touch parity for hover: dragging a finger across the legend highlights the
+  // matching wedge (and updates the centre label) just like a desktop mouseover.
+  // Touch events stay captured by the first-touched node, so we hit-test the
+  // point under the finger to find which legend row it's currently over.
+  const legendTouch = (e) => {
+    const t = e.touches && e.touches[0];
+    if (!t) return;
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    const item = el && el.closest ? el.closest('[data-legend-idx]') : null;
+    if (item) {
+      const idx = parseInt(item.getAttribute('data-legend-idx'), 10);
+      if (!isNaN(idx)) setHovered(idx);
+    }
+  };
   return React.createElement("div", null,
     React.createElement("div", { className: "chart-ranges", style: { marginBottom: 10 } },
       modes.map(m => React.createElement("button", {
@@ -3281,17 +3373,28 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
               }))),
         React.createElement("div", { className: "chart-pie-center" },
           hovered != null
-            ? React.createElement(React.Fragment, null,
-                React.createElement("div", { className: "chart-pie-center-tkr" }, arcs[hovered].label),
-                React.createElement("div", { className: "chart-pie-center-pct" }, arcs[hovered].pct.toFixed(1) + '%'))
+            ? (() => {
+                // Scale the font to the label so a long sector name wraps to ≤3
+                // lines and stays inside the donut hole; short tickers stay big.
+                const lbl = String(arcs[hovered].label || '');
+                const n = lbl.length;
+                const fs = n <= 4 ? 15 : n <= 7 ? 13 : n <= 11 ? 11.5 : n <= 16 ? 10 : n <= 21 ? 9 : 8;
+                return React.createElement(React.Fragment, null,
+                  React.createElement("div", { className: "chart-pie-center-tkr", style: { fontSize: fs } }, lbl),
+                  React.createElement("div", { className: "chart-pie-center-pct" }, arcs[hovered].pct.toFixed(1) + '%'));
+              })()
             : React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "chart-pie-center-label" }, "Total"),
                 React.createElement("div", { className: "chart-pie-center-val" }, fmtTotal(total)))
         )
       ),
-      React.createElement("div", { className: "chart-pie-legend" + (mode === 'ticker' ? " named" : "") },
+      React.createElement("div", {
+        className: "chart-pie-legend" + (mode === 'ticker' ? " named" : ""),
+        onTouchStart: legendTouch, onTouchMove: legendTouch, onTouchEnd: () => setHovered(null), onTouchCancel: () => setHovered(null)
+      },
         arcs.map((a, i) => React.createElement("button", {
           key: i, className: "chart-pie-legend-item" + (clickable ? " is-clickable" : ""),
+          "data-legend-idx": i,
           onMouseEnter: () => setHovered(i),
           onMouseLeave: () => setHovered(null),
           onClick: () => clickable ? handleSlice(a) : null,
@@ -3643,6 +3746,56 @@ function DashboardView(_ref6) {
       }) : null,
       ));
 }
+// A single holding row, laid out as three zones:
+//  • Left  — company/instrument name (main heading), then the ticker + shares +
+//            avg cost as a small subheading, plus inline Buy more / Sell.
+//  • Middle — total gain/loss for the holding: the amount on top, the % below.
+//  • Right — current holding value on top, the day's movement underneath.
+function HoldingRow(_refHR) {
+  let { position: p, market, quote: q, onOpenDetail, onBuyPosition, onSellPosition } = _refHR;
+  const info = DATA.findInfo(p.ticker, market);
+  const name = (info && info.name) || p.ticker;
+  const marketValue = q ? p.shares * q.price : null;
+  const cost = p.shares * p.costBasis;
+  const gain = marketValue != null ? marketValue - cost : null;
+  const gainUp = gain != null && gain >= 0;
+  const growthPct = marketValue != null && cost > 0 ? (marketValue - cost) / cost * 100 : null;
+  const dayPct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+  const dayUp = dayPct != null && dayPct >= 0;
+  return React.createElement("button", {
+    key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
+  },
+    // LEFT — name (main), ticker + holding detail (sub), actions
+    React.createElement("div", { className: "row-main" },
+      React.createElement("div", { className: "hold-name" }, name),
+      React.createElement("div", { className: "row-meta" },
+        React.createElement("span", { className: "hold-tkr" }, p.ticker),
+        " \xB7 avg ", fmt(p.costBasis, market)),
+      React.createElement("div", { className: "row-actions" },
+        onBuyPosition ? React.createElement("button", {
+          className: "btn-buy-inline",
+          onClick: e => { e.stopPropagation(); onBuyPosition(p); }
+        }, "Buy more") : null,
+        onSellPosition ? React.createElement("button", {
+          className: "btn-sell-inline",
+          onClick: e => { e.stopPropagation(); onSellPosition(p); }
+        }, "Sell") : null)),
+    // MIDDLE — total gain/loss: amount on top, % below
+    React.createElement("div", { className: "holding-gl" },
+      gain != null
+        ? React.createElement(React.Fragment, null,
+            React.createElement("div", { className: `holding-gl-amt mono ${gainUp ? 'text-up' : 'text-down'}` },
+              (gainUp ? '+' : '−') + fmt(gain, market)),
+            growthPct != null ? React.createElement("div", { className: `holding-gl-pct mono ${gainUp ? 'text-up' : 'text-down'}` },
+              (gainUp ? '+' : '') + growthPct.toFixed(2) + '%') : null)
+        : React.createElement("div", { className: "holding-gl-amt mono text-dim" }, "—")),
+    // RIGHT — current value, with the day's movement underneath
+    React.createElement("div", { className: "row-right" },
+      React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmt(marketValue, market) : "—"),
+      dayPct != null ? React.createElement("div", {
+        className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
+      }, (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null));
+}
 function CurrentView(_ref7) {
   let {
     prices,
@@ -3652,8 +3805,8 @@ function CurrentView(_ref7) {
     onOpenDetail,
     onAddPosition,
     onImportPositions,
-    onSellPosition,
-    onRemovePosition
+    onBuyPosition,
+    onSellPosition
   } = _ref7;
   // Always offer the three primary US/SA tabs, then surface any other market
   // the user actually holds (LSE, ASX, FRA, PAR, AMS…) so imported non-US
@@ -3680,54 +3833,15 @@ function CurrentView(_ref7) {
       className: "eyebrow"
     }, "Your ", tabLabel(market), " positions"), React.createElement("div", {
       className: "row-list"
-    }, rows.map(p => {
-      const q = prices[priceKey(market, p.ticker)];
-      const info = DATA.findInfo(p.ticker, market);
-      const marketValue = q ? p.shares * q.price : null;
-      const cost = p.shares * p.costBasis;
-      const pnlPct = marketValue != null && cost > 0 ? (marketValue - cost) / cost * 100 : null;
-      const remove = (e) => {
-        e.stopPropagation();
-        if (!onRemovePosition) return;
-        if (window.confirm(`Remove ${p.ticker} (${tabLabel(market)}) from your holdings?\n\nThis deletes the position without recording a sale — use Sell instead if you actually sold.`)) {
-          onRemovePosition(p.id);
-        }
-      };
-      return React.createElement("button", {
-        key: p.id,
-        className: "row",
-        onClick: () => onOpenDetail(p.ticker, market)
-      }, React.createElement("div", {
-        className: "row-main"
-      }, React.createElement("div", {
-        className: "row-head"
-      }, React.createElement("span", {
-        className: "tkr"
-      }, p.ticker), React.createElement("span", {
-        className: "text-sm text-dim"
-      }, (info && info.name) || p.ticker)), React.createElement("div", {
-        className: "row-meta"
-      }, p.shares, " \xD7 ", fmt(p.costBasis, market), pnlPct != null && React.createElement("span", {
-        className: `mono ${pnlPct >= 0 ? 'text-up' : 'text-down'}`
-      }, " \xB7 ", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(2), "%"),
-        React.createElement("button", {
-          className: "btn-sell-inline",
-          onClick: e => { e.stopPropagation(); onSellPosition(p); }
-        }, "Sell"),
-        React.createElement("button", {
-          className: "btn-remove-inline",
-          title: "Remove holding",
-          "aria-label": "Remove holding",
-          onClick: remove
-        }, React.createElement(Icon, { name: "trash", size: 12 })))),
-        React.createElement("div", {
-        className: "row-right"
-      }, React.createElement(PriceBlock, {
-        quote: q
-      }), marketValue != null && React.createElement("div", {
-        className: "text-xs text-dim mt-1 mono"
-      }, fmt(marketValue, market))));
-    })));
+    }, rows.map(p => React.createElement(HoldingRow, {
+      key: p.id,
+      position: p,
+      market: market,
+      quote: prices[priceKey(market, p.ticker)],
+      onOpenDetail: onOpenDetail,
+      onBuyPosition: onBuyPosition,
+      onSellPosition: onSellPosition
+    }))));
   };
   return React.createElement("div", null, React.createElement("div", {
     className: "flex justify-between items-center mb-3 flex-wrap",
@@ -3742,8 +3856,8 @@ function CurrentView(_ref7) {
     onClick: () => setMarketFilter(m)
   }, tabLabel(m), " (", countFor(m), ")"))),
     React.createElement("div", { className: "flex gap-2 items-center" },
-      React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onImportPositions },
-        React.createElement(Icon, { name: "download", size: 13 }), " Import"),
+      onImportPositions ? React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onImportPositions },
+        React.createElement(Icon, { name: "download", size: 13 }), " Import") : null,
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
         React.createElement(Icon, { name: "plus", size: 13 }), " Add"))),
     renderMarket(activeMarket));
@@ -4014,7 +4128,12 @@ function splitLine(line) {
   // Whitespace-separated (2+ spaces) — common in copied PDF tables
   const ws = line.trim().split(/\s{2,}/).map(c => c.trim());
   if (ws.length > 1) return ws;
-  return line.trim().split(/\s+/).map(c => c.trim());
+  // Single-space separated: only treat as columns when it actually looks tabular
+  // (has a numeric token like "AAPL 10 150"). A line of only words is a single
+  // free-text company name ("Anglo American") and must stay intact.
+  const tokens = line.trim().split(/\s+/).map(c => c.trim());
+  const hasNumberToken = tokens.some(t => /\d/.test(t) && /^[\d.,$£R€%+\-]+$/.test(t));
+  return (tokens.length > 1 && hasNumberToken) ? tokens : [line.trim()];
 }
 // CSV splitter that respects double-quoted fields.
 function splitCsvLine(line, delim) {
@@ -4082,8 +4201,39 @@ function rowsToHoldings(rows) {
     if (cols.ticker < 0 && cols.name < 0) { headerIdx = -1; }
   }
   if (headerIdx < 0) {
-    // Positional fallback: assume [ticker, shares, cost, (market)].
-    cols = { ticker: 0, shares: 1, cost: 2, total: -1, price: -1, market: 3, currency: -1, name: -1, date: -1 };
+    // No header row: infer each column's role from the data itself rather than
+    // assuming a fixed order. We classify every column across all rows as a
+    // date, a number, or text, so the four key fields — date, company/ticker,
+    // shares and cost/share — resolve regardless of the order they're pasted in
+    // ("2024-10-01, Apple, 10, 150.25" and "AAPL, 10, 150" both work).
+    const colCount = Math.max(...cleaned.map(r => r.length));
+    const isDateCell = (s) => /\d/.test(s) && (
+      /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(s) ||
+      /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/.test(s) ||
+      /^\d{1,2}\s+[A-Za-z]{3,}\.?,?\s+\d{2,4}$/.test(s) ||
+      /^[A-Za-z]{3,}\.?\s+\d{1,2},?\s+\d{2,4}$/.test(s));
+    const isNumCell = (s) => s !== '' && isFinite(parseDecimal(s)) && /^[\d.,\s$£R€%+\-]+$/.test(s);
+    const tally = Array.from({ length: colCount }, () => ({ date: 0, num: 0, text: 0, filled: 0 }));
+    for (const row of cleaned) {
+      for (let i = 0; i < colCount; i++) {
+        const s = String(row[i] != null ? row[i] : '').trim();
+        if (!s) continue;
+        tally[i].filled++;
+        if (isDateCell(s)) tally[i].date++;
+        else if (isNumCell(s)) tally[i].num++;
+        else tally[i].text++;
+      }
+    }
+    const roles = tally.map(t => t.filled === 0 ? 'empty'
+      : (t.date >= t.num && t.date >= t.text ? 'date' : (t.num >= t.text ? 'num' : 'text')));
+    const numCols = roles.map((r, i) => r === 'num' ? i : -1).filter(i => i >= 0);
+    cols = {
+      ticker: roles.indexOf('text'),
+      shares: numCols[0] != null ? numCols[0] : -1,
+      cost:   numCols[1] != null ? numCols[1] : -1,
+      total: -1, price: -1, market: -1, currency: -1, name: -1,
+      date: roles.indexOf('date'),
+    };
     dataRows = cleaned;
   }
   const get = (row, i) => (i >= 0 && i < row.length) ? String(row[i] != null ? row[i] : '').trim() : '';
@@ -4126,10 +4276,20 @@ function rowsToHoldings(rows) {
     }
     if (!query) continue;
     const marketCol = cols.market >= 0 ? get(row, cols.market) : '';
-    const currencyCol = cols.currency >= 0 ? get(row, cols.currency) : '';
+    // Only a deliberate per-row signal — a ticker exchange suffix (".L"/".DE") or
+    // an explicit exchange/market column — may override the market the user chose
+    // for the whole import. A currency column alone is intentionally ignored:
+    // European brokers quote US shares in EUR, which used to mis-book them onto
+    // Frankfurt even when the user explicitly selected US.
     let marketHint = null;
     if (suffixMarket) marketHint = suffixMarket;
-    else if (marketCol || currencyCol) marketHint = inferMarket(currencyCol, marketCol, null);
+    else if (marketCol) {
+      const m = inferMarket(null, marketCol, null);
+      // inferMarket falls back to 'US' for unrecognised text, so only trust a 'US'
+      // result when the column actually names a US venue; otherwise leave it to the
+      // chosen market.
+      if (m && (m !== 'US' || /\b(US|USA|NYSE|NASDAQ|NMS|NYQ|AMEX|ARCA|BATS)\b/i.test(marketCol))) marketHint = m;
+    }
     let purchaseDate = '';
     if (cols.date >= 0) {
       const d = parseImportDate(get(row, cols.date));
@@ -4511,11 +4671,28 @@ function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnt
       .map(x => x.s);
   }, [suggestions, market]);
 
+  // Override hook: when the typed text is a bare symbol (optionally with an
+  // exchange suffix like ".L"/".JO") that isn't already an exact suggestion, offer
+  // to use it verbatim. This is what lets the user force a match when live search
+  // can't surface the listing — they type the symbol and commit it directly.
+  const exactSym = useMemo(() => {
+    const raw = String(query || '').trim();
+    if (!raw || !looksLikeTickerToken(raw)) return null;
+    const sp = splitTickerMarket(raw);
+    const tk = (sp.ticker || raw).toUpperCase();
+    const mk = sp.market || market || 'US';
+    if (ordered.some(s => s.ticker.toUpperCase() === tk && sameUnderlyingExchange(s.market, mk))) return null;
+    return { ticker: tk, market: mk, name: null };
+  }, [query, market, ordered]);
+  const commitExact = () => { if (exactSym) selectSuggestion(exactSym); };
+  const maxIdx = ordered.length - 1 + (exactSym ? 1 : 0);
+
   const handleKeyDown = (e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, ordered.length - 1)); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActiveIdx(i => Math.min(i + 1, maxIdx)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, -1)); }
     else if (e.key === 'Enter') {
-      if (open && activeIdx >= 0) { e.preventDefault(); selectSuggestion(ordered[activeIdx]); }
+      if (open && activeIdx >= 0 && activeIdx < ordered.length) { e.preventDefault(); selectSuggestion(ordered[activeIdx]); }
+      else if (exactSym) { e.preventDefault(); commitExact(); }
       else if (onEnter) { setOpen(false); onEnter(); }
     } else if (e.key === 'Escape') { setOpen(false); }
   };
@@ -4541,7 +4718,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnt
       autoComplete: 'off',
       style: { width: '100%' }
     }),
-    open && (ordered.length > 0 || remoteLoading) && React.createElement('div', { className: 'ticker-dropdown' },
+    open && (ordered.length > 0 || remoteLoading || exactSym) && React.createElement('div', { className: 'ticker-dropdown' },
       ordered.map((s, i) =>
         React.createElement('div', {
           key: priceKey(s.market, s.ticker),
@@ -4554,15 +4731,33 @@ function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnt
         )
       ),
       remoteLoading && React.createElement('div', { className: 'ticker-sug-loading' }, 'Searching global exchanges\u2026'),
-      !remoteLoading && suggestions.length > 0 && React.createElement('div', { className: 'ticker-sug-hint' }, 'Don\u2019t see your stock? Type the exact symbol.')
+      // Force-use the typed symbol \u2014 the actual override entry point.
+      exactSym && React.createElement('div', {
+        className: 'ticker-suggestion ticker-suggestion-exact' + (activeIdx === ordered.length ? ' active' : ''),
+        onMouseDown: (e) => { e.preventDefault(); commitExact(); }
+      },
+        React.createElement('span', { className: 'tkr' }, exactSym.ticker),
+        React.createElement('span', { className: 'ticker-sug-name' }, 'Use this exact symbol'),
+        React.createElement('span', { className: 'market-badge' }, exactSym.market)
+      ),
+      !remoteLoading && !exactSym && suggestions.length > 0 && React.createElement('div', { className: 'ticker-sug-hint' }, 'Don\u2019t see your stock? Type the exact symbol.')
     )
   );
 }
 
+// An ISIN (e.g. "IE00B4L5Y983") or a bare code is not a human name — some ETF
+// listings report one as the quote shortName, which reads as gibberish in the UI.
+function looksLikeInstrumentCode(s) {
+  const t = String(s || '').replace(/\s+/g, '');
+  if (!t) return true;
+  if (/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(t)) return true;       // ISIN
+  if (/^[A-Z0-9]{1,6}$/.test(t) && !/[a-z]/.test(s)) return true; // bare ticker-like code
+  return false;
+}
 function resolveTickerName(ticker, market, q) {
   if (q) {
     const yahooName = q.shortName || q.longName;
-    if (yahooName && yahooName !== ticker) {
+    if (yahooName && yahooName !== ticker && !looksLikeInstrumentCode(yahooName)) {
       cacheName(market, ticker, yahooName);
       return yahooName;
     }
@@ -5061,6 +5256,9 @@ function WatchlistView(_ref8) {
              React.createElement("span", { className: "ath-badge-val" }, atAth ? 'ATH' : pct.toFixed(1) + '%'));
         }
         const ac = alerts.filter(a => a.ticker === w.ticker && a.market === w.market).length;
+        const hasDay = q && typeof q.changePct === 'number' && isFinite(q.changePct);
+        const dayUp = hasDay && q.changePct >= 0;
+        const dayAbs = q && typeof q.change === 'number' && isFinite(q.change) ? q.change : null;
         return React.createElement("div", {
           key: w.id,
           ref: setCardRef(w.id),
@@ -5087,8 +5285,17 @@ function WatchlistView(_ref8) {
                 React.createElement("div", { className: "tkr-name" }, displayName)),
               React.createElement("div", { className: "flex items-center gap-2" },
                 athBadge)),
-            React.createElement("div", { style: { position: 'relative' } },
-              React.createElement(PriceBlock, { quote: q, size: "lg", showDailyRow: true }),
+            React.createElement("div", { className: "watch-body" },
+              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true }),
+              // Day's move — centred in the middle of the card so it stays visible
+              // at every width (it used to be hidden on narrow / PWA screens).
+              hasDay
+                ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
+                    React.createElement("div", { className: "watch-today-pct mono" },
+                      (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'),
+                    dayAbs != null ? React.createElement("div", { className: "watch-today-amt mono" },
+                      (dayUp ? '+' : '−') + fmt(dayAbs, w.market) + ' today') : null)
+                : React.createElement("div", { className: "watch-today" }),
               React.createElement("button", {
                 className: "card-alert-bell",
                 "data-no-drag": true,
@@ -5764,7 +5971,7 @@ function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDet
             : React.createElement("div", { className: "text-dim text-sm" }, "No live data for this sector yet.")))));
 }
 function HeatmapView(_ref8b) {
-  let { positions, prices, onOpenDetail } = _ref8b;
+  let { positions, prices, onOpenDetail, displayCurrency, fxRates } = _ref8b;
   const exchanges = DATA.HEATMAPS;
   const [mode, setMode] = usePersistedState('pb.heatmap.mode.v1', 'market');
   const [selectedId, setSelectedId] = usePersistedState('pb.heatmap.exchange.v1', exchanges[0].id);
@@ -5845,15 +6052,29 @@ function HeatmapView(_ref8b) {
   }, [positions]);
   const portfolioRows = useMemo(() => {
     if (mode !== 'portfolio') return [];
+    const rates = fxRates?.rates || null;
     return positions.filter(p => portfolioFilter === 'all' || p.market === portfolioFilter).map(p => {
       const q = prices[priceKey(p.market, p.ticker)];
-      if (!q || q.changePct == null) return null;
-      const sec = DATA.findSector(p.ticker, p.market);
-      const positionValue = p.shares * q.price;
-      if (positionValue <= 0) return null;
-      return { ticker: p.ticker, market: p.market, sector: sec.sector, industry: sec.industry, value: positionValue, price: q.price, changePct: q.changePct };
+      // Size every holding by its market value in the display currency, so US,
+      // JSE and TFSA positions are comparable in one treemap (the raw native
+      // price would let a rand-quoted position dwarf a dollar one). Falls back
+      // to cost basis when no live quote has arrived yet, so the holding still
+      // appears — coloured grey, exactly like a market-heatmap constituent whose
+      // quote is still streaming in — instead of vanishing from the grid.
+      const native = marketCurrency(p.market);
+      const unit = q && q.price > 0 ? q.price : p.costBasis;
+      const value = convertCcy(p.shares * unit, native, displayCurrency, rates);
+      if (value == null || value <= 0) return null;
+      const changePct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+      let sec = DATA.findSector(p.ticker, p.market);
+      if (sec.sector === 'Other') {
+        const nm = p.name || resolveTickerName(p.ticker, p.market, q) || '';
+        const byName = DATA.classifySectorByName(nm);
+        if (byName !== 'Other') sec = { sector: byName, industry: byName };
+      }
+      return { ticker: p.ticker, market: p.market, sector: sec.sector, industry: sec.industry, value, price: q ? q.price : null, changePct };
     }).filter(Boolean);
-  }, [mode, positions, prices, portfolioFilter]);
+  }, [mode, positions, prices, portfolioFilter, displayCurrency, fxRates]);
   const activeRows = mode === 'market' ? (cached ? cached.rows : []) : portfolioRows;
   const stats = useMemo(() => {
     if (!activeRows || activeRows.length === 0) return null;
@@ -6068,7 +6289,7 @@ function HedgesView(_ref0) {
     className: "bullet-list"
   }, React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "TLT"), " \u2014 17-yr duration too sensitive to Fed error. IEF covers it with less drawdown risk.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "VIXY / UVXY"), " \u2014 constant contango decay. Structural money-loser for retail holders.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "SH / SPXS"), " \u2014 inverse equity erodes via compounding. Cash beats inverse ETFs over any holding period >1 month.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "GDXJ"), " \u2014 too correlated with tech beta. IAU alone delivers the gold exposure cleanly."))))));
 }
-function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onSellPosition }) {
+function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPosition, onSellPosition }) {
   const TFSA_ANNUAL_LIMIT = 46000;
   const TFSA_LIFETIME_LIMIT = 500000;
   const totalValue = positions.reduce((s, p) => {
@@ -6103,36 +6324,17 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onSellPositi
       ? React.createElement("div", { className: "empty" },
           React.createElement(Icon, { name: "briefcase", size: 40 }),
           React.createElement("h3", null, "No TFSA holdings"),
-          React.createElement("p", null, "Add JSE-listed ETFs and equities to your Tax-Free Savings Account."))
+          React.createElement("p", null, "Add JSE-listed ETFs and equities for your Tax-Free Savings Account (or use Import on the Holdings tab)."))
       : React.createElement("div", { className: "row-list" },
-          positions.map(p => {
-            const q = prices['TFSA:' + p.ticker];
-            const info = DATA.findInfo(p.ticker, 'TFSA');
-            const mv = q ? p.shares * q.price : null;
-            const cost = p.shares * p.costBasis;
-            const pp = mv != null && cost > 0 ? (mv - cost) / cost * 100 : null;
-            return React.createElement("button", {
-              key: p.id, className: "row",
-              onClick: () => onOpenDetail(p.ticker, 'TFSA')
-            }, React.createElement("div", { className: "row-main" },
-              React.createElement("div", { className: "row-head" },
-                React.createElement("span", { className: "tkr" }, p.ticker),
-                React.createElement("span", { className: "text-sm text-dim" }, info.name || p.ticker)),
-              React.createElement("div", { className: "row-meta" },
-                p.shares, " \xD7 ", fmt(p.costBasis, 'TFSA'),
-                pp != null && React.createElement("span", {
-                  className: `mono ${pp >= 0 ? 'text-up' : 'text-down'}`
-                }, " \xB7 ", pp >= 0 ? '+' : '', pp.toFixed(2), "%"),
-                React.createElement("button", {
-                  className: "btn-sell-inline",
-                  onClick: e => { e.stopPropagation(); onSellPosition(p); }
-                }, "Sell"))),
-              React.createElement("div", { className: "row-right" },
-                React.createElement(PriceBlock, { quote: q }),
-                mv != null && React.createElement("div", {
-                  className: "text-xs text-dim mt-1 mono"
-                }, fmt(mv, 'TFSA'))));
-          })),
+          positions.map(p => React.createElement(HoldingRow, {
+            key: p.id,
+            position: p,
+            market: 'TFSA',
+            quote: prices['TFSA:' + p.ticker],
+            onOpenDetail: onOpenDetail,
+            onBuyPosition: onBuyPosition,
+            onSellPosition: onSellPosition
+          }))),
     React.createElement("div", { className: "card mt-4" },
       React.createElement("div", { className: "eyebrow", style: { marginBottom: 6 } }, "TFSA Rules"),
       React.createElement("ul", { className: "bullet-list" },
@@ -7321,7 +7523,8 @@ function ContributionImportModal({ onClose, onImport }) {
         React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))),
       React.createElement("div", { className: "modal-body" }, stage === 'input' ? inputStage : reviewStage)));
 }
-function ImportModal({ onClose, onImport }) {
+function ImportModal({ onClose, onImport, defaultMarket }) {
+  const todayISO = new Date().toISOString().slice(0, 10);
   const [stage, setStage] = useState('input'); // 'input' | 'review'
   const [rows, setRows] = useState([]);
   const [parsing, setParsing] = useState(false);
@@ -7332,7 +7535,10 @@ function ImportModal({ onClose, onImport }) {
   const [importing, setImporting] = useState(false);
   // The market the user expects these holdings to live on. It biases every
   // name→listing match (e.g. "Anglo American" → AGL.JO on JSE vs AAL.L on LSE).
-  const [chosenMarket, setChosenMarket] = useState('US');
+  const [chosenMarket, setChosenMarket] = useState(defaultMarket || 'US');
+  // Sector the user picks for a row the classifier can't place ("Other"). Saved
+  // to the persistent sector cache on import so it's remembered next time.
+  const [sectorByRow, setSectorByRow] = useState({});
   const fileRef = useRef(null);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
@@ -7343,6 +7549,10 @@ function ImportModal({ onClose, onImport }) {
     query: h.query || '',
     tickerHint: h.tickerHint || null,
     market: h.marketHint || market,
+    // The import row explicitly named its market (a ticker exchange suffix or an
+    // exchange/market column) — so the matcher must stay on it and never drift to
+    // a foreign cross-listing.
+    marketExplicit: !!h.marketHint,
     ticker: '',                 // resolved live symbol
     resolvedName: h.nameHint || h.query || '',
     candidates: [],
@@ -7407,7 +7617,15 @@ function ImportModal({ onClose, onImport }) {
     const symHint = (r.tickerHint && looksLikeTickerToken(r.tickerHint)) ? String(r.tickerHint).toUpperCase()
                   : (looksLikeTickerToken(r.query) ? String(r.query).toUpperCase() : null);
     const onMarket = ranked.filter(c => c.market === market);
-    const offMarketRanked = ranked.filter(c => c.market !== market);
+    let offMarketRanked = ranked.filter(c => c.market !== market);
+    // Never auto-book a US-designated holding onto its EUR cross-listing — European
+    // brokers quote US shares in EUR, which used to silently land them on Frankfurt
+    // (priced in euros) under the user's US import. The EUR listings stay in
+    // `candidates` so they can still be chosen by hand if that's genuinely meant.
+    if (market === 'US') offMarketRanked = offMarketRanked.filter(c => !['FRA', 'PAR', 'AMS'].includes(c.market));
+    // When the row explicitly named its market, don't drift off it at all — a miss
+    // becomes "not matched" (overridable) rather than a wrong foreign listing.
+    if (r.marketExplicit) offMarketRanked = [];
     const attempts = [];
     const pushAttempt = (c) => { if (c && c.ticker && !attempts.some(a => a.ticker === c.ticker && a.market === c.market)) attempts.push(c); };
     if (onMarket[0]) pushAttempt(onMarket[0]);                                   // best name match on the chosen market
@@ -7422,7 +7640,14 @@ function ImportModal({ onClose, onImport }) {
     // Confidence = how well the matched listing's name fits the query. Low
     // confidence (or a pick that landed off the chosen market) is surfaced so
     // the user can sanity-check or pick an alternative.
-    const resolvedName = q && pick ? (pick.name || resolveTickerName(pick.ticker, pick.market, q) || r.query) : r.resolvedName;
+    // Name priority: the candidate's own name → the search result for that exact
+    // listing (clean "Vanguard S&P 500 ETF"-style names) → the live quote's name →
+    // the query. The middle step matters for ticker/symbol imports where `pick` is
+    // a bare-symbol attempt with no name, so ETFs don't show a cryptic quote name.
+    const matchedCand = pick ? ranked.find(c => c.ticker === pick.ticker && c.market === pick.market) : null;
+    const resolvedName = q && pick
+      ? (pick.name || (matchedCand && matchedCand.name) || resolveTickerName(pick.ticker, pick.market, q) || r.query)
+      : r.resolvedName;
     const conf = q && pick ? (pick.nameScore != null ? pick.nameScore : companyNameScore(r.query, resolvedName)) : 0;
     const offMarket = !!(q && pick && pick.market !== market);
     return {
@@ -7506,6 +7731,7 @@ function ImportModal({ onClose, onImport }) {
         costBasis: parseDecimal(r.costBasis),
         purchaseDate: r.purchaseDate || null,
         notes: '',
+        sector: sectorByRow[r.id] || null,
       })));
       onClose();
     } finally {
@@ -7541,10 +7767,13 @@ function ImportModal({ onClose, onImport }) {
         onChange: e => handleFiles(e.target.files)
       })
     ),
-    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste company names")),
+    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste your holdings")),
+    React.createElement("div", { className: "form-help", style: { marginBottom: 8 } },
+      "One holding per line: ", React.createElement("strong", null, "date, company or ticker, shares, cost per share"),
+      ". Order is flexible, and a name on its own works too — you can fill in the rest in the next step."),
     React.createElement("textarea", {
       className: "import-paste",
-      placeholder: "One company per line — names are fine, we'll find the live listing:\n\nBroadcom\nNaspers\nApple, 10, 150.25\nAnglo American, 100, 480",
+      placeholder: "2024-10-01, Apple, 10, 150.25\n2025-02-14, Naspers, 5, 3200\nAnglo American, 100, 480\nBroadcom",
       value: pasteText,
       onChange: e => setPasteText(e.target.value),
       rows: 6
@@ -7570,8 +7799,15 @@ function ImportModal({ onClose, onImport }) {
   const renderCard = (r) => {
     const sharesBad = !(isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0);
     const costBad = !(isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
+    // Holding amount = shares × cost/share — shown so the user can confirm the
+    // app derived the position size correctly from the four imported fields.
+    const amt = (!sharesBad && !costBad) ? parseDecimal(r.shares) * parseDecimal(r.costBasis) : null;
     const alts = (r.candidates || []).filter(c => !(c.ticker === r.ticker && c.market === r.market)).slice(0, 6);
     const lowConf = r.status === 'ok' && r.lowConfidence;
+    // When a matched holding can't be auto-classified, ask the user which sector
+    // it belongs to. Their answer is learned (persisted) so the allocation chart
+    // stops dumping it into "Other".
+    const needsSector = r.status === 'ok' && r.ticker && DATA.findSector(r.ticker, r.market).sector === 'Other';
     return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") + (lowConf ? " is-low" : "") },
       React.createElement("div", { className: "import-card-top" },
         React.createElement("label", { className: "import-check" },
@@ -7626,7 +7862,9 @@ function ImportModal({ onClose, onImport }) {
       // Manual matcher: search every live exchange by name or symbol and pick the
       // exact listing when auto-matching missed or the user wants a different one.
       r.manualSearch ? React.createElement("div", { className: "import-manual-search" },
-        React.createElement("div", { className: "import-manual-hint" }, "Search by company name or symbol, then tap the right listing:"),
+        React.createElement("div", { className: "import-manual-hint" },
+          "Search by company name, or type the exact symbol (e.g. ", React.createElement("code", null, "AAPL"),
+          " or ", React.createElement("code", null, "AGL.JO"), ") and pick “Use this exact symbol” to force the match. Set the market with the dropdown above first if needed."),
         React.createElement(TickerSearch, {
           value: r.query,
           market: r.market,
@@ -7635,6 +7873,13 @@ function ImportModal({ onClose, onImport }) {
           onSelect: (sel) => { updateRow(r.id, { manualSearch: false }); chooseCandidate(r.id, { ticker: sel.ticker, market: sel.market, name: sel.name }); }
         })
       ) : null,
+      React.createElement("div", { className: "import-qty-field import-date-field" },
+        React.createElement("span", { className: "import-qty-label" }, "Date"),
+        React.createElement("input", {
+          className: "import-input", type: "date", max: todayISO,
+          value: r.purchaseDate || '',
+          onChange: e => updateRow(r.id, { purchaseDate: e.target.value })
+        })),
       React.createElement("div", { className: "import-card-qty" },
         React.createElement("div", { className: "import-qty-field" },
           React.createElement("span", { className: "import-qty-label" }, "Shares"),
@@ -7649,7 +7894,22 @@ function ImportModal({ onClose, onImport }) {
             className: "import-input" + (costBad ? " bad" : ""),
             inputMode: "decimal", value: r.costBasis, placeholder: "0.00",
             onChange: e => updateRow(r.id, { costBasis: sanitizeDecimalInput(e.target.value) })
-          })))
+          }))),
+      amt != null ? React.createElement("div", { className: "import-amount-line" },
+        React.createElement("span", null, "Holding amount"),
+        React.createElement("span", { className: "mono" }, fmt(amt, r.market))) : null,
+      needsSector ? React.createElement("div", { className: "import-sector-row" },
+        React.createElement("span", { className: "import-sector-q" },
+          React.createElement(Icon, { name: "alert", size: 12 }),
+          " Which sector? We'll remember it."),
+        React.createElement("select", {
+          className: "import-input import-select import-sector-select",
+          value: sectorByRow[r.id] || '',
+          onChange: e => setSectorByRow(prev => ({ ...prev, [r.id]: e.target.value }))
+        },
+          React.createElement("option", { value: "" }, "Choose sector…"),
+          (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s)))
+      ) : null
     );
   };
 
@@ -7693,7 +7953,7 @@ function ImportModal({ onClose, onImport }) {
       React.createElement("div", { className: "modal-handle" }),
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,
-          React.createElement("div", { className: "modal-title" }, "Import holdings"),
+          React.createElement("div", { className: "modal-title" }, defaultMarket === 'TFSA' ? "Import TFSA holdings" : "Import holdings"),
           React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "Match company names to live listings" : "Review matches before importing")
         ),
         React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))
@@ -7941,6 +8201,93 @@ function SellModal({ position, prices, onClose, onSell }) {
             className: "btn btn-danger", onClick: submit, disabled: !valid
           }, "Record sale")))));
 }
+// Buy more of an existing holding. Adds shares at a new cost/share and lets the
+// shared addPosition merge + re-average the position. Previews the resulting
+// share count and blended average cost before committing.
+function BuyModal({ position, prices, onClose, onBuy }) {
+  const [shares, setShares] = useState('');
+  const [buyPrice, setBuyPrice] = useState('');
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const [buyDate, setBuyDate] = useState(todayISO);
+  const [notes, setNotes] = useState('');
+  const panelRef = useRef(null);
+  useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
+  const q = prices[priceKey(position.market, position.ticker)];
+  useEffect(() => {
+    if (q && !buyPrice) setBuyPrice(q.price.toFixed(2));
+  }, [q]);
+  const ccy = (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
+  const numShares = parseDecimal(shares);
+  const numPrice = parseDecimal(buyPrice);
+  const dateOk = !buyDate || buyDate <= todayISO;
+  const valid = isFinite(numShares) && numShares > 0 && isFinite(numPrice) && numPrice > 0 && dateOk;
+  const addAmount = valid ? numShares * numPrice : null;
+  const newTotalShares = valid ? position.shares + numShares : position.shares;
+  const newAvg = valid ? (position.shares * position.costBasis + numShares * numPrice) / newTotalShares : null;
+  const submit = () => {
+    if (!valid) return;
+    onBuy(position.ticker, position.market, numShares, numPrice, buyDate, notes);
+    onClose();
+  };
+  return React.createElement("div", { className: "modal" },
+    React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 480 } },
+      React.createElement("div", { className: "modal-handle" }),
+      React.createElement("div", { className: "modal-header" },
+        React.createElement("div", null,
+          React.createElement("div", { className: "modal-title" }, "Buy more ", position.ticker),
+          React.createElement("div", { className: "modal-subtitle" },
+            position.shares, " share", position.shares === 1 ? "" : "s", " held \xB7 avg ", ccy, position.costBasis.toFixed(2))),
+        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
+          React.createElement(Icon, { name: "x" }))),
+      React.createElement("div", { className: "modal-body" },
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Shares to buy"),
+          React.createElement("input", {
+            type: "text", inputMode: "decimal",
+            autoComplete: "off", autoCorrect: "off", spellCheck: false,
+            placeholder: "10",
+            value: shares, onChange: e => setShares(sanitizeDecimalInput(e.target.value))
+          })),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Cost per share"),
+          React.createElement("div", { className: "input-prefix-wrap" },
+            React.createElement("span", { className: "prefix" }, ccy),
+            React.createElement("input", {
+              type: "text", inputMode: "decimal",
+              autoComplete: "off", autoCorrect: "off", spellCheck: false,
+              placeholder: q ? q.price.toFixed(2) : '0.00',
+              value: buyPrice, onChange: e => setBuyPrice(sanitizeDecimalInput(e.target.value))
+            }))),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Purchase date"),
+          React.createElement("input", {
+            type: "date", value: buyDate, max: todayISO,
+            onChange: e => setBuyDate(e.target.value)
+          })),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Notes (optional)"),
+          React.createElement("input", {
+            type: "text", maxLength: "200", placeholder: "e.g. Added on the dip",
+            value: notes, onChange: e => setNotes(e.target.value)
+          })),
+        addAmount != null && React.createElement("div", {
+          className: "card buy-preview", style: { padding: '10px 14px' }
+        },
+          React.createElement("div", { className: "buy-preview-row" },
+            React.createElement("span", { className: "text-xs text-dim" }, "Amount"),
+            React.createElement("span", { className: "mono font-semibold" }, ccy + addAmount.toFixed(2))),
+          React.createElement("div", { className: "buy-preview-row" },
+            React.createElement("span", { className: "text-xs text-dim" }, "New position"),
+            React.createElement("span", { className: "mono font-semibold" },
+              newTotalShares, " sh \xB7 avg ", ccy, newAvg.toFixed(2)))),
+        React.createElement("div", { className: "form-actions" },
+          React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
+          React.createElement("button", {
+            className: "btn btn-primary", onClick: submit, disabled: !valid
+          }, "Add shares")))));
+}
 function computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency }) {
   const rates = fxRates?.rates || null;
   let combinedValue = 0;
@@ -8057,10 +8404,11 @@ function FxSummary({ positions, contributions, prices, fxRates, displayCurrency,
 }
 
 function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
-                        positions, contributions, prices, onExport, onImport,
+                        positions, contributions, prices, onExport, onImport, onDeleteHoldings,
                         ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
+  const [selectedDel, setSelectedDel] = useState(() => new Set());
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
@@ -8078,8 +8426,39 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
     { key: 'display', label: 'Display', icon: 'globe' },
     { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
+    { key: 'holdings', label: 'Holdings', icon: 'briefcase' },
     { key: 'data', label: 'Data', icon: 'download' },
   ];
+  // Group positions by market for the delete tool, ordered like the Holdings tabs.
+  const marketOrder = MARKETS.map(m => m.value);
+  const delGroups = Array.from(new Set(positions.map(p => p.market)))
+    .sort((a, b) => marketOrder.indexOf(a) - marketOrder.indexOf(b))
+    .map(mkt => ({
+      market: mkt,
+      label: MARKET_LABELS[mkt] || mkt,
+      rows: positions.filter(p => p.market === mkt),
+    }));
+  const toggleDel = (id) => setSelectedDel(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const toggleDelMarket = (rows) => setSelectedDel(prev => {
+    const next = new Set(prev);
+    const allSel = rows.every(r => next.has(r.id));
+    rows.forEach(r => allSel ? next.delete(r.id) : next.add(r.id));
+    return next;
+  });
+  const doDeleteHoldings = () => {
+    const ids = Array.from(selectedDel);
+    if (ids.length === 0 || !onDeleteHoldings) return;
+    const names = positions.filter(p => selectedDel.has(p.id)).map(p => p.ticker);
+    const preview = names.slice(0, 8).join(', ') + (names.length > 8 ? `, +${names.length - 8} more` : '');
+    if (window.confirm(`Permanently delete ${ids.length} holding${ids.length === 1 ? '' : 's'}?\n\n${preview}\n\nThis removes the position(s) without recording a sale and can't be undone.`)) {
+      onDeleteHoldings(ids);
+      setSelectedDel(new Set());
+    }
+  };
   return React.createElement("div", { className: "modal" },
     React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
     React.createElement("div", { className: "modal-panel settings-panel", ref: panelRef },
@@ -8189,6 +8568,48 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             React.createElement(Icon, { name: "refresh", size: 24 }),
             React.createElement("p", null, "Rates not loaded — tap Refresh now.")
           )
+        ),
+        activeSection === 'holdings' && React.createElement("div", { className: "settings-section" },
+          positions.length === 0
+            ? React.createElement("div", { className: "settings-empty" },
+                React.createElement(Icon, { name: "briefcase", size: 24 }),
+                React.createElement("p", null, "No holdings to manage yet."))
+            : React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "settings-row-desc mb-3" },
+                  "Select holdings to permanently delete. This removes positions without recording a sale — use Sell on the Holdings screen if you actually sold one."),
+                delGroups.map(g => React.createElement("div", { key: g.market, className: "del-group" },
+                  React.createElement("label", { className: "del-group-head" },
+                    React.createElement("input", {
+                      type: "checkbox",
+                      checked: g.rows.every(r => selectedDel.has(r.id)),
+                      onChange: () => toggleDelMarket(g.rows)
+                    }),
+                    React.createElement("span", { className: "del-group-title" }, g.label),
+                    React.createElement("span", { className: "del-group-count" }, g.rows.length)),
+                  React.createElement("div", { className: "del-rows" },
+                    g.rows.map(p => {
+                      const info = DATA.findInfo(p.ticker, p.market);
+                      const nm = p.name || (info && info.name) || p.ticker;
+                      return React.createElement("label", {
+                        key: p.id, className: "del-row" + (selectedDel.has(p.id) ? " sel" : "")
+                      },
+                        React.createElement("input", { type: "checkbox", checked: selectedDel.has(p.id), onChange: () => toggleDel(p.id) }),
+                        React.createElement("span", { className: "del-row-tkr" }, p.ticker),
+                        React.createElement("span", { className: "del-row-name" }, nm && nm !== p.ticker ? nm : ''),
+                        React.createElement("span", { className: "del-row-qty" }, p.shares, " sh"));
+                    })))),
+                React.createElement("div", { className: "del-actions" },
+                  React.createElement("button", {
+                    className: "btn btn-ghost btn-sm",
+                    disabled: selectedDel.size === 0,
+                    onClick: () => setSelectedDel(new Set())
+                  }, "Clear"),
+                  React.createElement("button", {
+                    className: "btn btn-danger btn-sm",
+                    disabled: selectedDel.size === 0,
+                    onClick: doDeleteHoldings
+                  }, React.createElement(Icon, { name: "trash", size: 13 }), " Delete", selectedDel.size > 0 ? " (" + selectedDel.size + ")" : " selected"))
+              )
         ),
         activeSection === 'data' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-data-row" },
