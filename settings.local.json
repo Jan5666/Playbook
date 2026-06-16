@@ -33,7 +33,22 @@
       "Bash(curl -s -I --max-time 15 \"https://stockanalysis.com/api/symbol/s/MU/overview\")",
       "Bash(curl -s --max-time 15 \"https://stockanalysis.com/api/symbol/s/JSE-NPN/overview\")",
       "Bash(curl -s --max-time 15 \"https://api.stockanalysis.com/api/screener/s/f?m=marketCap&c=s,n,earningsDate&s=marketCap-desc&i=stocks\")",
-      "Bash(grep -n \"useState, useEffect\\\\|const { use\\\\|useMemo\\\\|window.React\\\\|= React;\" app.js)"
+      "Bash(grep -n \"useState, useEffect\\\\|const { use\\\\|useMemo\\\\|window.React\\\\|= React;\" app.js)",
+      "Bash(curl -s -m 30 -o react.js \"https://unpkg.com/react@18.3.1/umd/react.development.js\")",
+      "Bash(curl -s -m 30 -o react-dom.js \"https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --window-size=390,844 --virtual-time-budget=5000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/hm-verify.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --hide-scrollbars --user-data-dir=\"C:/tmp/cprof1\" --window-size=390,844 --virtual-time-budget=4000 --run-all-compositor-stages-before-draw --screenshot=\"C:/tmp/hm-mobile.png\" \"file:///C:/tmp/hm-verify.html\")",
+      "Bash(grep -n \"detail-alert-bell\\\\|PriceBlock, { quote: quote, size: \\\\\"xl\\\\\"\\\\|className: \\\\\"modal-body\\\\\"\" app.js)",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprof2\" --window-size=420,900 --virtual-time-budget=4000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/wl-detail-verify.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --hide-scrollbars --user-data-dir=\"C:/tmp/cprof3\" --window-size=420,920 --virtual-time-budget=3000 --run-all-compositor-stages-before-draw --screenshot=\"C:/tmp/wl-detail.png\" \"file:///C:/tmp/wl-detail-shot.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprof4\" --window-size=430,920 --virtual-time-budget=6000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/wl-view-verify.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --hide-scrollbars --user-data-dir=\"C:/tmp/cprof5\" --window-size=390,844 --virtual-time-budget=3000 --run-all-compositor-stages-before-draw --screenshot=\"C:/tmp/wl-view.png\" \"file:///C:/tmp/wl-view-shot.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprof7\" --window-size=390,844 --virtual-time-budget=7000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/app-smoke.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprof8\" --window-size=390,844 --virtual-time-budget=7000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/app-smoke.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprof9\" --window-size=390,844 --virtual-time-budget=7000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/app-smoke.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprofA\" --window-size=390,844 --virtual-time-budget=8000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/app-smoke.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprofB\" --window-size=390,844 --virtual-time-budget=5000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/hm-verify.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --user-data-dir=\"C:/tmp/cprofD\" --window-size=390,844 --virtual-time-budget=8000 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/add-flow.html\")"
     ]
   }
 }

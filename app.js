@@ -1784,6 +1784,11 @@ const Icon = _ref => {
     }), React.createElement("path", {
       d: "m19.07 4.93-1.41 1.41"
     })),
+    search: React.createElement("g", null, React.createElement("circle", {
+      cx: "11", cy: "11", r: "7"
+    }), React.createElement("path", {
+      d: "m21 21-4.35-4.35"
+    })),
     x: React.createElement("g", null, React.createElement("path", {
       d: "M18 6 6 18"
     }), React.createElement("path", {
@@ -2330,6 +2335,11 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
 function usePortfolio(fxRates, toast) {
   const [positions, setPositions] = usePersistedState('pb.positions.v2', []);
   const [watchlist, setWatchlist] = usePersistedState('pb.watchlist.v2', []);
+  // User-defined watchlists. The built-in "Watchlist" list (id 'default') is
+  // always present and implicit — items with listId 'default' or no listId (legacy
+  // entries from before multi-list) belong to it — so this array holds only the
+  // extra lists the user creates. Each watchlist item carries a single listId.
+  const [watchlistGroups, setWatchlistGroups] = usePersistedState('pb.watchlistGroups.v1', []);
   const [alerts, setAlerts] = usePersistedState('pb.alerts.v2', []);
   const [contributions, setContributions] = usePersistedState('pb.contributions.v1', []);
   const [transactions, setTransactions] = usePersistedState('pb.transactions.v1', []);
@@ -2569,10 +2579,19 @@ function usePortfolio(fxRates, toast) {
     setTfsaDeposits(prev => prev.filter(d => d.id !== id));
     toast('Deposit removed');
   };
-  const addWatch = (ticker, market, name) => {
+  const addWatch = (ticker, market, name, listId) => {
     ticker = ticker.toUpperCase();
+    const list = listId || 'default';
     if (watchlist.some(w => w.ticker === ticker && w.market === market)) {
-      toast('Already on watchlist');
+      // Already tracked somewhere — make the add still feel responsive by moving
+      // it into the list the user is adding to (e.g. from the stock card), rather
+      // than silently doing nothing.
+      let moved = false;
+      setWatchlist(prev => prev.map(w => {
+        if (w.ticker === ticker && w.market === market && (w.listId || 'default') !== list) { moved = true; return { ...w, listId: list }; }
+        return w;
+      }));
+      toast(moved ? ('Moved ' + ticker) : 'Already on watchlist');
       return;
     }
     let resolvedName = name;
@@ -2585,11 +2604,34 @@ function usePortfolio(fxRates, toast) {
       ticker,
       market,
       name: resolvedName || null,
+      listId: list,
       addedAt: new Date().toISOString()
     }]);
     toast('Added ' + ticker);
   };
   const removeWatch = id => setWatchlist(prev => prev.filter(w => w.id !== id));
+  // Move a single watch entry into a different list.
+  const moveWatch = (id, listId) => setWatchlist(prev => prev.map(w => w.id === id ? { ...w, listId: listId || 'default' } : w));
+  const addWatchGroup = (name) => {
+    const nm = (name || '').trim();
+    if (!nm) return null;
+    const g = { id: uid(), name: nm, createdAt: new Date().toISOString() };
+    setWatchlistGroups(prev => [...prev, g]);
+    toast('List "' + nm + '" created');
+    return g.id;
+  };
+  const renameWatchGroup = (id, name) => {
+    const nm = (name || '').trim();
+    if (!nm) return;
+    setWatchlistGroups(prev => prev.map(g => g.id === id ? { ...g, name: nm } : g));
+  };
+  const removeWatchGroup = (id) => {
+    if (id === 'default') return;
+    // Keep the stocks — just send them back to the built-in list.
+    setWatchlist(prev => prev.map(w => (w.listId || 'default') === id ? { ...w, listId: 'default' } : w));
+    setWatchlistGroups(prev => prev.filter(g => g.id !== id));
+    toast('List deleted');
+  };
   const addAlert = (ticker, market, direction, targetPrice, note) => {
     const a = {
       id: uid(),
@@ -2610,6 +2652,7 @@ function usePortfolio(fxRates, toast) {
   return {
     positions, setPositions,
     watchlist, setWatchlist,
+    watchlistGroups, setWatchlistGroups,
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
@@ -2618,7 +2661,7 @@ function usePortfolio(fxRates, toast) {
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
     addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit,
-    addWatch, removeWatch,
+    addWatch, removeWatch, moveWatch, addWatchGroup, renameWatchGroup, removeWatchGroup,
     addAlert, removeAlert
   };
 }
@@ -2738,6 +2781,7 @@ function App() {
   const {
     positions, setPositions,
     watchlist, setWatchlist,
+    watchlistGroups, setWatchlistGroups,
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
@@ -2746,7 +2790,7 @@ function App() {
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
     addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit,
-    addWatch, removeWatch,
+    addWatch, removeWatch, moveWatch, addWatchGroup, renameWatchGroup, removeWatchGroup,
     addAlert, removeAlert
   } = usePortfolio(fxRates, toast);
   useEffect(() => {
@@ -2997,6 +3041,7 @@ function App() {
     const data = {
       positions,
       watchlist,
+      watchlistGroups,
       alerts,
       triggered,
       contributions,
@@ -3023,6 +3068,7 @@ function App() {
         const data = JSON.parse(e.target.result);
         if (data.positions) setPositions(data.positions);
         if (data.watchlist) setWatchlist(data.watchlist);
+        if (data.watchlistGroups) setWatchlistGroups(data.watchlistGroups);
         if (data.alerts) setAlerts(data.alerts);
         if (data.triggered) setTriggered(data.triggered);
         if (data.contributions) setContributions(data.contributions);
@@ -3082,11 +3128,16 @@ function App() {
     }),
     watchlist: React.createElement(WatchlistView, {
       watchlist: watchlist,
+      watchlistGroups: watchlistGroups,
       prices: prices,
       alerts: alerts,
       onAdd: addWatch,
       onRemove: removeWatch,
       onReorder: setWatchlist,
+      onMoveWatch: moveWatch,
+      onAddWatchGroup: addWatchGroup,
+      onRenameWatchGroup: renameWatchGroup,
+      onRemoveWatchGroup: removeWatchGroup,
       onOpenDetail: openDetail,
       onAddAlert: addAlert,
       onRemoveAlert: removeAlert,
@@ -3213,12 +3264,18 @@ function App() {
     selected: selected,
     prices: prices,
     positions: positions,
+    watchlist: watchlist,
+    watchlistGroups: watchlistGroups,
     alerts: alerts.filter(a => a.ticker === selected.ticker && a.market === selected.market),
     news: newsByTicker[priceKey(selected.market, selected.ticker)],
     historyByTicker: historyByTicker,
     fundamentals: fundamentalsByTicker[priceKey(selected.market, selected.ticker)],
     fxRates: fxRates,
     onClose: () => setSelected(null),
+    onAddWatch: addWatch,
+    onRemoveWatch: removeWatch,
+    onMoveWatch: moveWatch,
+    onAddWatchGroup: addWatchGroup,
     onAddAlert: addAlert,
     onRemoveAlert: removeAlert,
     onLoadNews: () => loadNews(selected.ticker, selected.market),
@@ -5431,11 +5488,16 @@ function buildSuggestions(watchlist) {
 function WatchlistView(_ref8) {
   let {
     watchlist,
+    watchlistGroups,
     prices,
     alerts,
     onAdd,
     onRemove,
     onReorder,
+    onMoveWatch,
+    onAddWatchGroup,
+    onRenameWatchGroup,
+    onRemoveWatchGroup,
     onOpenDetail,
     onAddAlert,
     onRemoveAlert,
@@ -5443,10 +5505,29 @@ function WatchlistView(_ref8) {
   } = _ref8;
   const [newTicker, setNewTicker] = useState('');
   const [newMarket, setNewMarket] = useState('US');
-  const [verifying, setVerifying] = useState(false);
-  const [verifyError, setVerifyError] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [showSuggestions, setShowSuggestions] = usePersistedState('pb.watchlist.showSuggestions.v1', true);
+  // Multiple named watchlists + per-list filtering. activeList 'all' shows every
+  // tracked stock; 'default' is the built-in list; anything else is a custom list
+  // id. The full-list, unsorted, unfiltered "All" view is the only one where the
+  // long-press drag-reorder runs (it reorders the whole array by index, so it
+  // can't operate on a filtered subset).
+  const groups = watchlistGroups || [];
+  const [activeList, setActiveList] = usePersistedState('pb.watchlist.activeList.v1', 'all');
+  const [search, setSearch] = useState('');
+  const [filterMarket, setFilterMarket] = useState('all');
+  const [sortMode, setSortMode] = useState('manual');
+  const [creatingList, setCreatingList] = useState(false);
+  const [newListName, setNewListName] = useState('');
+  const [managingList, setManagingList] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  // If a stored active list was deleted elsewhere, fall back to All.
+  useEffect(() => {
+    if (activeList !== 'all' && activeList !== 'default' && !groups.some(g => g.id === activeList)) setActiveList('all');
+  }, [activeList, groups]);
+  const listOf = (w) => w.listId || 'default';
+  const reorderEnabled = activeList === 'all' && !search.trim() && filterMarket === 'all' && sortMode === 'manual';
+  const targetListId = activeList === 'all' ? 'default' : activeList;
   // Suggestion chips leave the list the instant they're added (the list is
   // derived from the watchlist), which left users unsure their tap registered.
   // We keep a short-lived "added" snapshot so the tapped chip morphs into a
@@ -5639,12 +5720,17 @@ function WatchlistView(_ref8) {
     }
     if (swipedId && swipedId !== id) closeSwipe(swipedId);
     pressOriginRef.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY };
-    longPressTimerRef.current = setTimeout(() => {
-      longPressTimerRef.current = null;
-      const po = pressOriginRef.current;
-      if (!po || po.id !== id) return;
-      startDrag(id, po.pointerId, po.y);
-    }, 450);
+    // Drag-reorder only in the plain "All" view — a filtered/sorted/specific-list
+    // view renders a subset, which the index-based reorder can't handle. Swipe and
+    // tap stay active regardless.
+    if (reorderEnabled) {
+      longPressTimerRef.current = setTimeout(() => {
+        longPressTimerRef.current = null;
+        const po = pressOriginRef.current;
+        if (!po || po.id !== id) return;
+        startDrag(id, po.pointerId, po.y);
+      }, 450);
+    }
     attachPointerTracking(id, e.pointerId, e.clientX, e.clientY);
   };
 
@@ -5799,71 +5885,158 @@ function WatchlistView(_ref8) {
     setTimeout(() => onRemove(id), 220);
   };
 
-  const submit = async () => {
-    const t = newTicker.trim();
-    if (!t) return;
-    setVerifying(true);
-    setVerifyError('');
-    const q = await fetchQuote(t, newMarket);
-    setVerifying(false);
-    if (!q) {
-      setVerifyError(`"${t}" not found on ${newMarket}. Check the symbol.`);
-      return;
-    }
-    onAdd(t, newMarket, resolveTickerName(t.toUpperCase(), newMarket, q));
-    setNewTicker('');
-    setVerifyError('');
-    setShowAddForm(false);
-  };
   const suggestions = useMemo(() => buildSuggestions(watchlist), [watchlist]);
   const addSuggestion = (s) => {
     const key = priceKey(s.market, s.ticker);
     if (watchlist.some(w => priceKey(w.market, w.ticker) === key)) return;
-    onAdd(s.ticker, s.market, s.name);
+    onAdd(s.ticker, s.market, s.name, targetListId);
     triggerHaptic();
     setJustAdded(prev => prev.some(x => priceKey(x.market, x.ticker) === key) ? prev : [...prev, s]);
     setTimeout(() => setJustAdded(prev => prev.filter(x => priceKey(x.market, x.ticker) !== key)), 1700);
   };
+  const tabLists = [{ id: 'all', name: 'All' }, { id: 'default', name: 'Watchlist' }, ...groups];
+  const isCustomActive = activeList !== 'all' && activeList !== 'default';
+  const listNameById = (id) => (id === 'default' ? 'Watchlist' : ((groups.find(g => g.id === id) || {}).name || 'Watchlist'));
+  const countFor = (id) => id === 'all' ? watchlist.length : watchlist.filter(w => listOf(w) === id).length;
+  const activeCount = activeList === 'all' ? watchlist.length : countFor(activeList);
+  const marketsPresent = useMemo(() => {
+    const set = new Set();
+    watchlist.forEach(w => { if (activeList === 'all' || listOf(w) === activeList) set.add(w.market); });
+    return Array.from(set).sort();
+  }, [watchlist, activeList]);
+  const visible = useMemo(() => {
+    let arr = watchlist.filter(w => activeList === 'all' ? true : listOf(w) === activeList);
+    const s = search.trim().toLowerCase();
+    if (s) arr = arr.filter(w => w.ticker.toLowerCase().includes(s) || (w.name || '').toLowerCase().includes(s));
+    if (filterMarket !== 'all') arr = arr.filter(w => w.market === filterMarket);
+    if (sortMode === 'name') arr = [...arr].sort((a, b) => (prettyName(a.name) || a.ticker).localeCompare(prettyName(b.name) || b.ticker));
+    else if (sortMode === 'recent') arr = [...arr].sort((a, b) => (b.addedAt || '').localeCompare(a.addedAt || ''));
+    else if (sortMode === 'today') arr = [...arr].sort((a, b) => {
+      const qa = prices[priceKey(a.market, a.ticker)], qb = prices[priceKey(b.market, b.ticker)];
+      const ca = qa && typeof qa.changePct === 'number' && isFinite(qa.changePct) ? qa.changePct : -Infinity;
+      const cb = qb && typeof qb.changePct === 'number' && isFinite(qb.changePct) ? qb.changePct : -Infinity;
+      return cb - ca;
+    });
+    return arr;
+  }, [watchlist, activeList, search, filterMarket, sortMode, prices]);
+  // Switching lists clears the in-list filters so you never land on a list that
+  // looks empty because of a stale search / market filter.
+  useEffect(() => { setSearch(''); setFilterMarket('all'); setManagingList(false); }, [activeList]);
+  const createList = () => {
+    const id = onAddWatchGroup && onAddWatchGroup(newListName);
+    if (id) setActiveList(id);
+    setNewListName(''); setCreatingList(false);
+  };
+  const saveRename = () => {
+    if (onRenameWatchGroup && renameValue.trim()) onRenameWatchGroup(activeList, renameValue);
+    setManagingList(false);
+  };
+  const deleteList = () => {
+    if (onRemoveWatchGroup) onRemoveWatchGroup(activeList);
+    setManagingList(false); setActiveList('all');
+  };
   return React.createElement("div", null,
-    React.createElement("div", { className: "flex justify-end mb-4" },
-      React.createElement("button", { className: "btn btn-primary btn-sm", onClick: () => setShowAddForm(true) },
-        React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
+    React.createElement("div", { className: "wl-tabbar" },
+      React.createElement("div", { className: "wl-tabs" },
+        tabLists.map(l => React.createElement("button", {
+          key: l.id,
+          className: "wl-tab" + (activeList === l.id ? " active" : ""),
+          onClick: () => setActiveList(l.id)
+        }, l.name, React.createElement("span", { className: "wl-tab-count" }, countFor(l.id)))),
+        onAddWatchGroup ? React.createElement("button", {
+          key: '__new', className: "wl-tab wl-tab-new",
+          onClick: () => { setCreatingList(true); setManagingList(false); }, "aria-label": "New list"
+        }, React.createElement(Icon, { name: "plus", size: 13 }), " List") : null
+      ),
+      React.createElement("button", { className: "btn btn-primary btn-sm wl-add-btn", onClick: () => setShowAddForm(true) },
+        React.createElement(Icon, { name: "plus", size: 13 }), " Add")
+    ),
+    creatingList ? React.createElement("div", { className: "wl-inline-form mb-4" },
+      React.createElement("input", {
+        className: "wl-inline-input", type: "text", placeholder: "New list name (e.g. Tech, To buy)",
+        value: newListName, maxLength: 28, autoFocus: true,
+        onChange: e => setNewListName(e.target.value),
+        onKeyDown: e => { if (e.key === 'Enter') createList(); if (e.key === 'Escape') { setCreatingList(false); setNewListName(''); } }
+      }),
+      React.createElement("button", { className: "btn btn-primary btn-sm", onClick: createList, disabled: !newListName.trim(), style: { flex: '0 0 auto' } }, "Create"),
+      React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => { setCreatingList(false); setNewListName(''); }, style: { flex: '0 0 auto' } }, "Cancel")
+    ) : null,
+    isCustomActive ? React.createElement("div", { className: "wl-manage mb-4" },
+      managingList
+        ? React.createElement(React.Fragment, null,
+            React.createElement("input", {
+              className: "wl-inline-input", type: "text", value: renameValue, maxLength: 28, autoFocus: true, placeholder: "List name",
+              onChange: e => setRenameValue(e.target.value),
+              onKeyDown: e => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setManagingList(false); }
+            }),
+            React.createElement("button", { className: "btn btn-primary btn-sm", onClick: saveRename, disabled: !renameValue.trim(), style: { flex: '0 0 auto' } }, "Save"),
+            React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => setManagingList(false), style: { flex: '0 0 auto' } }, "Cancel"))
+        : React.createElement(React.Fragment, null,
+            React.createElement("span", { className: "wl-manage-label" }, React.createElement(Icon, { name: "list", size: 12 }), " ", listNameById(activeList), " \xB7 ", activeCount, activeCount === 1 ? " stock" : " stocks"),
+            React.createElement("div", { className: "wl-manage-actions" },
+              React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: () => { setRenameValue(listNameById(activeList)); setManagingList(true); } }, React.createElement(Icon, { name: "edit", size: 12 }), " Rename"),
+              React.createElement("button", { className: "btn btn-ghost btn-xs wl-danger", onClick: deleteList }, React.createElement(Icon, { name: "trash", size: 12 }), " Delete")))
+    ) : null,
+    activeCount > 0 ? React.createElement("div", { className: "wl-filterbar mb-3" },
+      React.createElement("div", { className: "wl-search" },
+        React.createElement(Icon, { name: "search", size: 14, className: "wl-search-icon" }),
+        React.createElement("input", {
+          className: "wl-search-input", type: "text", placeholder: "Filter by ticker or name",
+          value: search, onChange: e => setSearch(e.target.value),
+          autoComplete: "off", autoCorrect: "off", spellCheck: false
+        }),
+        search ? React.createElement("button", { className: "wl-search-clear", onClick: () => setSearch(''), "aria-label": "Clear filter" }, React.createElement(Icon, { name: "x", size: 13 })) : null),
+      React.createElement("select", {
+        className: "wl-sort", value: sortMode, onChange: e => setSortMode(e.target.value), "aria-label": "Sort watchlist"
+      },
+        React.createElement("option", { value: "manual" }, reorderEnabled ? "Manual order" : "Default order"),
+        React.createElement("option", { value: "today" }, "Today's move"),
+        React.createElement("option", { value: "name" }, "Name A–Z"),
+        React.createElement("option", { value: "recent" }, "Recently added"))
+    ) : null,
+    activeCount > 0 && marketsPresent.length > 1 ? React.createElement("div", { className: "wl-market-chips mb-4" },
+      ['all', ...marketsPresent].map(m => React.createElement("button", {
+        key: m, className: "wl-mchip" + (filterMarket === m ? " active" : ""),
+        onClick: () => setFilterMarket(m)
+      }, m === 'all' ? 'All markets' : m))
+    ) : null,
     showAddForm && React.createElement("div", { className: "card mb-4 watchlist-add" },
+      React.createElement("div", { className: "wl-add-hint" },
+        React.createElement(Icon, { name: "search", size: 13 }),
+        React.createElement("span", null, " Search a stock and tap a result to open its card — add it to a watchlist from there.")),
       React.createElement("div", { className: "form-label" }, "Market"),
       React.createElement(MarketPicker, {
         value: newMarket,
-        onChange: v => { setNewMarket(v); setVerifyError(''); },
+        onChange: v => setNewMarket(v),
         style: { width: '100%', marginBottom: 10 }
       }),
-      React.createElement("div", { className: "form-label" }, "Ticker"),
-      React.createElement("div", { className: "watchlist-search-row" },
-        React.createElement(TickerSearch, {
-          value: newTicker,
-          onChange: v => { setNewTicker(v); setVerifyError(''); },
-          market: newMarket,
-          onMarketChange: v => setNewMarket(v),
-          onEnter: submit
-        }),
-        React.createElement("button", {
-          className: "btn btn-primary",
-          onClick: submit,
-          disabled: verifying,
-          style: { flex: '0 0 auto' }
-        }, verifying ? React.createElement(Icon, { name: "refresh", size: 13 }) : React.createElement(Icon, { name: "plus" }), verifying ? " ..." : " Add")
-      ),
-      verifyError ? React.createElement("div", { className: "verify-error" }, verifyError) : null,
+      React.createElement("div", { className: "form-label" }, "Search"),
+      React.createElement(TickerSearch, {
+        value: newTicker,
+        onChange: v => setNewTicker(v),
+        market: newMarket,
+        onMarketChange: v => setNewMarket(v),
+        onSelect: (s) => { setShowAddForm(false); setNewTicker(''); onOpenDetail(s.ticker, s.market); },
+        onEnter: () => { const t = newTicker.trim(); if (!t) return; setShowAddForm(false); setNewTicker(''); onOpenDetail(t.toUpperCase(), newMarket); }
+      }),
       React.createElement("button", {
         className: "btn btn-ghost btn-sm",
-        style: { marginTop: 8, width: '100%' },
-        onClick: () => { setShowAddForm(false); setVerifyError(''); }
-      }, "Cancel")
+        style: { marginTop: 12, width: '100%' },
+        onClick: () => { setShowAddForm(false); setNewTicker(''); }
+      }, "Close")
     ),
     watchlist.length === 0 ? React.createElement("div", { className: "empty" },
       React.createElement(Icon, { name: "eye", size: 40 }),
       React.createElement("h3", null, "Empty watchlist"),
-      React.createElement("p", null, "Tap Add to track your first ticker."))
+      React.createElement("p", null, "Tap Add to track your first ticker, or open any stock and tap “Add to watchlist”."))
+    : visible.length === 0 ? React.createElement("div", { className: "empty wl-empty-sm" },
+      React.createElement(Icon, { name: "eye", size: 32 }),
+      React.createElement("p", null,
+        (search.trim() || filterMarket !== 'all')
+          ? "No stocks match this filter."
+          : (activeList === 'all' ? "Your watchlist is empty." : "This list is empty. Add a stock here, or open a stock and move it into this list.")))
     : React.createElement("div", { className: "watchlist-list mb-6" },
-      watchlist.map((w) => {
+      visible.map((w) => {
         const q = prices[priceKey(w.market, w.ticker)];
         // No bare-ticker fallback: the ticker is already the card heading, so a
         // missing name should leave the subheading empty rather than repeat it.
@@ -5904,7 +6077,9 @@ function WatchlistView(_ref8) {
               React.createElement("div", { className: "flex-1" },
                 React.createElement("div", { className: "flex items-center gap-2" },
                   React.createElement("span", { className: "tkr" }, w.ticker),
-                  React.createElement("span", { className: "market-badge" }, w.market)),
+                  React.createElement("span", { className: "market-badge" }, w.market),
+                  activeList === 'all' && listOf(w) !== 'default'
+                    ? React.createElement("span", { className: "wl-card-list" }, listNameById(listOf(w))) : null),
                 displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null),
               React.createElement("div", { className: "flex items-center gap-2" },
                 athBadge)),
@@ -6736,11 +6911,20 @@ function HeatmapView(_ref8b) {
       const el = treemapWrapRef.current;
       if (!el) return;
       const top = el.getBoundingClientRect().top;
-      const BOTTOM_RESERVE = 110; // sector hint + page bottom padding + safe-area
+      // On phones the chrome above (mode + exchange toggles + meta) is taller and
+      // the viewport shorter, so the old fixed 400px floor pushed the grid's bottom
+      // rows (and the "tap a sector" hint) below the fold. Size the grid to the
+      // space actually left under the toggles and above the bottom hint / safe-area,
+      // with a much lower floor on narrow screens so the whole map fits the screen
+      // instead of overflowing — the desktop look, scaled down for mobile.
+      const isNarrow = window.innerWidth <= 680;
+      const BOTTOM_RESERVE = isNarrow ? 100 : 110; // sector hint + page padding + safe-area
       const avail = Math.round(window.innerHeight - top - BOTTOM_RESERVE);
       // Clamp keeps tiles a sensible size on very short / very tall screens; the
       // upper bound stops the grid getting "too long" on big displays.
-      const clamped = Math.max(400, Math.min(580, avail));
+      const floor = isNarrow ? 240 : 400;
+      const ceil = isNarrow ? 600 : 580;
+      const clamped = Math.max(floor, Math.min(ceil, avail));
       setMarketFitH(prev => Math.abs(prev - clamped) > 2 ? clamped : prev);
     };
     measure();
@@ -8192,17 +8376,94 @@ function FundamentalsBlock(_refFB) {
     )
   );
 }
+// Inline "add to / move within watchlist" control shown inside the stock card.
+// Keeps the common case one tap (no custom lists → tapping just adds to the
+// built-in list) while letting power users file a stock into a specific list or
+// move it, all from the card the user already has open.
+function WatchlistControl(_refWL) {
+  let { ticker, market, name, watchlist, watchlistGroups, onAddWatch, onRemoveWatch, onMoveWatch, onAddWatchGroup } = _refWL;
+  const item = (watchlist || []).find(w => w.ticker === ticker && w.market === market) || null;
+  const watching = !!item;
+  const currentListId = item ? (item.listId || 'default') : null;
+  const groups = watchlistGroups || [];
+  const lists = [{ id: 'default', name: 'Watchlist' }, ...groups];
+  const hasCustom = groups.length > 0;
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const currentName = watching ? ((lists.find(l => l.id === currentListId) || {}).name || 'Watchlist') : null;
+  const closePanel = () => { setOpen(false); setCreating(false); setNewName(''); };
+  const handleMainClick = () => {
+    // No custom lists and not yet watching → there's nothing to choose, so add
+    // straight to the built-in list in a single tap.
+    if (!watching && !hasCustom) { onAddWatch(ticker, market, name || null, 'default'); return; }
+    setOpen(o => !o); setCreating(false);
+  };
+  const pickList = (listId) => {
+    if (watching) { if (listId !== currentListId) onMoveWatch(item.id, listId); }
+    else onAddWatch(ticker, market, name || null, listId);
+    closePanel();
+  };
+  const submitNew = () => {
+    const nm = newName.trim();
+    if (!nm) return;
+    const id = onAddWatchGroup(nm);
+    if (id) { if (watching) onMoveWatch(item.id, id); else onAddWatch(ticker, market, name || null, id); }
+    closePanel();
+  };
+  const remove = () => { if (item) onRemoveWatch(item.id); closePanel(); };
+  return React.createElement("div", { className: "wl-control" },
+    React.createElement("button", {
+      className: "wl-toggle" + (watching ? " watching" : ""),
+      onClick: handleMainClick, "aria-expanded": open
+    },
+      React.createElement(Icon, { name: watching ? "checkCircle" : "plus", size: 15 }),
+      React.createElement("span", { className: "wl-toggle-label" },
+        watching ? "On watchlist" : "Add to watchlist",
+        watching && hasCustom && currentName ? React.createElement("span", { className: "wl-toggle-list" }, " \xB7 " + currentName) : null),
+      (hasCustom || watching) ? React.createElement(Icon, { name: "chevron", size: 14, className: "wl-toggle-caret" + (open ? " open" : "") }) : null),
+    open ? React.createElement("div", { className: "wl-panel" },
+      React.createElement("div", { className: "wl-panel-head" }, watching ? "Move to list" : "Add to list"),
+      lists.map(l => React.createElement("button", {
+        key: l.id, className: "wl-list-row" + (watching && l.id === currentListId ? " current" : ""),
+        onClick: () => pickList(l.id)
+      },
+        React.createElement(Icon, { name: watching && l.id === currentListId ? "checkCircle" : "list", size: 14 }),
+        React.createElement("span", { className: "wl-list-name" }, l.name),
+        watching && l.id === currentListId ? React.createElement("span", { className: "wl-list-tag" }, "Current") : null)),
+      creating
+        ? React.createElement("div", { className: "wl-new-row" },
+            React.createElement("input", {
+              className: "wl-new-input", type: "text", placeholder: "New list name", value: newName, maxLength: 28,
+              autoFocus: true, onChange: e => setNewName(e.target.value),
+              onKeyDown: e => { if (e.key === 'Enter') submitNew(); }
+            }),
+            React.createElement("button", { className: "btn btn-primary btn-sm", onClick: submitNew, disabled: !newName.trim(), style: { flex: '0 0 auto' } }, "Create"))
+        : React.createElement("button", { className: "wl-list-row wl-new-trigger", onClick: () => setCreating(true) },
+            React.createElement(Icon, { name: "plus", size: 14 }),
+            React.createElement("span", { className: "wl-list-name" }, "New list…")),
+      watching ? React.createElement("button", { className: "wl-list-row wl-remove", onClick: remove },
+        React.createElement(Icon, { name: "trash", size: 14 }),
+        React.createElement("span", { className: "wl-list-name" }, "Remove from watchlist")) : null) : null
+  );
+}
 function DetailModal(_ref10) {
   let {
     selected,
     prices,
     positions,
+    watchlist,
+    watchlistGroups,
     alerts,
     news,
     historyByTicker,
     fundamentals,
     fxRates,
     onClose,
+    onAddWatch,
+    onRemoveWatch,
+    onMoveWatch,
+    onAddWatchGroup,
     onAddAlert,
     onRemoveAlert,
     onLoadNews,
@@ -8292,6 +8553,13 @@ function DetailModal(_ref10) {
       }, React.createElement(Icon, { name: "bell", size: 16 }),
         alerts.length > 0 && React.createElement("span", { className: "detail-alert-count" }, alerts.length))
     ),
+
+    onAddWatch ? React.createElement(WatchlistControl, {
+      ticker: ticker, market: market, name: displayName,
+      watchlist: watchlist, watchlistGroups: watchlistGroups,
+      onAddWatch: onAddWatch, onRemoveWatch: onRemoveWatch,
+      onMoveWatch: onMoveWatch, onAddWatchGroup: onAddWatchGroup
+    }) : null,
 
     pos && quote && (() => {
       // A plain top-to-bottom list reads far more clearly than a 3×2 grid:
