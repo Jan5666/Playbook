@@ -20,7 +20,19 @@
       "WebFetch(domain:etfsa.co.za)",
       "WebFetch(domain:satrix.co.za)",
       "Bash(cd /tmp)",
-      "Bash(curl -s -m 12 \"https://query1.finance.yahoo.com/v8/finance/chart/STX40.JO?range=1d&interval=1d\" -H \"User-Agent: Mozilla/5.0\" -o /tmp/y.json)"
+      "Bash(curl -s -m 12 \"https://query1.finance.yahoo.com/v8/finance/chart/STX40.JO?range=1d&interval=1d\" -H \"User-Agent: Mozilla/5.0\" -o /tmp/y.json)",
+      "Read(//c/Program Files/Google/Chrome/Application/**)",
+      "Bash(npx --no-install playwright --version)",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --window-size=390,844 --virtual-time-budget=2500 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/panel-verify.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --window-size=1200,800 --virtual-time-budget=2500 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/panel-verify.html\")",
+      "Bash(\"/c/Program Files/Google/Chrome/Application/chrome.exe\" --headless=new --disable-gpu --window-size=390,844 --virtual-time-budget=2500 --run-all-compositor-stages-before-draw --dump-dom \"file:///C:/tmp/panel-nofix.html\")",
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Bash(curl -s --max-time 15 \"https://stockanalysis.com/api/symbol/s/MU/overview\")",
+      "Bash(curl -s --max-time 20 \"https://stockanalysis.com/api/screener/s/f?m=marketCap&s=desc&c=s,n,earningsDate&f=exchange-is-NASDAQ&i=stocks\")",
+      "Bash(curl -s -I --max-time 15 \"https://stockanalysis.com/api/symbol/s/MU/overview\")",
+      "Bash(curl -s --max-time 15 \"https://stockanalysis.com/api/symbol/s/JSE-NPN/overview\")",
+      "Bash(curl -s --max-time 15 \"https://api.stockanalysis.com/api/screener/s/f?m=marketCap&c=s,n,earningsDate&s=marketCap-desc&i=stocks\")"
     ]
   }
 }

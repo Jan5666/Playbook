@@ -124,9 +124,9 @@ function useTtlCache(ttlMs) {
   const cacheRef = useRef(cache);
   const inFlight = useRef({});
   useEffect(() => { cacheRef.current = cache; }, [cache]);
-  const load = useCallback(async (key, fetcher) => {
+  const load = useCallback(async (key, fetcher, force = false) => {
     const existing = cacheRef.current[key];
-    if (existing && existing.data && Date.now() - existing.fetchedAt < ttlMs) return existing.data;
+    if (!force && existing && existing.data && Date.now() - existing.fetchedAt < ttlMs) return existing.data;
     if (inFlight.current[key]) return inFlight.current[key];
     setCache(prev => ({
       ...prev,
@@ -470,6 +470,13 @@ function cachedName(market, ticker) {
 function centDivisor(market, currency) {
   const raw = currency || '';
   const c = raw.toUpperCase();
+  // Market-independent minor units Yahoo emits regardless of which market the
+  // user filed the symbol under: "GBp"/"GBX" (UK pence), "ZAc"/"ZAX" (SA cents).
+  // A trailing lowercase letter on an otherwise GB*/ZA* code is the pence/cents
+  // convention; catching it here means a London listing accidentally fetched
+  // under "US" still shows a sane magnitude instead of a 100x-inflated price.
+  if (c === 'GBX' || c === 'ZAX' || c === 'ZAC') return 100;
+  if (/[a-z]$/.test(raw) && /^(GB|ZA)/.test(c)) return 100;
   const isJseCent = (market === 'JSE' || market === 'TFSA') && (c === 'ZAC' || c === 'ZAR' && /[cC]$/.test(raw));
   const isLseGBX = market === 'LSE' && c === 'GBX';
   // Yahoo sometimes returns "GBp" (mixed case) for pence-denominated LSE
@@ -591,8 +598,13 @@ function parseYahooQuote(result, market) {
     if (dayLow) dayLow = dayLow / divisor;
     if (preMarketPrice) preMarketPrice = preMarketPrice / divisor;
     if (postMarketPrice) postMarketPrice = postMarketPrice / divisor;
-    currency = market === 'JSE' ? 'ZAR' : 'GBP';
   }
+  // The market the user filed this symbol under is authoritative for the display
+  // currency. Normalise to it so every surface (price, fundamentals, P&L, chart)
+  // shows one consistent symbol instead of trusting whatever listing Yahoo
+  // resolved a bare ticker to — that mismatch is what made US holdings
+  // occasionally render in £/€. Falls back to Yahoo's value for unknown markets.
+  currency = (MARKET_CURRENCY[market] && MARKET_CURRENCY[market].code) || currency;
   try {
     prevClose = derivePrevClose(buildDailyBars(result, divisor), price, prevClose);
   } catch (_e) {}
@@ -1284,6 +1296,213 @@ If no meaningful news exists, respond with [].`;
     return [];
   }
 }
+// ─── Hot Topics: earnings calendar + macro/energy events ─────────────────────
+// Big-name universe used to (a) hint the AI and (b) drive the no-key fallback.
+const HOT_MEGACAPS = [
+  'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AVGO','ORCL','NFLX','AMD',
+  'JPM','V','MA','BAC','WMT','COST','HD','PG','KO','XOM','CVX','LLY','UNH','JNJ',
+  'CRM','ADBE','PLTR','MU','INTC','DIS','BA','CAT','GE','TSM','ASML','MSTR'
+];
+const HOT_JSE = ['NPN','PRX','FSR','SBK','CPI','BTI','AGL','BHG','SOL','MTN','SHP','CFR','GFI','ANG'];
+// Scheduled 2026 central-bank decision days + recurring data, as an offline
+// baseline. Dates are published a year ahead; refresh this list annually. When a
+// Perplexity key is set, live AI events are merged in and take precedence.
+const BUILTIN_MACRO_2026 = [
+  { date: '2026-01-28', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-03-18', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-04-29', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-06-17', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-07-29', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-09-16', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-10-28', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-12-09', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-01-23', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-03-19', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-04-28', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-06-16', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-07-31', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-09-18', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-10-30', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-12-18', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-01-29', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-03-12', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-04-30', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-06-04', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-07-16', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-09-10', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-10-29', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-12-17', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-02-05', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-03-19', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-05-07', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-06-18', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-08-06', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-09-17', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-11-05', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-12-17', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-01-29', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-03-19', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-05-21', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-07-23', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-09-17', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-11-19', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' }
+];
+// Normalize a date-only 'YYYY-MM-DD' string or a ms timestamp to local midnight.
+function hotToDate(v) {
+  if (v == null) return null;
+  if (typeof v === 'number' && isFinite(v)) { const d = new Date(v); d.setHours(0, 0, 0, 0); return d; }
+  const s = String(v).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+function hotDayDiff(date) {
+  if (!date) return NaN;
+  const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+  return Math.round((date - t0) / 86400000);
+}
+// Format LOCAL Y-M-D — never toISOString(), which rolls a local-midnight Date
+// back a day in positive-UTC-offset zones (e.g. SAST UTC+2) and shifts dates.
+function hotDateKey(v) {
+  const d = hotToDate(v);
+  if (!d) return '';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+// One Perplexity call returns earnings + macro + news, minimizing token cost.
+async function fetchHotTopicsAI(apiKey, tickers) {
+  if (!apiKey) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  const watched = (tickers || []).slice(0, 40).join(', ');
+  const prompt = `Today is ${today}. Build a market "hot topics" briefing for an investor. Respond with STRICT JSON only (no markdown, no prose), exactly this shape:
+{
+ "earnings": [{"ticker":"AAPL","company":"Apple","date":"YYYY-MM-DD","when":"BMO|AMC|TBD","market":"US|JSE|LSE|EU"}],
+ "macro": [{"date":"YYYY-MM-DD","title":"...","type":"Fed|ECB|BOJ|BOE|SARB|Data|Energy|Geo","detail":"max 90 chars"}],
+ "news": [{"title":"...","summary":"max 140 chars","date":"YYYY-MM-DD","source":"...","url":"https://..."}]
+}
+earnings: big-name / market-moving companies reporting in the next 30 days (global mega-caps and notable JSE names). Always include any of these tickers that report in that window: ${watched}.
+macro: scheduled central-bank meetings (US Fed, ECB, Bank of Japan, Bank of England, South Africa SARB), major US/global data (CPI, PCE, jobs/NFP), OPEC+/energy and clearly market-moving geopolitical events in the next 30 days.
+news: the 5 most important market-moving or global-energy news items right now.
+Order every array by date ascending. Use real, accurate dates; if unsure of a date, omit that item.`;
+  try {
+    const res = await fetch('https://api.perplexity.ai/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'sonar',
+        messages: [
+          { role: 'system', content: 'You return only valid JSON. No prose, no markdown fences.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 2000
+      })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content || '';
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    let parsed;
+    try { parsed = JSON.parse(cleaned); } catch (_e) {
+      const m = cleaned.match(/\{[\s\S]*\}/);
+      if (!m) return null;
+      try { parsed = JSON.parse(m[0]); } catch (_e2) { return null; }
+    }
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_e) { return null; }
+}
+// Per-ticker upcoming earnings date from stockanalysis.com (CORS-open, fetched
+// directly — no proxy). Cached 12h. Reliable for US names; JSE/other are left to
+// the AI path, which covers exchanges stockanalysis doesn't.
+const SA_EARN_CACHE = {};
+async function fetchEarningsDateSA(ticker) {
+  const up = (ticker || '').toUpperCase();
+  if (!up) return null;
+  const c = SA_EARN_CACHE[up];
+  if (c && Date.now() - c.fetchedAt < 12 * 3600 * 1000) return c.date;
+  try {
+    const r = await fetch(`https://stockanalysis.com/api/symbol/s/${encodeURIComponent(up)}/overview`);
+    if (!r.ok) { SA_EARN_CACHE[up] = { date: null, fetchedAt: Date.now() }; return null; }
+    const j = await r.json();
+    const ed = j?.data?.earningsDate;
+    const ms = ed && !isNaN(Date.parse(ed)) ? Date.parse(ed) : null;
+    SA_EARN_CACHE[up] = { date: ms, fetchedAt: Date.now() };
+    return ms;
+  } catch (_e) { return null; }
+}
+// Bounded-concurrency map so a ~40-ticker sweep doesn't open 40 sockets at once.
+async function poolMap(items, concurrency, fn) {
+  const out = new Array(items.length);
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length || 1) }, async () => {
+    while (idx < items.length) { const i = idx++; out[i] = await fn(items[i], i); }
+  });
+  await Promise.all(workers);
+  return out;
+}
+// Merge live AI output (when a key is set) with actively-fetched earnings dates
+// for US names, the built-in macro calendar, and any cached fundamentals.
+async function buildHotTopics(apiKey, userSymbols, fundamentals) {
+  const ownedTickers = new Set((userSymbols || []).map(s => s.ticker));
+  // Fetch the AI briefing and the US earnings sweep in parallel to cut latency.
+  const usSymbols = (userSymbols || []).filter(s => s.market === 'US');
+  const [ai, saDates] = await Promise.all([
+    fetchHotTopicsAI(apiKey, [...ownedTickers]),
+    poolMap(usSymbols, 8, s => fetchEarningsDateSA(s.ticker).catch(() => null))
+  ]);
+
+  // ── Earnings (deduped by ticker — one upcoming report per name) ──
+  const earnings = [];
+  const seenEarn = new Set();
+  const pushEarn = (e) => {
+    const ticker = (e.ticker || '').toUpperCase();
+    if (!ticker || seenEarn.has(ticker)) return;
+    if (!hotToDate(e.date)) return;
+    seenEarn.add(ticker);
+    earnings.push({
+      ticker,
+      company: e.company || NAME_CACHE[(e.market || 'US') + ':' + ticker] || '',
+      market: e.market || 'US',
+      date: hotDateKey(e.date),
+      when: e.when || 'TBD',
+      yours: ownedTickers.has(ticker)
+    });
+  };
+  // Priority: AI (has BMO/AMC + company) → live US sweep → cached fundamentals.
+  if (ai && Array.isArray(ai.earnings)) ai.earnings.forEach(pushEarn);
+  usSymbols.forEach((s, i) => { if (saDates[i]) pushEarn({ ticker: s.ticker, market: 'US', date: saDates[i], when: 'TBD' }); });
+  for (const s of userSymbols || []) {
+    const f = fundamentals?.[s.market + ':' + s.ticker]?.data;
+    if (f && f.earningsDate) pushEarn({ ticker: s.ticker, market: s.market, date: f.earningsDate, when: 'TBD', company: f.name });
+  }
+  const upcomingEarnings = earnings
+    .filter(e => { const d = hotDayDiff(hotToDate(e.date)); return d >= 0 && d <= 31; })
+    .sort((a, b) => hotToDate(a.date) - hotToDate(b.date));
+
+  // ── Macro ──
+  const macro = [];
+  const seenMacro = new Set();
+  const pushMacro = (m) => {
+    const d = hotToDate(m.date);
+    if (!d) return;
+    const diff = hotDayDiff(d);
+    if (diff < 0 || diff > 45) return;
+    const key = hotDateKey(m.date) + '|' + (m.type || '').toUpperCase();
+    if (seenMacro.has(key)) return;
+    seenMacro.add(key);
+    macro.push({ date: hotDateKey(m.date), title: m.title || '', type: (m.type || 'Event'), detail: m.detail || '' });
+  };
+  if (ai && Array.isArray(ai.macro)) ai.macro.forEach(pushMacro);
+  BUILTIN_MACRO_2026.forEach(pushMacro);
+  macro.sort((a, b) => hotToDate(a.date) - hotToDate(b.date));
+
+  // ── News ──
+  const news = (ai && Array.isArray(ai.news) ? ai.news : [])
+    .filter(n => n && n.title)
+    .slice(0, 6)
+    .map(n => ({ title: String(n.title).slice(0, 200), summary: n.summary ? String(n.summary).slice(0, 200) : '', source: n.source || 'Perplexity', link: n.url || '#', pubDate: n.date || null, ai: true }));
+
+  return { earnings: upcomingEarnings, macro, news, aiUsed: !!ai, generatedAt: Date.now() };
+}
 const HISTORICAL_FX_CACHE = {};
 async function fetchHistoricalFx(dateISO, code) {
   if (!dateISO || !code || code === 'USD') return code === 'USD' ? 1 : null;
@@ -1757,6 +1976,44 @@ const Icon = _ref => {
 // calls (visibility + interval) both read loading=false and double-fetch.
 const PRICES_LS_KEY = 'pb.prices.v1';
 const PRICES_MAX_AGE_MS = 3 * 24 * 3600 * 1000; // drop quotes older than 3 days
+// ─── Market hours (DST-correct via Intl) ─────────────────────────────────────
+// Used to slow the foreground poll when every tracked market is shut, so the app
+// isn't hammering the network every 90s overnight. Mirrors backend/worker.js.
+const MARKET_SESSIONS = {
+  US:   { tz: 'America/New_York',    open: 4 * 60,  close: 20 * 60 },     // incl. pre/post
+  JSE:  { tz: 'Africa/Johannesburg', open: 9 * 60,  close: 17 * 60 + 5 },
+  TFSA: { tz: 'Africa/Johannesburg', open: 9 * 60,  close: 17 * 60 + 5 },
+  LSE:  { tz: 'Europe/London',       open: 8 * 60,  close: 16 * 60 + 35 },
+  ASX:  { tz: 'Australia/Sydney',    open: 10 * 60, close: 16 * 60 + 10 },
+  FRA:  { tz: 'Europe/Berlin',       open: 9 * 60,  close: 17 * 60 + 35 },
+  PAR:  { tz: 'Europe/Paris',        open: 9 * 60,  close: 17 * 60 + 35 },
+  AMS:  { tz: 'Europe/Amsterdam',    open: 9 * 60,  close: 17 * 60 + 35 }
+};
+function marketOpen(market, now = new Date()) {
+  const s = MARKET_SESSIONS[market] || MARKET_SESSIONS.US;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: s.tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false
+    }).formatToParts(now);
+    const get = t => parts.find(p => p.type === t)?.value;
+    const wd = get('weekday');
+    if (wd === 'Sat' || wd === 'Sun') return false;
+    let hh = parseInt(get('hour'), 10);
+    if (hh === 24) hh = 0;
+    const mins = hh * 60 + parseInt(get('minute'), 10);
+    return mins >= s.open && mins <= s.close;
+  } catch (_e) { return true; } // if Intl tz fails, assume open (poll normally)
+}
+function anyMarketOpen(items) {
+  if (!items || items.length === 0) return true; // nothing tracked yet → poll normally
+  const seen = new Set();
+  for (const it of items) {
+    if (seen.has(it.market)) continue;
+    seen.add(it.market);
+    if (marketOpen(it.market)) return true;
+  }
+  return false;
+}
 function usePriceFeed(tickersToFetch, toast) {
   // Rehydrate last-known prices instantly so the app paints real numbers on
   // open instead of em-dashes — the single biggest "premium fintech" perception
@@ -1815,7 +2072,17 @@ function usePriceFeed(tickersToFetch, toast) {
     loadingRef.current = false;
     setLoading(false);
   }, [tickersToFetch, toast, persistPrices]);
-  usePolledRefresh(refresh, 90000, 60000, tickersToFetch);
+  // Battery-aware cadence: 90s while any tracked market is open, 5 min when
+  // they're all shut (prices barely move overnight). A low-frequency meta-timer
+  // flips the rate at open/close boundaries; server push covers the closed app.
+  const [pollMs, setPollMs] = useState(() => anyMarketOpen(tickersToFetch) ? 90000 : 300000);
+  useEffect(() => {
+    const recompute = () => setPollMs(anyMarketOpen(tickersToFetch) ? 90000 : 300000);
+    recompute();
+    const id = setInterval(recompute, 60000);
+    return () => clearInterval(id);
+  }, [tickersToFetch]);
+  usePolledRefresh(refresh, pollMs, 60000, tickersToFetch);
   return { prices, loading, lastUpdate, failStreak, refresh, mergePrices };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
@@ -1922,6 +2189,139 @@ function useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered
     document.addEventListener('visibilitychange', onVis);
     return () => { alive = false; document.removeEventListener('visibilitychange', onVis); };
   }, [setAlertSeenMap, setTriggered]);
+}
+// ─── Server push (premium always-on alerts) ─────────────────────────────────
+// The static PWA can only check prices while it's awake. The optional backend
+// (see backend/) does it server-side and delivers a real push, so alerts land
+// within ~a minute even with the app fully closed — the one path to iOS parity,
+// at near-zero phone battery. This layer subscribes the device, keeps the
+// server's alert copy synced, and heartbeats on foreground so the server
+// suppresses duplicates while you're actively in the app.
+const PUSH_CLIENT_KEY = 'pb.clientId.v1';
+function pushClientId() {
+  let id = LS.get(PUSH_CLIENT_KEY, null);
+  if (!id || typeof id !== 'string') { id = uid() + uid() + uid(); LS.set(PUSH_CLIENT_KEY, id); }
+  return id;
+}
+function normalizeBackend(url) { return (url || '').trim().replace(/\/+$/, ''); }
+function pushSupported() {
+  return typeof navigator !== 'undefined' && 'serviceWorker' in navigator && typeof PushManager !== 'undefined';
+}
+function vapidKeyToBytes(b64) {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const s = (b64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(s);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+async function getOrCreatePushSub(vapidPublicKey) {
+  const reg = await navigator.serviceWorker.ready;
+  const existing = await reg.pushManager.getSubscription();
+  if (existing) return existing;
+  return reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: vapidKeyToBytes(vapidPublicKey)
+  });
+}
+async function backendPost(base, path, payload) {
+  const res = await fetch(base + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json().catch(() => ({}));
+}
+async function registerPushWithBackend(base, alerts) {
+  const r = await fetch(base + '/vapid-public-key');
+  if (!r.ok) throw new Error('server unreachable (' + r.status + ')');
+  const { publicKey } = await r.json();
+  if (!publicKey) throw new Error('server has no VAPID key set');
+  const sub = await getOrCreatePushSub(publicKey);
+  await backendPost(base, '/subscribe', { clientId: pushClientId(), subscription: sub.toJSON(), alerts });
+  return true;
+}
+// pushBackend is owned by the parent (persisted); setPushBackend lets connect()
+// save a freshly-entered URL. Status: off|connecting|connected|error|unsupported.
+function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
+  const [pushStatus, setPushStatus] = useState('off');
+  const base = normalizeBackend(pushBackend);
+  const alertsRef = useRef(alerts);
+  useEffect(() => { alertsRef.current = alerts; }, [alerts]);
+  // Auto-(re)register on open when configured + permitted. Idempotent: reuses an
+  // existing subscription and upserts the server record keyed by clientId.
+  useEffect(() => {
+    let alive = true;
+    if (!base) { setPushStatus('off'); return; }
+    if (!pushSupported()) { setPushStatus('unsupported'); return; }
+    if (notifPerm !== 'granted') { setPushStatus('error'); return; }
+    setPushStatus('connecting');
+    registerPushWithBackend(base, alertsRef.current)
+      .then(() => { if (alive) setPushStatus('connected'); })
+      .catch(() => { if (alive) setPushStatus('error'); });
+    return () => { alive = false; };
+  }, [base, notifPerm]);
+  // Keep the server's alert list current (debounced).
+  useEffect(() => {
+    if (pushStatus !== 'connected' || !base) return;
+    const t = setTimeout(() => {
+      backendPost(base, '/sync', { clientId: pushClientId(), alerts }).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [alerts, pushStatus, base]);
+  // Heartbeat while foregrounded so the server's "recently active" flag stays
+  // fresh (<90s) and it suppresses pushes the in-app engine is already handling.
+  useEffect(() => {
+    if (pushStatus !== 'connected' || !base) return;
+    const beat = () => { if (!document.hidden) backendPost(base, '/sync', { clientId: pushClientId() }).catch(() => {}); };
+    beat();
+    const id = setInterval(beat, 60000);
+    document.addEventListener('visibilitychange', beat);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', beat); };
+  }, [pushStatus, base]);
+  const connectPush = useCallback(async (url) => {
+    const b = normalizeBackend(url);
+    if (!b) { toast('Enter your push server URL'); return false; }
+    if (!/^https:\/\//i.test(b)) { toast('Push server must be an https:// URL'); return false; }
+    if (!pushSupported()) {
+      const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+      toast(isIOS ? 'On iPhone, install to Home Screen first' : 'Push not supported in this browser');
+      return false;
+    }
+    if (notifPerm !== 'granted') { toast('Enable notifications first'); return false; }
+    setPushStatus('connecting');
+    try {
+      await registerPushWithBackend(b, alertsRef.current);
+      setPushBackend(b);
+      setPushStatus('connected');
+      toast('Background push connected');
+      return true;
+    } catch (e) {
+      setPushStatus('error');
+      toast('Could not connect: ' + (e.message || 'error'));
+      return false;
+    }
+  }, [notifPerm, toast, setPushBackend]);
+  const testPush = useCallback(async () => {
+    if (!base) return;
+    try {
+      const r = await backendPost(base, '/test', { clientId: pushClientId() });
+      toast(r.ok ? 'Test push sent — check your lock screen' : 'Test failed (' + (r.status || '?') + ')');
+    } catch (_e) { toast('Test failed — is the server reachable?'); }
+  }, [base, toast]);
+  const disconnectPush = useCallback(async () => {
+    if (base) { try { await backendPost(base, '/unsubscribe', { clientId: pushClientId() }); } catch (_e) {} }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+    } catch (_e) {}
+    setPushBackend('');
+    setPushStatus('off');
+    toast('Background push disconnected');
+  }, [base, setPushBackend, toast]);
+  return { pushStatus, connectPush, testPush, disconnectPush };
 }
 // Owns positions/watchlist/contributions/alerts + CRUD. fxRates is needed for
 // purchase-date FX resolution; toast is injected for user-facing feedback.
@@ -2197,12 +2597,13 @@ const useToast = () => React.useContext(ToastContext);
 function App() {
   const [theme, setTheme] = usePersistedState('pb.theme.v2', 'dark');
   const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
+  const [pushBackend, setPushBackend] = usePersistedState('pb.pushBackend.v1', '');
   const [displayCurrency, setDisplayCurrency] = usePersistedState('pb.displayCurrency.v1', 'USD');
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
   const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
   const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
   const [showSettings, setShowSettings] = useState(false);
-  const TAB_LIST = [['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'], ['heatmap', 'Heatmap'], ['picks', 'New picks'], ['hedges', 'Hedges'], ['tfsa', 'TFSA'], ['rules', 'Rules'], ['overview', 'Thesis']];
+  const TAB_LIST = [['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'], ['hot', 'Hot Topics'], ['heatmap', 'Heatmap'], ['picks', 'New picks'], ['hedges', 'Hedges'], ['tfsa', 'TFSA'], ['rules', 'Rules'], ['overview', 'Thesis']];
   const [view, setView] = useState('dashboard');
   const [viewTransDir, setViewTransDir] = useState(null);
   const navRef = useRef(null);
@@ -2241,6 +2642,7 @@ function App() {
   const [newsByTicker, loadNewsRaw] = useTtlCache(15 * 60 * 1000);
   const [historyByTicker, loadHistoryRaw] = useTtlCache(15 * 60 * 1000);
   const [fundamentalsByTicker, loadFundamentalsRaw] = useTtlCache(6 * 60 * 60 * 1000);
+  const [hotTopicsCache, loadHotTopicsRaw] = useTtlCache(3 * 60 * 60 * 1000);
   const [selected, setSelected] = useState(null);
   const [showAlerts, setShowAlerts] = useState(false);
   const [posModalEditId, setPosModalEditId] = useState(null);
@@ -2419,6 +2821,9 @@ function App() {
   // Background price-alert delivery: mirror config to the SW, register periodic
   // sync, and reconcile anything fired while the app was closed.
   useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered, notifPerm);
+  // Optional server-push backend for always-on, app-closed alerts (premium tier).
+  const { pushStatus, connectPush, testPush, disconnectPush } =
+    usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast);
   const requestNotifPerm = useCallback(async () => {
     if (typeof Notification === 'undefined') {
       toast('Notifications not supported in this browser');
@@ -2481,6 +2886,19 @@ function App() {
       return merged;
     });
   }, [loadNewsRaw, perplexityKey]);
+  // Hot Topics: union of your holdings + watchlist with the curated mega-cap and
+  // JSE universes, resolved against the AI briefing + scheduled macro calendar.
+  const loadHotTopics = useCallback((force = false) => {
+    const seen = new Set();
+    const userSymbols = [];
+    for (const p of [...positions, ...watchlist]) {
+      const k = p.market + ':' + p.ticker;
+      if (!seen.has(k)) { seen.add(k); userSymbols.push({ ticker: p.ticker, market: p.market }); }
+    }
+    for (const t of HOT_MEGACAPS) { const k = 'US:' + t; if (!seen.has(k)) { seen.add(k); userSymbols.push({ ticker: t, market: 'US' }); } }
+    for (const t of HOT_JSE) { const k = 'JSE:' + t; if (!seen.has(k)) { seen.add(k); userSymbols.push({ ticker: t, market: 'JSE' }); } }
+    return loadHotTopicsRaw('hot', () => buildHotTopics(perplexityKey, userSymbols, fundamentalsByTicker), force);
+  }, [loadHotTopicsRaw, positions, watchlist, perplexityKey, fundamentalsByTicker]);
   const handleInstall = async () => {
     if (installEvent) {
       installEvent.prompt();
@@ -2614,6 +3032,15 @@ function App() {
       onBuyPosition: pos => setBuyModalPos(pos),
       onSellPosition: pos => setSellModalPos(pos)
     }),
+    hot: React.createElement(HotTopicsView, {
+      hot: hotTopicsCache['hot'],
+      onLoad: loadHotTopics,
+      prices: prices,
+      onOpenDetail: openDetail,
+      perplexityKey: perplexityKey,
+      onOpenAlerts: () => setShowAlerts(true),
+      toast: toast
+    }),
     rules: React.createElement(RulesView, null),
     overview: React.createElement(OverviewView, {
       prices: prices
@@ -2731,7 +3158,12 @@ function App() {
     onClose: () => setShowAlerts(false),
     onRemoveAlert: removeAlert,
     onClearTriggered: clearTriggered,
-    onRequestPerm: requestNotifPerm
+    onRequestPerm: requestNotifPerm,
+    pushBackend: pushBackend,
+    pushStatus: pushStatus,
+    onConnectPush: connectPush,
+    onTestPush: testPush,
+    onDisconnectPush: disconnectPush
   }), posModalOpen && React.createElement(PositionModal, {
     editId: posModalEditId,
     existing: posModalEditId ? positions.find(p => p.id === posModalEditId) : null,
@@ -2865,14 +3297,19 @@ function PriceBlock(_ref5) {
     quote,
     size = 'md',
     showDailyRow = false,
-    hideChange = false
+    hideChange = false,
+    market
   } = _ref5;
   if (!quote) return React.createElement("span", {
     className: "mono text-dim"
   }, "\u2014");
   const up = quote.changePct >= 0;
-  const currSymMap = { ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' };
-  const sym = currSymMap[quote.currency] || '$';
+  // Prefer the position's market for the symbol (authoritative \u2014 the user chose
+  // it) so a US holding never shows \u00a3/\u20ac; only fall back to the quote's own
+  // currency when no market context is available.
+  const sym = market && MARKET_CURRENCY[market]
+    ? MARKET_CURRENCY[market].sym
+    : ({ ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' })[quote.currency] || '$';
   const klass = size === 'xl' ? 'price price-xl' : size === 'lg' ? 'price price-lg' : 'price';
   const hasExt = quote.extPrice != null && quote.extChangePct != null;
   const extUp = hasExt && quote.extChangePct >= 0;
@@ -3265,7 +3702,7 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
       // Best available display name for ANY instrument (stock, ETF, trust): the
       // name saved at import, then the live quote's company name, then the
       // curated lists — never the bare ticker unless nothing else is known.
-      const nm = p.name || resolveTickerName(p.ticker, p.market, q) || p.ticker;
+      const nm = positionDisplayName(p, p.market, q);
       // Pass the name so the resolver's last-resort classifier can place funds /
       // bonds / gold / foreign equities that the ticker maps don't cover.
       const sectorInfo = resolvePositionSector(p.ticker, p.market, sectorCache, fundamentals, nm) || {};
@@ -3374,9 +3811,10 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
         React.createElement("div", { className: "chart-pie-center" },
           hovered != null
             ? (() => {
-                // Scale the font to the label so a long sector name wraps to ≤3
-                // lines and stays inside the donut hole; short tickers stay big.
-                const lbl = String(arcs[hovered].label || '');
+                // Scale the font to the label so a long name wraps to ≤3 lines
+                // and stays inside the donut hole; short labels stay big. Holdings
+                // mode shows the company name (the ticker is dropped per design).
+                const lbl = String((mode === 'ticker' ? (arcs[hovered].name || arcs[hovered].label) : arcs[hovered].label) || '');
                 const n = lbl.length;
                 const fs = n <= 4 ? 15 : n <= 7 ? 13 : n <= 11 ? 11.5 : n <= 16 ? 10 : n <= 21 ? 9 : 8;
                 return React.createElement(React.Fragment, null,
@@ -3389,7 +3827,7 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
         )
       ),
       React.createElement("div", {
-        className: "chart-pie-legend" + (mode === 'ticker' ? " named" : ""),
+        className: "chart-pie-legend",
         onTouchStart: legendTouch, onTouchMove: legendTouch, onTouchEnd: () => setHovered(null), onTouchCancel: () => setHovered(null)
       },
         arcs.map((a, i) => React.createElement("button", {
@@ -3398,14 +3836,15 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
           onMouseEnter: () => setHovered(i),
           onMouseLeave: () => setHovered(null),
           onClick: () => clickable ? handleSlice(a) : null,
-          title: mode === 'sector' ? 'See holdings in ' + a.label : (mode === 'ticker' && a.name && a.name !== a.label ? a.name : undefined)
+          // Holdings mode lists company names only; keep the ticker reachable via
+          // the row's tooltip so it stays available as secondary information.
+          title: mode === 'sector' ? 'See holdings in ' + a.label : (mode === 'ticker' ? a.ticker : undefined)
         },
           React.createElement("span", { className: "chart-pie-legend-dot", style: { background: a.color } }),
-          React.createElement("span", { className: "chart-pie-legend-tkr" }, a.label),
-          // Holdings view: show the company / instrument name beside the ticker,
-          // in a fixed column so every name starts at the same x.
-          mode === 'ticker' && a.name && a.name !== a.label
-            ? React.createElement("span", { className: "chart-pie-legend-co" }, a.name) : null,
+          // Holdings view shows the company / instrument name; sector & market
+          // views show their group label.
+          React.createElement("span", { className: "chart-pie-legend-tkr" + (mode === 'ticker' ? " is-name" : "") },
+            mode === 'ticker' ? (a.name || a.label) : a.label),
           React.createElement("span", { className: "chart-pie-legend-pct" }, a.pct.toFixed(1) + '%'),
           mode === 'sector' ? React.createElement(Icon, { name: "chevron", size: 11, className: "chart-pie-legend-go" }) : null
         ))
@@ -3753,8 +4192,12 @@ function DashboardView(_ref6) {
 //  • Right — current holding value on top, the day's movement underneath.
 function HoldingRow(_refHR) {
   let { position: p, market, quote: q, onOpenDetail, onBuyPosition, onSellPosition } = _refHR;
-  const info = DATA.findInfo(p.ticker, market);
-  const name = (info && info.name) || p.ticker;
+  // Heading is the company/instrument name. Resolve it from every source — the
+  // name saved on the holding, the live quote's company name, the curated lists,
+  // then the learned name cache — and only fall back to the bare ticker when
+  // nothing else knows it.
+  const name = positionDisplayName(p, market, q);
+  const hasName = name !== p.ticker;
   const marketValue = q ? p.shares * q.price : null;
   const cost = p.shares * p.costBasis;
   const gain = marketValue != null ? marketValue - cost : null;
@@ -3769,8 +4212,8 @@ function HoldingRow(_refHR) {
     React.createElement("div", { className: "row-main" },
       React.createElement("div", { className: "hold-name" }, name),
       React.createElement("div", { className: "row-meta" },
-        React.createElement("span", { className: "hold-tkr" }, p.ticker),
-        " \xB7 avg ", fmt(p.costBasis, market)),
+        hasName ? React.createElement("span", { className: "hold-tkr" }, p.ticker) : null,
+        hasName ? " \xB7 avg " : "avg ", fmt(p.costBasis, market)),
       React.createElement("div", { className: "row-actions" },
         onBuyPosition ? React.createElement("button", {
           className: "btn-buy-inline",
@@ -4754,22 +5197,96 @@ function looksLikeInstrumentCode(s) {
   if (/^[A-Z0-9]{1,6}$/.test(t) && !/[a-z]/.test(s)) return true; // bare ticker-like code
   return false;
 }
+// ── Display-name normalisation ──────────────────────────────────────────────
+// Company / instrument names reach us from many sources — live Yahoo quotes
+// ("STANDARD BANK GROUP LIMITED", "NASPERS -N-"), the curated lists, and names
+// typed at import. prettyName() makes them read uniformly so the Holdings tab
+// and allocation list don't mix shouted, suffixed and tidy names: it strips the
+// share-class noise feeds tack on ("-N-") and the redundant "Limited"/"Ltd"
+// suffix, then re-cases ALL-CAPS names to Title Case while leaving genuine
+// acronyms (ETF, REIT, MSCI, MTN, BHP…) and already-tidy mixed-case names
+// ("iShares", "NVIDIA", "Dis-Chem") untouched.
+//
+// Only genuine acronyms belong here. Consonant-only tickers (FSR, SBK, NPN,
+// DRD…) are left out — the "short token, no vowels" rule below already keeps
+// those upper — and pronounceable tickers (Bid, Brait/BAT, Pan…) are left out
+// on purpose so they title-case to real words.
+const NAME_KEEP_UPPER = new Set([
+  // Instrument / index / market / currency acronyms
+  'ETF','ETN','ETP','REIT','REITS','MSCI','ACWI','SWIX','RAFI','FINI','INDI',
+  'RESI','SRI','ESG','CPI','EM','SA','US','USA','UK','EU','USD','EUR','GBP',
+  'ZAR','AI','FTSE','NYSE','NASDAQ','FANG','PGM','PGMS','REE','II','III','IV',
+  'VI','VII','VIII','BP','GE','GM','HP','JM','H&M','AT&T',
+  // Acronym company names that would otherwise be wrongly title-cased
+  'HSBC','GSK','WPP','RELX','SSE','CSL','ANZ','NAB','REA','GMG','XRO','TLS',
+  'MTN','BHP','AVI','KAP','MAS','PPC','JSE','AECI','PSG','RMB','RMH',
+]);
+const NAME_FORCE_LOWER = new Set(['plc','n.v.','nv','sa','ag','se','asa']);
+// Short tokens that read as words, not acronyms, so they title-case normally.
+const NAME_FORCE_WORD = new Set(['MR','MRS','MS','DR','ST','JR','SR','THE','AND','OF','VON','VAN','DE','LA']);
+function titleCaseToken(tok) {
+  if (!tok) return tok;
+  if (/\d/.test(tok)) return tok;                       // brand/number tokens: "10X", "500"
+  if (tok.includes('-')) return tok.split('-').map(titleCaseToken).join('-');
+  if (tok.includes('&')) return tok.split('&').map(titleCaseToken).join('&');
+  const upper = tok.toUpperCase();
+  if (NAME_FORCE_WORD.has(upper)) return upper.charAt(0) + upper.slice(1).toLowerCase();
+  if (NAME_KEEP_UPPER.has(upper)) return upper;
+  if (NAME_FORCE_LOWER.has(tok.toLowerCase())) return tok.toLowerCase();
+  // A short token with no vowels reads as an acronym (MTN, BHP, RCL, DRD…).
+  if (tok.length >= 3 && tok.length <= 4 && !/[AEIOUY]/.test(upper)) return upper;
+  return upper.charAt(0) + upper.slice(1).toLowerCase();
+}
+function prettyName(raw) {
+  if (raw == null) return raw;
+  let s = String(raw).replace(/\s+/g, ' ').trim();
+  if (!s) return s;
+  // 1) Strip share-class / registration markers feeds append.
+  s = s.replace(/\s*[-–—]\s*[A-Za-z]\s*[-–—]\s*$/, '');      // "Naspers -N-"
+  s = s.replace(/\s*\([A-Za-z]\)\s*$/, '');                   // "Foo (N)"
+  s = s.replace(/[,\s]+class\s+[a-z]$/i, '');                 // "Foo Class A"
+  // 2) Strip the redundant "Limited"/"Ltd" legal-form suffix that feeds append
+  //    and curated names omit. "Corporation"/"Inc"/"plc" are left alone — they're
+  //    often part of the recognised name ("Bid Corporation", "BP plc").
+  s = s.replace(/[,\s]+(limited|ltd\.?)$/i, '').trim();
+  s = s.replace(/\s+/g, ' ').trim();
+  if (!s) return String(raw).trim();
+  // 3) Re-case ALL-CAPS names only; a name already carrying lowercase letters is
+  //    assumed intentional and left as-is apart from the suffix trim above.
+  if (!/[a-z]/.test(s)) s = s.split(' ').map(titleCaseToken).join(' ');
+  return s;
+}
+// Best display name for a held position: the name saved on the holding, then the
+// resolver, all run through prettyName — falling back to the bare ticker (which
+// is never re-cased, so "GOOGL" stays "GOOGL") only when no name is known.
+function positionDisplayName(p, market, q) {
+  const nm = p.name || resolveTickerName(p.ticker, market, q);
+  return nm ? prettyName(nm) : p.ticker;
+}
 function resolveTickerName(ticker, market, q) {
+  let raw = null;
   if (q) {
     const yahooName = q.shortName || q.longName;
-    if (yahooName && yahooName !== ticker && !looksLikeInstrumentCode(yahooName)) {
-      cacheName(market, ticker, yahooName);
-      return yahooName;
-    }
+    if (yahooName && yahooName !== ticker && !looksLikeInstrumentCode(yahooName)) raw = yahooName;
   }
-  const info = DATA.findInfo(ticker, market);
-  if (info && info.name && info.name !== ticker) return info.name;
-  const hit = ALL_TICKERS.find(t => t.ticker === ticker && t.market === market);
-  if (hit && hit.name && hit.name !== ticker) return hit.name;
+  if (!raw) {
+    const info = DATA.findInfo(ticker, market);
+    if (info && info.name && info.name !== ticker) raw = info.name;
+  }
+  if (!raw) {
+    const hit = ALL_TICKERS.find(t => t.ticker === ticker && t.market === market);
+    if (hit && hit.name && hit.name !== ticker) raw = hit.name;
+  }
   // Learned/curated names (heatmap mega-caps, anything we've quoted before).
-  const cached = cachedName(market, ticker);
-  if (cached) return cached;
-  return null;
+  if (!raw) {
+    const cached = cachedName(market, ticker);
+    if (cached) raw = cached;
+  }
+  if (!raw) return null;
+  const pretty = prettyName(raw);
+  // Cache the cleaned name so future reads (and the heatmap) get the tidy form.
+  if (q && raw === (q.shortName || q.longName)) cacheName(market, ticker, pretty);
+  return pretty;
 }
 
 function buildSuggestions(watchlist) {
@@ -5244,7 +5761,9 @@ function WatchlistView(_ref8) {
     : React.createElement("div", { className: "watchlist-list mb-6" },
       watchlist.map((w) => {
         const q = prices[priceKey(w.market, w.ticker)];
-        const displayName = w.name || resolveTickerName(w.ticker, w.market, q) || w.ticker;
+        // No bare-ticker fallback: the ticker is already the card heading, so a
+        // missing name should leave the subheading empty rather than repeat it.
+        const displayName = w.name ? prettyName(w.name) : resolveTickerName(w.ticker, w.market, q);
         const isDragging = draggingId === w.id;
         let athBadge = null;
         if (q && q.yearHigh && q.yearHigh > 0) {
@@ -5282,11 +5801,11 @@ function WatchlistView(_ref8) {
                 React.createElement("div", { className: "flex items-center gap-2" },
                   React.createElement("span", { className: "tkr" }, w.ticker),
                   React.createElement("span", { className: "market-badge" }, w.market)),
-                React.createElement("div", { className: "tkr-name" }, displayName)),
+                displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null),
               React.createElement("div", { className: "flex items-center gap-2" },
                 athBadge)),
             React.createElement("div", { className: "watch-body" },
-              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true }),
+              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, market: w.market }),
               // Day's move — centred in the middle of the card so it stays visible
               // at every width (it used to be hidden on narrow / PWA screens).
               hasDay
@@ -5517,7 +6036,7 @@ function layoutTreemap(sectors, w, h) {
     cells.push({ kind: 'sector', name: sec.name, avgChange: sec.avgChange, x: sr.x, y: sr.y, w: sr.w, h: sr.h });
     const innerY = sr.y + SECTOR_HEADER;
     const innerH = Math.max(0, sr.h - SECTOR_HEADER);
-    if (innerH < 24 || sr.w < 30) continue;
+    if (innerH < 20 || sr.w < 26) continue;
     const industries = sec.industries;
     const useIndustries = industries.length > 1 && innerH >= 40;
     if (!useIndustries) {
@@ -5545,7 +6064,10 @@ function useContainerWidth() {
   useEffect(() => {
     if (!ref.current || typeof ResizeObserver === 'undefined') return;
     const el = ref.current;
-    setWidth(el.getBoundingClientRect().width);
+    // clientWidth and contentRect.width are both the inner content box (exclude
+    // the border), so the treemap layout matches where absolutely-positioned
+    // cells actually live — no off-by-border clipping at the right edge.
+    setWidth(el.clientWidth);
     const ro = new ResizeObserver(entries => {
       for (const entry of entries) setWidth(entry.contentRect.width);
     });
@@ -5622,7 +6144,12 @@ function HeatmapTreemap(_ref8c) {
   const width = fixedWidth || measuredWidth;
   const sectors = useMemo(() => buildSectorHierarchy(rows), [rows]);
   const height = fixedHeight || (width > 0 ? Math.max(minHeight || 360, width * (aspectRatio || 0.7)) : (minHeight || 360));
-  const cells = useMemo(() => width > 0 ? layoutTreemap(sectors, width, height) : [], [sectors, width, height]);
+  // The in-page treemap has a 1px border (fullscreen/zoom set border:none), so its
+  // content box is 2px shorter than the styled box-sizing:border-box height. Lay
+  // out cells to the content box so the bottom row isn't clipped by the border.
+  const BORDER = fixedWidth ? 0 : 2;
+  const layoutH = Math.max(0, height - BORDER);
+  const cells = useMemo(() => width > 0 ? layoutTreemap(sectors, width, layoutH) : [], [sectors, width, layoutH]);
   const isLight = typeof document !== 'undefined' && document.documentElement && document.documentElement.dataset.theme === 'light';
   return React.createElement("div", { ref: containerRef, className: "treemap", style: { height: height + 'px', width: fixedWidth ? fixedWidth + 'px' : undefined } },
     cells.map((cell, idx) => {
@@ -5761,7 +6288,11 @@ function ZoomPanHeatmap(_refZP) {
       } else if (ptrs.current.size === 1 && drag.current && zRef.current > 1.01) {
         const g = drag.current;
         const dx = e.clientX - g.x, dy = e.clientY - g.y;
-        if (Math.abs(dx) + Math.abs(dy) > 5) movedRef.current = true;
+        // Until the finger clears the threshold, treat it as a tap, not a pan:
+        // panning here calls preventDefault + re-pans mid-gesture, which swallows
+        // the cell button's click when zoomed in. Only commit once it's a drag.
+        if (!movedRef.current && Math.abs(dx) + Math.abs(dy) <= 5) return;
+        movedRef.current = true;
         commit(zRef.current, g.px + dx, g.py + dy);
         e.preventDefault();
       }
@@ -6087,8 +6618,13 @@ function HeatmapView(_ref8b) {
     const wAvg = totalVal > 0 ? dataRows.reduce((s, r) => s + r.changePct * r.value, 0) / totalVal : 0;
     return { up, down, flat, avg: wAvg, total: dataRows.length };
   }, [activeRows]);
-  const aspectRatio = mode === 'market' ? 0.62 : 0.5;
-  const minHeight = mode === 'market' ? 480 : 360;
+  const aspectRatio = mode === 'market' ? 0.62 : 0.82;
+  // Portfolio: scale the canvas with holding count so sectors (and the bottom
+  // rows) always have room to render their tiles instead of being clipped to a
+  // header strip. Market mode keeps its fixed, index-sized canvas.
+  const minHeight = mode === 'market'
+    ? 480
+    : Math.max(480, Math.min(1200, (activeRows.length || 0) * 40 + 140));
   const progressPct = progress ? Math.round(progress.done / progress.total * 100) : 0;
   return React.createElement("div", null,
     React.createElement("div", { className: "heatmap-mode-toggle" },
@@ -6213,7 +6749,8 @@ function PicksView(_ref9) {
       className: "current-price-label"
     }, "Current"), React.createElement(PriceBlock, {
       quote: q,
-      size: "lg"
+      size: "lg",
+      market: 'US'
     }), React.createElement("div", {
       className: "kv-row mt-3"
     }, React.createElement("div", {
@@ -6269,7 +6806,8 @@ function HedgesView(_ref0) {
       className: "tkr-name"
     }, h.name))), React.createElement(PriceBlock, {
       quote: q,
-      size: "lg"
+      size: "lg",
+      market: 'US'
     }), React.createElement("div", {
       className: "text-xs text-dim mono mt-2",
       style: {
@@ -6344,6 +6882,156 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
         React.createElement("li", null, React.createElement("span", null, "Only JSE-listed equities, ETFs, and unit trusts are eligible")),
         React.createElement("li", null, React.createElement("span", null, "Withdrawals reduce available contribution room permanently")),
         React.createElement("li", null, React.createElement("span", null, "40% penalty on contributions exceeding the annual limit")))));
+}
+// ─── Hot Topics ──────────────────────────────────────────────────────────────
+// Earnings countdown across mega-caps + your names + JSE, a scheduled macro
+// calendar (Fed/ECB/BOJ/BoE/SARB + data/energy), and AI-surfaced market-moving
+// news. Self-refreshes via the parent's 3h TTL cache; pull-to-refresh on demand.
+const HOT_TAG_LABEL = {
+  Fed: 'FED', ECB: 'ECB', BOJ: 'BOJ', BOE: 'BoE', SARB: 'SARB',
+  Data: 'DATA', Energy: 'ENERGY', Geo: 'GEO', Event: 'EVENT'
+};
+function hotCountdown(diff) {
+  if (isNaN(diff)) return '';
+  if (diff <= 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  return `in ${diff}d`;
+}
+function HotTopicsView(_refHT) {
+  let { hot, onLoad, prices, onOpenDetail, perplexityKey, onOpenAlerts, toast } = _refHT;
+  const onLoadRef = useRef(onLoad);
+  useEffect(() => { onLoadRef.current = onLoad; }, [onLoad]);
+  useEffect(() => { onLoadRef.current && onLoadRef.current(); }, []);
+  const doRefresh = () => {
+    if (hot && hot.loading) return;
+    if (toast) toast('Refreshing Hot Topics…');
+    onLoadRef.current && onLoadRef.current(true);
+  };
+  const data = hot && hot.data;
+  const loading = hot && hot.loading;
+  const earnings = (data && data.earnings) || [];
+  const macro = (data && data.macro) || [];
+  const news = (data && data.news) || [];
+
+  const updated = data && data.generatedAt
+    ? `Updated ${timeAgo(new Date(data.generatedAt).toISOString())}` : (loading ? 'Loading…' : '');
+
+  // ── header ──
+  const header = React.createElement("div", { className: "hot-header" },
+    React.createElement("div", null,
+      React.createElement("div", { className: "hot-title" }, "Hot Topics"),
+      React.createElement("div", { className: "hot-sub" },
+        data && data.aiUsed ? 'Live · AI + scheduled calendar' : 'Scheduled calendar · add a Perplexity key for live coverage'
+      )
+    ),
+    React.createElement("button", {
+      className: `icon-btn ${loading ? 'spin' : ''}`,
+      "aria-label": "Refresh",
+      disabled: loading,
+      onClick: doRefresh
+    }, React.createElement(Icon, { name: "refresh" }))
+  );
+
+  // ── earnings countdown ──
+  const earnSection = React.createElement("div", { className: "hot-section" },
+    React.createElement("div", { className: "eyebrow", style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+      React.createElement("span", null, "Earnings countdown"),
+      React.createElement("span", { className: "hot-count" }, earnings.length ? `${earnings.length} in 30d` : '')
+    ),
+    earnings.length > 0
+      ? React.createElement("div", { className: "hot-earn-grid" }, earnings.map((e, i) => {
+          const diff = hotDayDiff(hotToDate(e.date));
+          const q = prices[e.market + ':' + e.ticker];
+          const urgent = diff <= 3;
+          return React.createElement("div", {
+            key: e.ticker + e.date + i,
+            className: `hot-earn-card${urgent ? ' urgent' : ''}`,
+            onClick: () => onOpenDetail(e.ticker, e.market)
+          },
+            React.createElement("div", { className: "hot-earn-top" },
+              React.createElement("div", null,
+                React.createElement("div", { className: "hot-earn-tkr" },
+                  React.createElement("span", { className: "tkr" }, e.ticker),
+                  e.market && e.market !== 'US' && React.createElement("span", { className: "market-badge" }, e.market),
+                  e.yours && React.createElement("span", { className: "hot-yours" }, "Yours")
+                ),
+                e.company && React.createElement("div", { className: "hot-earn-name" }, prettyName(e.company))
+              ),
+              React.createElement("div", { className: `hot-cd${urgent ? ' urgent' : ''}` }, hotCountdown(diff))
+            ),
+            React.createElement("div", { className: "hot-earn-bottom" },
+              React.createElement("span", { className: "hot-earn-date" },
+                hotToDate(e.date) ? hotToDate(e.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : ''
+              ),
+              e.when && e.when !== 'TBD' && React.createElement("span", { className: "hot-when" }, e.when),
+              q && typeof q.changePct === 'number' && React.createElement("span", {
+                className: `hot-chg ${q.changePct >= 0 ? 'up' : 'down'}`
+              }, (q.changePct >= 0 ? '+' : '') + q.changePct.toFixed(2) + '%')
+            )
+          );
+        }))
+      : React.createElement("div", { className: "hot-empty" },
+          loading ? 'Loading earnings…' : 'No big-name earnings in the next 30 days.')
+  );
+
+  // ── macro calendar ──
+  const macroSection = React.createElement("div", { className: "hot-section" },
+    React.createElement("div", { className: "eyebrow" }, "Macro & events"),
+    macro.length > 0
+      ? React.createElement("div", { className: "hot-event-list" }, macro.map((m, i) => {
+          const d = hotToDate(m.date);
+          const diff = hotDayDiff(d);
+          const t = (m.type || 'Event');
+          const urgent = diff <= 2;
+          return React.createElement("div", { key: m.date + m.title + i, className: "hot-event" },
+            React.createElement("div", { className: "hot-event-when" },
+              React.createElement("div", { className: "hot-event-day" }, d ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''),
+              React.createElement("div", { className: `hot-event-cd${urgent ? ' urgent' : ''}` }, hotCountdown(diff))
+            ),
+            React.createElement("div", { className: "hot-event-body" },
+              React.createElement("div", { className: "hot-event-title" }, m.title),
+              m.detail && React.createElement("div", { className: "hot-event-detail" }, m.detail)
+            ),
+            React.createElement("span", { className: `hot-tag tag-${String(t).toLowerCase()}` }, HOT_TAG_LABEL[t] || String(t).toUpperCase())
+          );
+        }))
+      : React.createElement("div", { className: "hot-empty" }, loading ? 'Loading calendar…' : 'No scheduled events.')
+  );
+
+  // ── what's moving (news) ──
+  const newsSection = React.createElement("div", { className: "hot-section" },
+    React.createElement("div", { className: "eyebrow" }, "What's moving"),
+    news.length > 0
+      ? React.createElement("div", null, news.map((n, i) => React.createElement("a", {
+          key: i,
+          href: n.link && n.link !== '#' ? n.link : undefined,
+          target: "_blank", rel: "noopener",
+          className: "news-item news-item-ai"
+        },
+          React.createElement("div", { className: "news-title" }, React.createElement("span", { className: "news-ai-badge" }, "AI"), n.title),
+          n.summary && React.createElement("div", { className: "news-summary" }, n.summary),
+          React.createElement("div", { className: "news-meta" },
+            React.createElement("span", null, n.source),
+            n.pubDate && React.createElement(React.Fragment, null, React.createElement("span", null, "·"), React.createElement("span", null, timeAgo(n.pubDate))),
+            React.createElement(Icon, { name: "external", size: 11 })
+          )
+        )))
+      : React.createElement("div", { className: "hot-empty" },
+          perplexityKey
+            ? (loading ? 'Fetching headlines…' : 'No market-moving headlines right now.')
+            : React.createElement("span", null,
+                "Add a Perplexity key to surface live market-moving & energy news. ",
+                React.createElement("button", { className: "linklike", onClick: onOpenAlerts }, "Add key")
+              ))
+  );
+
+  return React.createElement("div", { className: "hot-view" },
+    header,
+    earnSection,
+    macroSection,
+    newsSection,
+    updated && React.createElement("div", { className: "hot-updated" }, updated)
+  );
 }
 function RulesView() {
   return React.createElement("div", null, React.createElement("div", {
@@ -6440,7 +7128,8 @@ function OverviewView(_ref1) {
     }, t), React.createElement("span", {
       className: `pill pill-${h?.actionType || 'hold'}`
     }, h?.action.split(' ')[0] || 'HOLD')), React.createElement(PriceBlock, {
-      quote: q
+      quote: q,
+      market: 'US'
     }));
   }))));
 }
@@ -6738,7 +7427,9 @@ function FundamentalsBlock(_refFB) {
   const loading = fundamentals && fundamentals.loading && !fundamentals.data;
   const f = fundamentals?.data || {};
   const cur = quote?.price && quote.price > 0 ? quote.price : null;
-  const ccySym = ({ ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' })[quote?.currency] || '$';
+  // Currency symbol follows the position's market (same source as fmt() used for
+  // the analyst targets below) so every figure on the card reads in one currency.
+  const ccySym = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).sym;
   const nativeCode = baseCurrency(f.currency || quote?.currency, market);
   // Market cap normalised to USD (FX base is USD: rates[code] = units per 1 USD).
   let mcapUsd = null;
@@ -6876,7 +7567,6 @@ function DetailModal(_ref10) {
     ticker,
     market
   } = selected;
-  const info = DATA.findInfo(ticker, market);
   const liveQuote = prices[priceKey(market, ticker)];
   // Stocks opened from the heatmap / picks aren't in the main price feed, so
   // fetch their quote on demand — this gives the detail its price, change and
@@ -6891,9 +7581,12 @@ function DetailModal(_ref10) {
     }
   }, [ticker, market]);
   const quote = liveQuote || fetchedQuote;
-  const displayName = resolveTickerName(ticker, market, quote) || null;
-  const ccy = market === 'JSE' ? 'ZAR' : 'USD';
   const pos = positions ? positions.find(p => p.ticker === ticker && p.market === market) : null;
+  // Name resolution prefers the name saved on the holding, then the live quote /
+  // curated lists. Null (never the bare ticker) so the subtitle doesn't echo the
+  // ticker that's already the card's heading.
+  const displayName = (pos && pos.name) ? prettyName(pos.name) : (resolveTickerName(ticker, market, quote) || null);
+  const ccy = marketCurrency(market);
   const [dir, setDir] = useState('above');
   const [target, setTarget] = useState(quote ? quote.price.toFixed(2) : '');
   const [note, setNote] = useState('');
@@ -6924,7 +7617,7 @@ function DetailModal(_ref10) {
     className: "modal-backdrop",
     onClick: onClose
   }), React.createElement("div", {
-    className: "modal-panel",
+    className: "modal-panel stock-detail-panel",
     ref: panelRef
   }, React.createElement("div", {
     className: "modal-handle"
@@ -6946,7 +7639,7 @@ function DetailModal(_ref10) {
     className: "modal-body"
   }, 
     React.createElement("div", { style: { position: 'relative' } },
-      React.createElement(PriceBlock, { quote: quote, size: "xl", showDailyRow: true }),
+      React.createElement(PriceBlock, { quote: quote, size: "xl", showDailyRow: true, market: market }),
       React.createElement("button", {
         className: "detail-alert-bell",
         onClick: () => setShowAlertForm(f => !f),
@@ -6955,42 +7648,36 @@ function DetailModal(_ref10) {
         alerts.length > 0 && React.createElement("span", { className: "detail-alert-count" }, alerts.length))
     ),
 
-    pos && quote && React.createElement("div", { className: "holding-card" },
-      React.createElement("div", { className: "eyebrow" }, "Your position"),
-      React.createElement("div", { className: "kv-row" },
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "Shares"),
-          React.createElement("div", { className: "kv-val mono" }, pos.shares)
-        ),
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "Avg price"),
-          React.createElement("div", { className: "kv-val mono" }, fmt(pos.costBasis, market))
-        ),
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "Current"),
-          React.createElement("div", { className: "kv-val mono" }, fmt(quote.price, market))
+    pos && quote && (() => {
+      // A plain top-to-bottom list reads far more clearly than a 3×2 grid:
+      // label on the left, value on the right, one fact per line. The two
+      // figures users care about most — what they paid vs. what it's worth now —
+      // sit together under a divider with the clearer "Purchase value" /
+      // "Current value" wording, with Profit / Loss as the bottom line.
+      const purchaseValue = pos.shares * pos.costBasis;
+      const currentValue = pos.shares * quote.price;
+      const pl = currentValue - purchaseValue;
+      const plPct = pos.costBasis > 0 ? ((quote.price - pos.costBasis) / pos.costBasis * 100) : 0;
+      const posLine = (label, value, opts) => React.createElement("div", {
+        className: "pos-line" + ((opts && opts.sep) ? " pos-line-sep" : "") + ((opts && opts.strong) ? " pos-line-strong" : "")
+      },
+        React.createElement("span", { className: "pos-line-label" }, label),
+        React.createElement("span", { className: "pos-line-val mono" + ((opts && opts.cls) ? " " + opts.cls : "") }, value));
+      return React.createElement("div", { className: "holding-card" },
+        React.createElement("div", { className: "eyebrow" }, "Your position"),
+        React.createElement("div", { className: "pos-list" },
+          posLine("Shares", pos.shares),
+          posLine("Avg price", fmt(pos.costBasis, market)),
+          posLine("Current price", fmt(quote.price, market)),
+          posLine("Purchase value", fmt(purchaseValue, market), { sep: true }),
+          posLine("Current value", fmt(currentValue, market)),
+          posLine("Profit / Loss",
+            React.createElement(React.Fragment, null,
+              fmtCcySigned(pl, ccy), " (", plPct >= 0 ? '+' : '', plPct.toFixed(1), "%)"),
+            { strong: true, cls: pl >= 0 ? 'text-up' : 'text-down' })
         )
-      ),
-      React.createElement("div", { className: "kv-row" },
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "Market value"),
-          React.createElement("div", { className: "kv-val mono" }, fmt(pos.shares * quote.price, market))
-        ),
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "Cost basis"),
-          React.createElement("div", { className: "kv-val mono" }, fmt(pos.shares * pos.costBasis, market))
-        ),
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "P&L"),
-          (() => {
-            const pl = (quote.price - pos.costBasis) * pos.shares;
-            const plPct = pos.costBasis > 0 ? ((quote.price - pos.costBasis) / pos.costBasis * 100) : 0;
-            return React.createElement("div", { className: `kv-val mono ${pl >= 0 ? 'text-up' : 'text-down'}` },
-              fmtCcySigned(pl, ccy), " (", plPct >= 0 ? '+' : '', plPct.toFixed(1), "%)");
-          })()
-        )
-      )
-    ),
+      );
+    })(),
 
     quote && quote.yearHigh ? React.createElement("div", {
       className: "ath-strip"
@@ -7041,7 +7728,7 @@ function DetailModal(_ref10) {
         ),
         React.createElement("div", { className: "alert-target-row" },
           React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
-            React.createElement("span", { className: "prefix" }, ccy === 'ZAR' ? 'R' : '$'),
+            React.createElement("span", { className: "prefix" }, CURRENCY_SYMBOLS[ccy] || '$'),
             React.createElement("input", {
               type: "text", inputMode: "decimal",
               autoComplete: "off", autoCorrect: "off", spellCheck: false,
@@ -7061,7 +7748,7 @@ function DetailModal(_ref10) {
           onClick: submitAlert
         }, React.createElement(Icon, { name: "plus" }),
           " Alert when ", dir === 'above' ? 'above ' : 'below ',
-          target && isFinite(parseDecimal(target)) ? (ccy === 'ZAR' ? 'R' : '$') + parseDecimal(target).toFixed(2) : 'target')
+          target && isFinite(parseDecimal(target)) ? (CURRENCY_SYMBOLS[ccy] || '$') + parseDecimal(target).toFixed(2) : 'target')
       )
     ),
 
@@ -7097,10 +7784,17 @@ function AlertsModal(_ref11) {
     onClose,
     onRemoveAlert,
     onClearTriggered,
-    onRequestPerm
+    onRequestPerm,
+    pushBackend,
+    pushStatus,
+    onConnectPush,
+    onTestPush,
+    onDisconnectPush
   } = _ref11;
   const [pkDraft, setPkDraft] = useState(perplexityKey || '');
   const [pkReveal, setPkReveal] = useState(false);
+  const [pushDraft, setPushDraft] = useState(pushBackend || '');
+  useEffect(() => { setPushDraft(pushBackend || ''); }, [pushBackend]);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
@@ -7190,6 +7884,57 @@ function AlertsModal(_ref11) {
   }, "Notifications not supported"), React.createElement("div", {
     className: "perm-body"
   }, "This browser doesn't support web notifications. Alerts will still show as in-app toasts.")),
+    (() => {
+      const meta = ({
+        connected:   { cls: 'ok',   icon: 'checkCircle', label: 'connected' },
+        connecting:  { cls: '',     icon: 'refresh',     label: 'connecting…' },
+        error:       { cls: 'err',  icon: 'alert',       label: 'not connected' },
+        unsupported: { cls: 'warn', icon: 'alert',       label: 'unavailable here' }
+      })[pushStatus] || { cls: '', icon: 'bell', label: 'off' };
+      const body = pushStatus === 'connected'
+        ? 'Connected. Your alerts are checked on the server every minute during market hours and pushed instantly — even with Playbook fully closed, on iPhone and Android.'
+        : pushStatus === 'connecting'
+        ? 'Connecting to your push server…'
+        : pushStatus === 'unsupported'
+        ? "Push isn't available in this browser. On iPhone, install to the Home Screen and reopen from the icon (iOS 16.4+)."
+        : pushStatus === 'error'
+        ? "Couldn't reach the server. Check the URL, make sure notifications are enabled, and that the worker is deployed."
+        : 'Optional — the path to always-on, app-closed alerts. Deploy the free worker in the backend/ folder, then paste its URL here. Without it, iPhone alerts only fire while the app is open or recently used.';
+      return React.createElement("div", { className: `perm-box ${meta.cls}` },
+        React.createElement("div", { className: "perm-title" },
+          React.createElement(Icon, { name: meta.icon, size: 14 }),
+          " Background push server · ", meta.label
+        ),
+        React.createElement("div", { className: "perm-body" }, body),
+        React.createElement("div", { className: "pk-row" },
+          React.createElement("input", {
+            type: "url",
+            inputMode: "url",
+            autoComplete: "off",
+            autoCapitalize: "none",
+            spellCheck: false,
+            placeholder: "https://playbook-push.<you>.workers.dev",
+            value: pushDraft,
+            onChange: e => setPushDraft(e.target.value),
+            className: "pk-input"
+          }),
+          pushStatus === 'connected'
+            ? React.createElement("button", { className: "btn btn-ghost btn-xs", type: "button", onClick: onDisconnectPush }, "Disconnect")
+            : React.createElement("button", {
+                className: "btn btn-primary btn-xs",
+                type: "button",
+                disabled: pushStatus === 'connecting',
+                onClick: () => onConnectPush(pushDraft)
+              }, pushStatus === 'connecting' ? "…" : "Connect")
+        ),
+        pushStatus === 'connected' && React.createElement("button", {
+          className: "btn btn-ghost btn-sm",
+          type: "button",
+          style: { marginTop: '8px' },
+          onClick: onTestPush
+        }, React.createElement(Icon, { name: "bell", size: 14 }), " Send test push")
+      );
+    })(),
     React.createElement("div", { className: `perm-box ${pkConfigured ? 'ok' : ''}` },
       React.createElement("div", { className: "perm-title" },
         React.createElement(Icon, { name: pkConfigured ? "checkCircle" : "bell", size: 14 }),
@@ -8074,7 +8819,7 @@ function PositionModal(_ref12) {
     className: "form-group"
   }, React.createElement("label", {
     className: "form-label"
-  }, "Cost basis per share"), React.createElement("div", {
+  }, "Purchase price per share"), React.createElement("div", {
     className: "input-prefix-wrap"
   }, React.createElement("span", {
     className: "prefix"
@@ -8588,8 +9333,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                     React.createElement("span", { className: "del-group-count" }, g.rows.length)),
                   React.createElement("div", { className: "del-rows" },
                     g.rows.map(p => {
-                      const info = DATA.findInfo(p.ticker, p.market);
-                      const nm = p.name || (info && info.name) || p.ticker;
+                      const nm = positionDisplayName(p, p.market);
                       return React.createElement("label", {
                         key: p.id, className: "del-row" + (selectedDel.has(p.id) ? " sel" : "")
                       },
