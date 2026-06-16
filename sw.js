@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v14';
+const CACHE_NAME   = 'playbook-shell-v17';
 const CDN_CACHE    = 'playbook-cdn-v1';
 
 const SHELL_ASSETS = [
@@ -137,8 +137,11 @@ self.addEventListener('push', (e) => {
     self.registration.showNotification(data.title || 'Playbook alert', {
       body: data.body || '',
       tag: data.tag || 'playbook-push',
+      icon: data.icon || './icon-192.png',
+      badge: data.badge || './icon-192.png',
       data: data.data || { url: '/' },
-      vibrate: [100, 50, 100]
+      vibrate: [100, 50, 100],
+      renotify: !!data.tag
     })
   );
 });

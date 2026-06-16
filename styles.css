@@ -605,6 +605,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: contain;
 }
+/* Stock detail card always opens at a fixed, almost-fullscreen height so every
+   stock — regardless of how much fundamentals/chart content it has — opens to
+   the same size instead of hugging its content. */
+.modal-panel.stock-detail-panel {
+  height: calc(100vh - 48px); height: calc(100dvh - 48px);
+}
 .modal-panel.swiping { animation: none; transition: none; }
 .modal-panel.swipe-close { animation: slide-down 0.26s cubic-bezier(0.4, 0, 1, 1) forwards; }
 @keyframes slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -632,6 +638,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 @media (min-width: 640px) {
   .modal { align-items: flex-end; justify-content: flex-end; }
   .modal-panel { height: 100%; max-height: 100vh; border-radius: 0; border-left: 1px solid var(--border); max-width: 520px; animation: slide-right 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+  .modal-panel.stock-detail-panel { height: 100%; }
   @keyframes slide-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
   .modal-handle { display: none; }
 }
@@ -1117,8 +1124,24 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   margin-bottom: 6px;
 }
 .holding-card .eyebrow { margin-bottom: 10px; }
-.holding-card .kv-row { gap: 12px; }
-.holding-card .kv-row + .kv-row { margin-top: 8px; }
+
+/* Your-position list (stock detail) — one fact per line, label left / value
+   right, so purchase vs. current value are easy to read off and compare. */
+.pos-list { display: flex; flex-direction: column; }
+.pos-line {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.pos-line:first-child { border-top: none; }
+.pos-line-label {
+  font-size: 12px; color: var(--text-muted); font-family: var(--mono);
+  letter-spacing: 0.02em;
+}
+.pos-line-val { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--text); }
+/* Divider before the value/P&L block carries a touch more weight. */
+.pos-line-sep { border-top-color: var(--text-dim); margin-top: 2px; }
+.pos-line-strong .pos-line-label { color: var(--text); font-weight: 600; }
+.pos-line-strong .pos-line-val { font-size: 15px; }
 
 /* Card bell icon (watchlist) */
 .card-alert-bell {
@@ -1925,7 +1948,9 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   position: relative; width: 100%;
   background: #07070a; border-radius: 12px; overflow: hidden;
   border: 1px solid var(--border);
-  padding: 2px;
+  /* No padding: cells anchor to the padding edge and the layout fills the inner
+     content box exactly. Cell GAP insets already provide the gutter. Padding here
+     would shift the coordinate origin and clip the right/bottom edges. */
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
 }
 .tm-cell {
@@ -2302,7 +2327,11 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .chart-pie-legend-tkr {
   font-family: var(--mono); font-weight: 600; font-size: 11px;
   color: var(--text);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Holdings mode shows the company name (not the ticker): use the sans face and
+   let it fill the row so it truncates cleanly with the % pinned right. */
+.chart-pie-legend-tkr.is-name { font-family: var(--sans); font-size: 12px; flex: 1; }
 .chart-pie-legend-pct {
   font-family: var(--mono); font-size: 10px; color: var(--text-dim);
   margin-left: auto;
@@ -2505,15 +2534,6 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .chart-pie-legend-item.is-clickable:hover { background: var(--bg-elev); opacity: 1; }
 .chart-pie-legend-go { color: var(--text-dim); margin-left: 2px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
 .chart-pie-legend-item:hover .chart-pie-legend-go { opacity: 0.6; }
-/* Holdings view: "TICKER  Company name" with a fixed-width ticker column so the
-   names line up at the same x down the legend. */
-.chart-pie-legend.named .chart-pie-legend-tkr { flex: 0 0 auto; min-width: 48px; }
-.chart-pie-legend-co {
-  flex: 1; min-width: 0; font-size: 10px; color: var(--text-muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  text-align: left;
-}
-.chart-pie-legend.named .chart-pie-legend-pct { margin-left: 8px; }
 
 .sh-panel { max-width: 460px; }
 .sh-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
@@ -2592,3 +2612,61 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .cfi-row-body { flex-wrap: wrap; }
   .cfi-note { flex-basis: 100%; }
 }
+
+/* ─── Hot Topics ─────────────────────────────────────────────────────────── */
+.hot-view { display: flex; flex-direction: column; gap: 24px; }
+.hot-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.hot-title { font-family: var(--serif); font-size: 25px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+.hot-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; max-width: 30ch; }
+.hot-count { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; color: var(--text-dim); }
+.hot-empty { font-size: 13px; color: var(--text-dim); padding: 10px 2px; line-height: 1.5; }
+.hot-updated { text-align: center; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; color: var(--text-dim); padding-top: 2px; }
+.linklike { background: none; border: none; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; padding: 0; text-decoration: underline; }
+
+/* Earnings countdown cards */
+.hot-earn-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 560px) { .hot-earn-grid { grid-template-columns: repeat(2, 1fr); } }
+.hot-earn-card {
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px;
+  padding: 13px 14px; cursor: pointer; transition: border-color 0.15s, transform 0.1s;
+}
+.hot-earn-card:active { transform: scale(0.985); background: var(--bg-elev); }
+.hot-earn-card.urgent { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 7%, var(--bg-raised)), var(--bg-raised)); }
+.hot-earn-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.hot-earn-tkr { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hot-earn-tkr .tkr { font-size: 15px; }
+.hot-earn-name { font-size: 12px; color: var(--text-dim); margin-top: 3px; line-height: 1.3; }
+.hot-yours { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; color: var(--emerald); background: color-mix(in srgb, var(--emerald) 16%, transparent); }
+.hot-cd { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); white-space: nowrap; }
+.hot-cd.urgent { color: var(--amber); }
+.hot-earn-bottom { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.hot-earn-date { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.hot-when { font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: 0.06em; padding: 2px 5px; border-radius: 4px; background: var(--bg-elev); color: var(--text-muted); }
+.hot-chg { font-family: var(--mono); font-size: 11px; font-weight: 600; margin-left: auto; }
+.hot-chg.up { color: var(--emerald); }
+.hot-chg.down { color: var(--rose); }
+
+/* Macro & events list */
+.hot-event-list { display: flex; flex-direction: column; gap: 8px; }
+.hot-event {
+  display: flex; align-items: center; gap: 13px;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px 14px;
+}
+.hot-event-when { flex-shrink: 0; width: 56px; text-align: center; }
+.hot-event-day { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--text); }
+.hot-event-cd { font-family: var(--mono); font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.hot-event-cd.urgent { color: var(--amber); }
+.hot-event-body { flex: 1; min-width: 0; }
+.hot-event-title { font-size: 13px; font-weight: 500; line-height: 1.35; }
+.hot-event-detail { font-size: 11px; color: var(--text-dim); margin-top: 2px; line-height: 1.35; }
+.hot-tag { flex-shrink: 0; font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 5px; border: 1px solid; }
+.hot-tag.tag-fed    { color: var(--blue);    background: color-mix(in srgb, var(--blue) 13%, transparent);    border-color: color-mix(in srgb, var(--blue) 32%, transparent); }
+.hot-tag.tag-ecb    { color: var(--purple);  background: color-mix(in srgb, var(--purple) 13%, transparent);  border-color: color-mix(in srgb, var(--purple) 32%, transparent); }
+.hot-tag.tag-boj    { color: var(--rose);    background: color-mix(in srgb, var(--rose) 13%, transparent);    border-color: color-mix(in srgb, var(--rose) 32%, transparent); }
+.hot-tag.tag-boe    { color: var(--amber);   background: color-mix(in srgb, var(--amber) 13%, transparent);   border-color: color-mix(in srgb, var(--amber) 32%, transparent); }
+.hot-tag.tag-sarb   { color: var(--emerald); background: color-mix(in srgb, var(--emerald) 13%, transparent); border-color: color-mix(in srgb, var(--emerald) 32%, transparent); }
+.hot-tag.tag-energy { color: var(--amber);   background: color-mix(in srgb, var(--amber) 13%, transparent);   border-color: color-mix(in srgb, var(--amber) 32%, transparent); }
+.hot-tag.tag-data   { color: var(--text-muted); background: var(--bg-elev); border-color: var(--border-strong); }
+.hot-tag.tag-geo    { color: var(--rose);    background: color-mix(in srgb, var(--rose) 13%, transparent);    border-color: color-mix(in srgb, var(--rose) 32%, transparent); }
+.hot-tag.tag-event  { color: var(--blue);    background: color-mix(in srgb, var(--blue) 13%, transparent);    border-color: color-mix(in srgb, var(--blue) 32%, transparent); }
