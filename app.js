@@ -7130,8 +7130,7 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove }) {
         })
   ) : null;
 
-  return React.createElement("div", { className: "card tfsa-room-card mb-4" },
-    React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Contribution room"),
+  return React.createElement("div", { className: "tfsa-room-inner" },
     bar("This tax year", tfsaTaxYearLabel(curStart), annualUsed, TFSA_ANNUAL_LIMIT, annualPct,
       React.createElement("div", { className: "tfsa-limit-sub" + (annualLeft < 0 ? " warn" : "") },
         annualLeft >= 0 ? fmtRand(annualLeft) + " left this tax year" : fmtRand(-annualLeft) + " over the annual limit (40% penalty applies)")),
@@ -7321,21 +7320,18 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
   const pnl = totalValue - totalCost;
   const pnlPct = totalCost > 0 ? pnl / totalCost * 100 : 0;
   const hasPositions = positions.length > 0;
+  const deposits = tfsaDeposits || [];
+  const curStart = currentTfsaTaxYearStart();
+  const annualUsed = deposits.reduce((s, d) => s + (tfsaTaxYearStart(d.date) === curStart ? (d.amount || 0) : 0), 0);
 
-  // ── 1. Holdings at a glance — the first thing in the tab ──
-  const holdingsGraph = hasPositions ? React.createElement("div", { className: "card mb-4" },
-    React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Holdings at a glance"),
+  // ── 1. TFSA holdings — graph + account value/cost/P&L, first in the tab ──
+  const holdingsCard = hasPositions ? React.createElement("div", { className: "card mb-4" },
+    React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "TFSA holdings"),
     React.createElement(PortfolioPieChart, {
       positions, prices, displayCurrency: 'ZAR', fxRates,
       onOpenDetail, sectorCache, fundamentals, availableModes: ['ticker', 'sector']
-    })
-  ) : null;
-
-  // ── 5. TFSA information — collapsible at the bottom (account value + rules) ──
-  const infoPanel = React.createElement(Collapsible, {
-    title: "TFSA information", subtitle: "Account value, cost & the rules", icon: "list"
-  },
-    React.createElement("div", { className: "kv-row", style: { marginBottom: 12 } },
+    }),
+    React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
         React.createElement("div", { className: "kv-label" }, "Value"),
         React.createElement("div", { className: "kv-val mono" }, fmtRand(totalValue, 2))),
@@ -7346,8 +7342,14 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
         React.createElement("div", { className: "kv-label" }, "P&L"),
         React.createElement("div", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
           (pnl >= 0 ? '+' : '−') + fmtRand(pnl, 2),
-          " (", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(1), "%)"))),
-    React.createElement("div", { className: "eyebrow", style: { marginBottom: 6 } }, "Rules"),
+          " (", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(1), "%)")))
+  ) : null;
+
+  // ── TFSA information — collapsible, the rules only (value/cost/P&L now live in
+  //    the holdings card) ──
+  const infoPanel = React.createElement(Collapsible, {
+    title: "TFSA information", subtitle: "How the tax-free account works", icon: "list"
+  },
     React.createElement("ul", { className: "bullet-list" },
       React.createElement("li", null, React.createElement("span", null, fmtRand(TFSA_ANNUAL_LIMIT), " annual contribution limit (per tax year, 1 Mar – end Feb)")),
       React.createElement("li", null, React.createElement("span", null, fmtRand(TFSA_LIFETIME_LIMIT), " lifetime contribution limit")),
@@ -7358,13 +7360,8 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
   );
 
   return React.createElement("div", null,
-    holdingsGraph,
-    // ── 2. Contribution room: annual + lifetime bars + editable deposit log ──
-    React.createElement(TFSAContributions, {
-      deposits: tfsaDeposits || [],
-      onAdd: onAddTfsaDeposit, onUpdate: onUpdateTfsaDeposit, onRemove: onRemoveTfsaDeposit
-    }),
-    // ── 3. Holdings list ──
+    holdingsCard,
+    // ── 2. Holdings list ──
     React.createElement("div", { className: "flex justify-between items-center mb-3" },
       React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Your holdings"),
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
@@ -7384,12 +7381,21 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
             onBuyPosition: onBuyPosition,
             onSellPosition: onSellPosition
           }))),
-    // ── 4. Contribution planner — collapsible dropdown ──
+    // ── 3. Contribution planner — collapsible dropdown ──
     hasPositions ? React.createElement("div", { style: { marginTop: 16 } },
       React.createElement(Collapsible, {
         title: "Contribution planner", subtitle: "What to buy each month to hold your structure", icon: "gauge"
       }, React.createElement(TFSABalancer, { positions: positions, prices: prices, onBuyPosition: onBuyPosition }))
     ) : null,
+    // ── 4. Contribution room — annual + lifetime bars + deposit log, now a
+    //    collapsible dropdown sitting under the planner ──
+    React.createElement(Collapsible, {
+      title: "Contribution room", icon: "activity",
+      subtitle: fmtRand(annualUsed) + " of " + fmtRand(TFSA_ANNUAL_LIMIT) + " used this tax year"
+    }, React.createElement(TFSAContributions, {
+      deposits: deposits,
+      onAdd: onAddTfsaDeposit, onUpdate: onUpdateTfsaDeposit, onRemove: onRemoveTfsaDeposit
+    })),
     // ── 5. TFSA information — collapsible at the bottom ──
     infoPanel
   );
