@@ -2770,8 +2770,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .collapse-chevron.open { transform: rotate(90deg); }
 .collapse-body { padding: 4px 16px 16px; border-top: 1px solid var(--border); }
 
+/* ── TFSA holdings: account value/cost/P&L beneath the chart ── */
+.tfsa-holdings-stats { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+
 /* ── TFSA contribution room (annual + lifetime limit bars) ── */
 .tfsa-room-card { padding: 16px; }
+.tfsa-room-inner { padding-top: 4px; }
 .tfsa-limit { margin-bottom: 16px; }
 .tfsa-limit-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
 .tfsa-limit-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
