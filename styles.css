@@ -1125,6 +1125,54 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .holding-card .eyebrow { margin-bottom: 10px; }
 
+/* Add-to-watchlist control inside the stock card */
+.wl-control { margin: 12px 0 6px; }
+.wl-toggle {
+  width: 100%; display: flex; align-items: center; gap: 9px;
+  padding: 11px 14px; border-radius: 12px;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--mono); font-size: 13px; font-weight: 600;
+  letter-spacing: 0.01em; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.wl-toggle:hover { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); }
+.wl-toggle > svg { color: var(--blue); flex-shrink: 0; }
+.wl-toggle.watching { border-color: color-mix(in srgb, var(--emerald) 40%, var(--border)); background: color-mix(in srgb, var(--emerald) 9%, var(--bg-raised)); }
+.wl-toggle.watching > svg { color: var(--emerald); }
+.wl-toggle-label { flex: 1 1 auto; text-align: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-toggle-list { color: var(--text-dim); font-weight: 500; }
+.wl-toggle-caret { color: var(--text-dim) !important; transform: rotate(90deg); transition: transform 0.2s ease; }
+.wl-toggle-caret.open { transform: rotate(-90deg); }
+.wl-panel {
+  margin-top: 6px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--bg-raised); overflow: hidden;
+  animation: wl-panel-in 0.16s ease;
+}
+@keyframes wl-panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.wl-panel-head {
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--mono);
+  padding: 10px 14px 6px;
+}
+.wl-list-row {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; background: transparent; border: none;
+  border-top: 1px solid var(--border); cursor: pointer;
+  color: var(--text); font-family: var(--mono); font-size: 13px; text-align: left;
+  transition: background 0.12s;
+}
+.wl-list-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.wl-list-row > svg { color: var(--text-dim); flex-shrink: 0; }
+.wl-list-row.current { color: var(--emerald); }
+.wl-list-row.current > svg { color: var(--emerald); }
+.wl-list-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-list-tag { font-size: 10px; color: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; }
+.wl-new-trigger > svg { color: var(--blue); }
+.wl-remove { color: var(--rose); }
+.wl-remove > svg { color: var(--rose); }
+.wl-new-row { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); align-items: center; }
+.wl-new-input { flex: 1 1 auto; min-width: 0; padding: 9px 11px; font-size: 14px; }
+
 /* Your-position list (stock detail) — one fact per line, label left / value
    right, so purchase vs. current value are easy to read off and compare. */
 .pos-list { display: flex; flex-direction: column; }
@@ -1592,6 +1640,72 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .market-picker-opt .country { font-size: 14px; font-weight: 600; color: var(--text); }
 .market-picker-opt .exch { font-size: 11px; color: var(--text-dim); letter-spacing: 0.04em; }
 
+/* Multiple watchlists — list tabs, management, and per-list filtering */
+.wl-tabbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.wl-tabs {
+  flex: 1 1 auto; min-width: 0; display: flex; gap: 6px;
+  overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
+.wl-tabs::-webkit-scrollbar { display: none; }
+.wl-tab {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 999px;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  color: var(--text-muted); cursor: pointer; white-space: nowrap;
+  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.wl-tab:hover { color: var(--text); border-color: color-mix(in srgb, var(--text-dim) 50%, var(--border)); }
+.wl-tab.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.wl-tab-count {
+  font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--text-dim) 22%, transparent); color: inherit; min-width: 18px; text-align: center;
+}
+.wl-tab.active .wl-tab-count { background: color-mix(in srgb, var(--bg) 28%, transparent); }
+.wl-tab-new { color: var(--blue); border-style: dashed; }
+.wl-tab-new:hover { color: var(--blue); border-color: var(--blue); }
+.wl-add-btn { flex: 0 0 auto; }
+.wl-inline-form { display: flex; gap: 8px; align-items: center; }
+.wl-inline-input { flex: 1 1 auto; min-width: 0; padding: 9px 12px; font-size: 14px; }
+.wl-manage {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-raised); flex-wrap: wrap;
+}
+.wl-manage-label { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+.wl-manage-actions { display: flex; gap: 6px; }
+.wl-danger { color: var(--rose) !important; }
+.wl-filterbar { display: flex; gap: 8px; align-items: center; }
+.wl-search { position: relative; flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+.wl-search-icon { position: absolute; left: 11px; color: var(--text-dim); pointer-events: none; }
+.wl-search-input { padding-left: 34px; padding-right: 34px; font-size: 14px; }
+.wl-search-clear {
+  position: absolute; right: 6px; width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; color: var(--text-dim);
+}
+.wl-search-clear:hover { color: var(--text); background: var(--bg-elev); }
+.wl-sort { flex: 0 0 auto; width: auto; min-width: 130px; font-size: 13px; padding: 10px 30px 10px 12px; }
+.wl-market-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.wl-market-chips::-webkit-scrollbar { display: none; }
+.wl-mchip {
+  flex: 0 0 auto; padding: 5px 11px; border-radius: 999px;
+  background: var(--bg-raised); border: 1px solid var(--border); color: var(--text-muted);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.wl-mchip.active { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); }
+.wl-add-hint { display: flex; gap: 8px; align-items: flex-start; font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--text-dim); margin-bottom: 12px; }
+.wl-add-hint > svg { color: var(--blue); flex-shrink: 0; margin-top: 2px; }
+.wl-add-hint b { color: var(--text); font-weight: 600; }
+.wl-card-list {
+  font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; font-family: var(--mono);
+  padding: 2px 7px; border-radius: 6px; white-space: nowrap;
+  background: color-mix(in srgb, var(--purple) 16%, transparent); color: color-mix(in srgb, var(--purple) 80%, var(--text));
+}
+.wl-empty-sm { padding: 36px 16px; }
+.wl-empty-sm p { margin-top: 8px; max-width: 280px; }
+
 /* Watchlist add card — market on top, search row below */
 .watchlist-add .form-label { margin-bottom: 4px; }
 .watchlist-add .form-label + .form-label { margin-top: 4px; }
@@ -1929,6 +2043,17 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .heatmap-toggle-btn:hover { color: var(--text); border-color: color-mix(in srgb, var(--text-dim) 50%, var(--border)); }
 .heatmap-toggle-btn.active {
   background: var(--text); color: var(--bg); border-color: var(--text);
+}
+/* On phones the 9 exchange chips wrapped to ~3 rows, eating ~64px of vertical
+   space and shoving the heatmap's bottom rows off-screen. Keep them on one
+   horizontally-scrollable row (like the main nav) so the map gets that height back. */
+@media (max-width: 680px) {
+  .heatmap-toggle {
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+    -webkit-overflow-scrolling: touch; margin: 4px 0 10px; padding-bottom: 2px;
+  }
+  .heatmap-toggle::-webkit-scrollbar { display: none; }
+  .heatmap-toggle-btn { flex: 0 0 auto; white-space: nowrap; }
 }
 .heatmap-meta {
   display: flex; align-items: center; justify-content: space-between;
