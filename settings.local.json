@@ -32,7 +32,8 @@
       "Bash(curl -s --max-time 20 \"https://stockanalysis.com/api/screener/s/f?m=marketCap&s=desc&c=s,n,earningsDate&f=exchange-is-NASDAQ&i=stocks\")",
       "Bash(curl -s -I --max-time 15 \"https://stockanalysis.com/api/symbol/s/MU/overview\")",
       "Bash(curl -s --max-time 15 \"https://stockanalysis.com/api/symbol/s/JSE-NPN/overview\")",
-      "Bash(curl -s --max-time 15 \"https://api.stockanalysis.com/api/screener/s/f?m=marketCap&c=s,n,earningsDate&s=marketCap-desc&i=stocks\")"
+      "Bash(curl -s --max-time 15 \"https://api.stockanalysis.com/api/screener/s/f?m=marketCap&c=s,n,earningsDate&s=marketCap-desc&i=stocks\")",
+      "Bash(grep -n \"useState, useEffect\\\\|const { use\\\\|useMemo\\\\|window.React\\\\|= React;\" app.js)"
     ]
   }
 }

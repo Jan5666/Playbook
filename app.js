@@ -3,6 +3,7 @@
 const {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useMemo,
   useCallback
@@ -2332,6 +2333,13 @@ function usePortfolio(fxRates, toast) {
   const [alerts, setAlerts] = usePersistedState('pb.alerts.v2', []);
   const [contributions, setContributions] = usePersistedState('pb.contributions.v1', []);
   const [transactions, setTransactions] = usePersistedState('pb.transactions.v1', []);
+  // TFSA deposit log — drives the annual (R46k) / lifetime (R500k) contribution
+  // bars. Two kinds of entry live here: 'manual' (the user logs cash they put in,
+  // e.g. a baseline for what they contributed before/outside the app) and
+  // 'purchase' (auto-appended below whenever a TFSA holding is bought in-app, so
+  // ongoing buys count toward the limits without manual logging). All entries are
+  // editable/removable so the user can correct double-counts.
+  const [tfsaDeposits, setTfsaDeposits] = usePersistedState('pb.tfsa.deposits.v1', []);
   // Background-resolved sectors for holdings the static map can't classify,
   // keyed "MARKET:TICKER" → { sector, industry, at }. Persisted so the dashboard
   // allocation stays accurate across reloads without re-fetching.
@@ -2392,6 +2400,13 @@ function usePortfolio(fxRates, toast) {
       shares: newShares, price: newCost, notes: notes || '',
       date: purchaseDate || today, createdAt: new Date().toISOString()
     }]);
+    // A TFSA buy is a contribution — auto-log it so the limit bars stay current.
+    if (market === 'TFSA' && isFinite(newShares * newCost) && newShares * newCost > 0) {
+      setTfsaDeposits(prev => [...prev, {
+        id: uid(), amount: newShares * newCost, date: purchaseDate || today,
+        note: 'Bought ' + tickerUp, source: 'purchase', ticker: tickerUp
+      }]);
+    }
     toast(positions.find(p => p.ticker === tickerUp && p.market === market) ? 'Shares added to existing position' : 'Position added');
   };
   // Bulk import (from file/paste). Resolves historical FX per dated row, then
@@ -2440,6 +2455,14 @@ function usePortfolio(fxRates, toast) {
       shares: r.shares, price: r.costBasis, notes: r.notes || '',
       date: r.purchaseDate || today, createdAt: new Date().toISOString()
     }))]);
+    // Imported TFSA buys count as contributions too (see addPosition).
+    const tfsaBuys = prepared
+      .filter(r => r.market === 'TFSA' && isFinite(r.shares * r.costBasis) && r.shares * r.costBasis > 0)
+      .map(r => ({
+        id: uid(), amount: r.shares * r.costBasis, date: r.purchaseDate || today,
+        note: 'Bought ' + r.ticker.toUpperCase(), source: 'purchase', ticker: r.ticker.toUpperCase()
+      }));
+    if (tfsaBuys.length) setTfsaDeposits(prev => [...prev, ...tfsaBuys]);
     // Learn any sector the user assigned to an unrecognised symbol during import,
     // so the allocation chart classifies it from now on instead of "Other".
     const learned = {};
@@ -2526,6 +2549,26 @@ function usePortfolio(fxRates, toast) {
     toast(`Imported ${mapped.length} ${mapped.length === 1 ? 'entry' : 'entries'}`);
     return mapped.length;
   };
+  // ── TFSA deposit log CRUD ──
+  const addTfsaDeposit = (amount, date, note) => {
+    const amt = parseFloat(amount);
+    if (!isFinite(amt) || amt === 0 || !date) { toast('Enter an amount and date'); return; }
+    setTfsaDeposits(prev => [...prev, { id: uid(), amount: amt, date, note: note || '', source: 'manual' }]);
+    toast('Deposit logged');
+  };
+  const updateTfsaDeposit = (id, updates) => {
+    setTfsaDeposits(prev => prev.map(d => {
+      if (d.id !== id) return d;
+      const next = { ...d, ...updates };
+      if (updates.amount != null) next.amount = parseFloat(updates.amount);
+      return next;
+    }));
+    toast('Deposit updated');
+  };
+  const removeTfsaDeposit = (id) => {
+    setTfsaDeposits(prev => prev.filter(d => d.id !== id));
+    toast('Deposit removed');
+  };
   const addWatch = (ticker, market, name) => {
     ticker = ticker.toUpperCase();
     if (watchlist.some(w => w.ticker === ticker && w.market === market)) {
@@ -2570,9 +2613,11 @@ function usePortfolio(fxRates, toast) {
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
+    tfsaDeposits, setTfsaDeposits,
     sectorCache, setSectorCache,
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
+    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit,
     addWatch, removeWatch,
     addAlert, removeAlert
   };
@@ -2594,6 +2639,27 @@ function ToastProvider(_ref2) {
   }, toast));
 }
 const useToast = () => React.useContext(ToastContext);
+// Canonical tab registry. Order here is the default layout (TFSA sits between
+// Heatmap and New picks); the user can reorder/hide via Settings → Tabs, which
+// persists as a key list. reconcileTabOrder() keeps a stored order valid as the
+// app gains/loses tabs: known keys keep their saved order, brand-new tabs are
+// appended (so an update never hides a new feature), unknown keys are dropped.
+const ALL_TABS = [
+  ['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'],
+  ['hot', 'Hot Topics'], ['heatmap', 'Heatmap'], ['tfsa', 'TFSA'], ['picks', 'New picks'],
+  ['hedges', 'Hedges'], ['rules', 'Rules'], ['overview', 'Thesis']
+];
+const ALL_TAB_KEYS = ALL_TABS.map(t => t[0]);
+const TAB_LABELS = Object.fromEntries(ALL_TABS);
+const DEFAULT_TAB_ORDER = ALL_TAB_KEYS.slice();
+// Dashboard always stays available so the nav can never be emptied entirely.
+const TAB_ALWAYS_VISIBLE = 'dashboard';
+function reconcileTabOrder(stored) {
+  const arr = Array.isArray(stored) ? stored : [];
+  const known = arr.filter((k, i) => ALL_TAB_KEYS.includes(k) && arr.indexOf(k) === i);
+  const missing = ALL_TAB_KEYS.filter(k => !known.includes(k));
+  return [...known, ...missing];
+}
 function App() {
   const [theme, setTheme] = usePersistedState('pb.theme.v2', 'dark');
   const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
@@ -2603,8 +2669,21 @@ function App() {
   const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
   const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
   const [showSettings, setShowSettings] = useState(false);
-  const TAB_LIST = [['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'], ['hot', 'Hot Topics'], ['heatmap', 'Heatmap'], ['picks', 'New picks'], ['hedges', 'Hedges'], ['tfsa', 'TFSA'], ['rules', 'Rules'], ['overview', 'Thesis']];
+  const [tabOrder, setTabOrder] = usePersistedState('pb.tabOrder.v2', DEFAULT_TAB_ORDER);
+  const [hiddenTabs, setHiddenTabs] = usePersistedState('pb.hiddenTabs.v1', []);
+  const orderedKeys = useMemo(() => reconcileTabOrder(tabOrder), [tabOrder]);
+  // The visible nav: ordered keys minus hidden ones. Dashboard is never hidden.
+  const TAB_LIST = useMemo(
+    () => orderedKeys.filter(k => k === TAB_ALWAYS_VISIBLE || !hiddenTabs.includes(k)).map(k => [k, TAB_LABELS[k]]),
+    [orderedKeys, hiddenTabs]
+  );
   const [view, setView] = useState('dashboard');
+  const visibleKeysStr = TAB_LIST.map(t => t[0]).join(',');
+  // If the active tab gets hidden, fall back to the first visible tab.
+  useEffect(() => {
+    const vis = visibleKeysStr ? visibleKeysStr.split(',') : [];
+    if (vis.length && !vis.includes(view)) setView(vis[0]);
+  }, [visibleKeysStr, view]);
   const [viewTransDir, setViewTransDir] = useState(null);
   const navRef = useRef(null);
   const navPillRef = useRef(null);
@@ -2662,9 +2741,11 @@ function App() {
     alerts, setAlerts,
     contributions, setContributions,
     transactions, setTransactions,
+    tfsaDeposits, setTfsaDeposits,
     sectorCache, setSectorCache,
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
+    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit,
     addWatch, removeWatch,
     addAlert, removeAlert
   } = usePortfolio(fxRates, toast);
@@ -2920,6 +3001,7 @@ function App() {
       triggered,
       contributions,
       transactions,
+      tfsaDeposits,
       exportedAt: new Date().toISOString(),
       version: 3
     };
@@ -2945,6 +3027,7 @@ function App() {
         if (data.triggered) setTriggered(data.triggered);
         if (data.contributions) setContributions(data.contributions);
         if (data.transactions) setTransactions(data.transactions);
+        if (data.tfsaDeposits) setTfsaDeposits(data.tfsaDeposits);
         toast('Backup restored');
       } catch (err) {
         toast('Invalid backup file');
@@ -3030,7 +3113,14 @@ function App() {
       onOpenDetail: openDetail,
       onAddPosition: () => { setPosModalEditId(null); setPosModalOpen(true); },
       onBuyPosition: pos => setBuyModalPos(pos),
-      onSellPosition: pos => setSellModalPos(pos)
+      onSellPosition: pos => setSellModalPos(pos),
+      tfsaDeposits: tfsaDeposits,
+      onAddTfsaDeposit: addTfsaDeposit,
+      onUpdateTfsaDeposit: updateTfsaDeposit,
+      onRemoveTfsaDeposit: removeTfsaDeposit,
+      fxRates: fxRates,
+      sectorCache: sectorCache,
+      fundamentals: fundamentalsByTicker
     }),
     hot: React.createElement(HotTopicsView, {
       hot: hotTopicsCache['hot'],
@@ -3148,6 +3238,10 @@ function App() {
     onSetRibbonItems: setRibbonItems,
     ribbonMode: ribbonMode,
     onSetRibbonMode: setRibbonMode,
+    tabOrder: orderedKeys,
+    hiddenTabs: hiddenTabs,
+    onSetTabOrder: setTabOrder,
+    onSetHiddenTabs: setHiddenTabs,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -3315,6 +3409,7 @@ function PriceBlock(_ref5) {
   const extUp = hasExt && quote.extChangePct >= 0;
   const extLabel = quote.extKind === 'pre' ? 'Pre-market' : quote.extKind === 'post' ? 'After-hours' : '';
   const chgAbs = (typeof quote.change === 'number' && isFinite(quote.change)) ? quote.change : null;
+  const prevClose = (typeof quote.prevClose === 'number' && isFinite(quote.prevClose) && quote.prevClose > 0) ? quote.prevClose : null;
   return React.createElement("div", {
     className: "price-block-wrap"
   }, React.createElement("div", {
@@ -3334,6 +3429,12 @@ function PriceBlock(_ref5) {
       (up ? '+' : '') + quote.changePct.toFixed(2) + '%',
       chgAbs != null ? ' · ' + (up ? '+' : '-') + sym + Math.abs(chgAbs).toFixed(2) : ''
     )
+  ),
+  // The previous close is the reference every daily/intraday move is measured
+  // from, so surface it explicitly alongside the "Today" move.
+  showDailyRow && !hideChange && prevClose != null && React.createElement("div", { className: "daily-row prevclose-row" },
+    React.createElement("span", { className: "daily-label" }, "Prev close"),
+    React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + prevClose.toFixed(2))
   ),
   hasExt && React.createElement("div", {
     className: "ext-hours"
@@ -3681,15 +3782,18 @@ function resolvePositionSector(ticker, market, sectorCache, fundamentals, name) 
 }
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
-function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals }) {
+function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, availableModes }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
-  const modes = [
+  const allModes = [
     { key: 'ticker', label: 'Holdings' },
     { key: 'sector', label: 'Sector' },
     { key: 'market', label: 'Market' }
   ];
+  // Callers can restrict the toggle set (e.g. TFSA hides "Market" — every holding
+  // is the same single market, so the breakdown would be a meaningless 100%).
+  const modes = availableModes ? allModes.filter(m => availableModes.includes(m.key)) : allModes;
   const rates = fxRates?.rates || null;
   // Build per-position values
   const posVals = [];
@@ -6619,11 +6723,41 @@ function HeatmapView(_ref8b) {
     return { up, down, flat, avg: wAvg, total: dataRows.length };
   }, [activeRows]);
   const aspectRatio = mode === 'market' ? 0.62 : 0.82;
+  // Market mode is an at-a-glance overview, so the grid is sized to the space
+  // left in the viewport (under the toggles/stats, above the bottom safe-area)
+  // rather than a fixed canvas that ran off the bottom of the screen. We measure
+  // the grid's own top offset so it adapts to whatever chrome sits above it, then
+  // reserve room below for the "tap a sector" hint, page padding and safe-area.
+  const treemapWrapRef = useRef(null);
+  const [marketFitH, setMarketFitH] = useState(500);
+  useLayoutEffect(() => {
+    if (mode !== 'market') return;
+    const measure = () => {
+      const el = treemapWrapRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      const BOTTOM_RESERVE = 110; // sector hint + page bottom padding + safe-area
+      const avail = Math.round(window.innerHeight - top - BOTTOM_RESERVE);
+      // Clamp keeps tiles a sensible size on very short / very tall screens; the
+      // upper bound stops the grid getting "too long" on big displays.
+      const clamped = Math.max(400, Math.min(580, avail));
+      setMarketFitH(prev => Math.abs(prev - clamped) > 2 ? clamped : prev);
+    };
+    measure();
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+    };
+  }, [mode, selectedId, portfolioFilter, loading, !!error, !!progress, activeRows.length, portfolioMarkets.length]);
   // Portfolio: scale the canvas with holding count so sectors (and the bottom
   // rows) always have room to render their tiles instead of being clipped to a
-  // header strip. Market mode keeps its fixed, index-sized canvas.
+  // header strip.
   const minHeight = mode === 'market'
-    ? 480
+    ? marketFitH
     : Math.max(480, Math.min(1200, (activeRows.length || 0) * 40 + 140));
   const progressPct = progress ? Math.round(progress.done / progress.total * 100) : 0;
   return React.createElement("div", null,
@@ -6690,14 +6824,15 @@ function HeatmapView(_ref8b) {
       React.createElement("span", { className: "heatmap-progress-text" },
         progress ? progress.done + " / " + progress.total + " quotes" : "Loading " + exchange.label + "…")
     ) : null,
-    activeRows.length > 0 ? React.createElement(HeatmapTreemap, {
+    activeRows.length > 0 ? React.createElement("div", { ref: treemapWrapRef }, React.createElement(HeatmapTreemap, {
       rows: activeRows,
+      height: mode === 'market' ? marketFitH : undefined,
       aspectRatio: aspectRatio,
       minHeight: minHeight,
       onOpenDetail: onOpenDetail,
       onOpenSector: (name) => setSectorDetail(name),
       loading: loading
-    }) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null),
+    })) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null),
     activeRows.length > 0 ? React.createElement("div", { className: "heatmap-sector-hint" },
       React.createElement(Icon, { name: "maximize", size: 11 }), " Tap a sector name to zoom in") : null,
     fullscreen ? React.createElement(HeatmapFullscreen, {
@@ -6827,9 +6962,357 @@ function HedgesView(_ref0) {
     className: "bullet-list"
   }, React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "TLT"), " \u2014 17-yr duration too sensitive to Fed error. IEF covers it with less drawdown risk.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "VIXY / UVXY"), " \u2014 constant contango decay. Structural money-loser for retail holders.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "SH / SPXS"), " \u2014 inverse equity erodes via compounding. Cash beats inverse ETFs over any holding period >1 month.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "GDXJ"), " \u2014 too correlated with tech beta. IAU alone delivers the gold exposure cleanly."))))));
 }
-function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPosition, onSellPosition }) {
-  const TFSA_ANNUAL_LIMIT = 46000;
-  const TFSA_LIFETIME_LIMIT = 500000;
+function fmtShares(n) {
+  if (n == null || !isFinite(n)) return '';
+  if (n >= 100) return n.toFixed(0);
+  if (n >= 1) return n.toFixed(2);
+  return n.toFixed(4);
+}
+// ─── TFSA limits + South-African tax-year helpers ───────────────────────────
+// A TFSA's contribution room is governed by the SA tax year (1 March – end Feb),
+// not the calendar year, so "this year's" R46k bar must bucket deposits by tax
+// year. Dates are stored as local YYYY-MM-DD strings and parsed by splitting the
+// string (never Date→toISOString, which would shift a day for SAST users).
+const TFSA_ANNUAL_LIMIT = 46000;
+const TFSA_LIFETIME_LIMIT = 500000;
+function tfsaTaxYearStart(dateStr) {
+  if (!dateStr) return null;
+  const parts = String(dateStr).split('-');
+  const y = parseInt(parts[0], 10), m = parseInt(parts[1], 10);
+  if (!isFinite(y) || !isFinite(m)) return null;
+  return m < 3 ? y - 1 : y; // Jan/Feb fall in the tax year that began the prior March
+}
+function currentTfsaTaxYearStart() {
+  const d = new Date();
+  return (d.getMonth() + 1) < 3 ? d.getFullYear() - 1 : d.getFullYear();
+}
+function tfsaTaxYearLabel(startYear) {
+  return startYear + '/' + String(startYear + 1).slice(2); // e.g. 2026/27
+}
+function tfsaTodayStr() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function fmtRand(n, dec) {
+  const d = dec == null ? 0 : dec;
+  return 'R' + Math.abs(n).toLocaleString('en-ZA', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+// Generic collapsible "dropdown" card — a tap-to-expand header over hidden body.
+// Used for the contribution planner and the TFSA-information panel.
+function Collapsible({ title, subtitle, icon, defaultOpen, badge, children, className }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return React.createElement("div", { className: "card collapse-card mb-4" + (className ? " " + className : "") },
+    React.createElement("button", {
+      className: "collapse-head", onClick: () => setOpen(o => !o), "aria-expanded": open, type: "button"
+    },
+      React.createElement("div", { className: "collapse-head-main" },
+        icon ? React.createElement(Icon, { name: icon, size: 15 }) : null,
+        React.createElement("div", { className: "collapse-head-text" },
+          React.createElement("div", { className: "collapse-title" }, title),
+          subtitle ? React.createElement("div", { className: "collapse-sub" }, subtitle) : null
+        )
+      ),
+      React.createElement("div", { className: "collapse-head-right" },
+        badge != null ? React.createElement("span", { className: "collapse-badge" }, badge) : null,
+        React.createElement(Icon, { name: "chevron", size: 16, className: "collapse-chevron" + (open ? " open" : "") })
+      )
+    ),
+    open ? React.createElement("div", { className: "collapse-body" }, children) : null
+  );
+}
+// Annual (R46k) + lifetime (R500k) contribution bars over an editable deposit log.
+// The log mixes manual deposits (cash the user reports putting in) with purchase
+// entries auto-appended on every in-app TFSA buy; both count toward the limits and
+// both can be edited or removed to fix mistakes/double-counts.
+function TFSAContributions({ deposits, onAdd, onUpdate, onRemove }) {
+  const [adding, setAdding] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState(() => ({ amount: '', date: tfsaTodayStr(), note: '' }));
+  const [editForm, setEditForm] = useState({ amount: '', date: '', note: '' });
+
+  const list = deposits || [];
+  const curStart = currentTfsaTaxYearStart();
+  const annualUsed = list.reduce((s, d) => s + (tfsaTaxYearStart(d.date) === curStart ? (d.amount || 0) : 0), 0);
+  const lifetimeUsed = list.reduce((s, d) => s + (d.amount || 0), 0);
+  const annualPct = annualUsed / TFSA_ANNUAL_LIMIT * 100;
+  const lifePct = lifetimeUsed / TFSA_LIFETIME_LIMIT * 100;
+  const annualLeft = TFSA_ANNUAL_LIMIT - annualUsed;
+  const lifeLeft = TFSA_LIFETIME_LIMIT - lifetimeUsed;
+  const yearsLeft = lifeLeft > 0 ? Math.ceil(lifeLeft / TFSA_ANNUAL_LIMIT) : 0;
+
+  const submitAdd = () => {
+    const amt = parseFloat(form.amount);
+    if (!isFinite(amt) || amt === 0 || !form.date) return;
+    onAdd(amt, form.date, form.note);
+    setForm({ amount: '', date: tfsaTodayStr(), note: '' });
+    setAdding(false);
+    setLogOpen(true);
+  };
+  const startEdit = (d) => {
+    setEditId(d.id);
+    setEditForm({ amount: String(d.amount), date: d.date, note: d.note || '' });
+  };
+  const submitEdit = () => {
+    const amt = parseFloat(editForm.amount);
+    if (!isFinite(amt) || amt === 0 || !editForm.date) return;
+    onUpdate(editId, { amount: amt, date: editForm.date, note: editForm.note });
+    setEditId(null);
+  };
+
+  const bar = (label, yr, used, limit, pct, leftEl) => React.createElement("div", { className: "tfsa-limit" },
+    React.createElement("div", { className: "tfsa-limit-top" },
+      React.createElement("div", { className: "tfsa-limit-label" },
+        React.createElement("span", null, label),
+        yr ? React.createElement("span", { className: "tfsa-limit-yr" }, yr) : null),
+      React.createElement("div", { className: "tfsa-limit-fig" },
+        React.createElement("span", { className: "tfsa-limit-used" }, fmtRand(used)),
+        React.createElement("span", { className: "tfsa-limit-of" }, " / ", fmtRand(limit)))),
+    React.createElement("div", { className: "tfsa-limit-bar" },
+      React.createElement("div", {
+        className: "tfsa-limit-fill" + (used > limit ? " over" : (pct >= 90 ? " near" : "")),
+        style: { width: Math.min(100, Math.max(used > 0 ? 1.5 : 0, pct)) + "%" }
+      })),
+    leftEl);
+
+  const addForm = adding ? React.createElement("div", { className: "tfsa-dep-form" },
+    React.createElement("div", { className: "tfsa-dep-fields" },
+      React.createElement("div", { className: "tfsa-dep-field" },
+        React.createElement("label", null, "Amount"),
+        React.createElement("div", { className: "tfsa-dep-amt" },
+          React.createElement("span", null, "R"),
+          React.createElement("input", {
+            type: "number", inputMode: "decimal", min: "0", step: "100", autoFocus: true,
+            value: form.amount, placeholder: "0",
+            onChange: e => setForm(f => ({ ...f, amount: e.target.value })),
+            onKeyDown: e => { if (e.key === 'Enter') submitAdd(); }
+          }))),
+      React.createElement("div", { className: "tfsa-dep-field" },
+        React.createElement("label", null, "Date"),
+        React.createElement("input", { type: "date", value: form.date, onChange: e => setForm(f => ({ ...f, date: e.target.value })) }))),
+    React.createElement("div", { className: "tfsa-dep-field" },
+      React.createElement("label", null, "Note (optional)"),
+      React.createElement("input", { type: "text", value: form.note, placeholder: "e.g. EFT from Capitec", onChange: e => setForm(f => ({ ...f, note: e.target.value })) })),
+    React.createElement("div", { className: "tfsa-dep-form-actions" },
+      React.createElement("button", { className: "btn btn-ghost btn-sm", type: "button", onClick: () => { setAdding(false); setForm({ amount: '', date: tfsaTodayStr(), note: '' }); } }, "Cancel"),
+      React.createElement("button", { className: "btn btn-primary btn-sm", type: "button", onClick: submitAdd }, "Save deposit"))
+  ) : null;
+
+  const logBody = logOpen ? React.createElement("div", { className: "tfsa-dep-log" },
+    list.length === 0
+      ? React.createElement("div", { className: "tfsa-dep-empty" }, "No deposits logged yet.")
+      : list.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(d => {
+          if (editId === d.id) {
+            return React.createElement("div", { className: "tfsa-dep-row editing", key: d.id },
+              React.createElement("div", { className: "tfsa-dep-edit-fields" },
+                React.createElement("div", { className: "tfsa-dep-amt" },
+                  React.createElement("span", null, "R"),
+                  React.createElement("input", { type: "number", inputMode: "decimal", step: "100", value: editForm.amount, onChange: e => setEditForm(f => ({ ...f, amount: e.target.value })) })),
+                React.createElement("input", { type: "date", value: editForm.date, onChange: e => setEditForm(f => ({ ...f, date: e.target.value })) })),
+              React.createElement("input", { className: "tfsa-dep-edit-note", type: "text", value: editForm.note, placeholder: "Note", onChange: e => setEditForm(f => ({ ...f, note: e.target.value })) }),
+              React.createElement("div", { className: "tfsa-dep-form-actions" },
+                React.createElement("button", { className: "btn btn-ghost btn-sm", type: "button", onClick: () => setEditId(null) }, "Cancel"),
+                React.createElement("button", { className: "btn btn-primary btn-sm", type: "button", onClick: submitEdit }, "Save")));
+          }
+          const inYear = tfsaTaxYearStart(d.date) === curStart;
+          return React.createElement("div", { className: "tfsa-dep-row", key: d.id },
+            React.createElement("div", { className: "tfsa-dep-main" },
+              React.createElement("div", { className: "tfsa-dep-line1" },
+                React.createElement("span", { className: "tfsa-dep-amount" }, "+", fmtRand(d.amount, 2)),
+                React.createElement("span", { className: "tfsa-dep-tag " + (d.source === 'purchase' ? "buy" : "manual") }, d.source === 'purchase' ? "Buy" : "Deposit"),
+                inYear ? null : React.createElement("span", { className: "tfsa-dep-tag past" }, tfsaTaxYearLabel(tfsaTaxYearStart(d.date)))),
+              React.createElement("div", { className: "tfsa-dep-line2" },
+                React.createElement("span", null, d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
+                d.note ? React.createElement("span", { className: "tfsa-dep-note" }, " · ", d.note) : null)),
+            React.createElement("div", { className: "tfsa-dep-row-actions" },
+              React.createElement("button", { className: "icon-btn", type: "button", "aria-label": "Edit", onClick: () => startEdit(d) }, React.createElement(Icon, { name: "edit", size: 13 })),
+              React.createElement("button", { className: "icon-btn", type: "button", "aria-label": "Remove", onClick: () => { if (window.confirm('Remove this deposit from your contribution total?')) onRemove(d.id); } }, React.createElement(Icon, { name: "trash", size: 13 }))));
+        })
+  ) : null;
+
+  return React.createElement("div", { className: "card tfsa-room-card mb-4" },
+    React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Contribution room"),
+    bar("This tax year", tfsaTaxYearLabel(curStart), annualUsed, TFSA_ANNUAL_LIMIT, annualPct,
+      React.createElement("div", { className: "tfsa-limit-sub" + (annualLeft < 0 ? " warn" : "") },
+        annualLeft >= 0 ? fmtRand(annualLeft) + " left this tax year" : fmtRand(-annualLeft) + " over the annual limit (40% penalty applies)")),
+    bar("Lifetime", null, lifetimeUsed, TFSA_LIFETIME_LIMIT, lifePct,
+      React.createElement("div", { className: "tfsa-limit-sub" + (lifeLeft <= 0 ? " ok" : "") },
+        lifeLeft > 0
+          ? fmtRand(lifeLeft) + " left · ≈ " + yearsLeft + (yearsLeft === 1 ? " year" : " years") + " at the max to fill it"
+          : "Lifetime limit reached")),
+    React.createElement("div", { className: "tfsa-room-actions" },
+      React.createElement("button", { className: "btn btn-primary btn-sm", type: "button", onClick: () => { setAdding(a => !a); setEditId(null); } },
+        React.createElement(Icon, { name: "plus", size: 13 }), " Log deposit"),
+      React.createElement("button", { className: "btn btn-secondary btn-sm", type: "button", onClick: () => setLogOpen(o => !o) },
+        React.createElement(Icon, { name: "list", size: 13 }), " Deposit log (", list.length, ")")),
+    addForm,
+    logBody,
+    React.createElement("div", { className: "tfsa-room-hint" },
+      "Buys you make in the app are added here automatically. Log a deposit only for cash added before or outside the app.")
+  );
+}
+// TFSA contribution planner / portfolio balancer.
+// The user defines a target structure (a % per holding); each month they enter
+// how much they'll contribute and the planner says exactly how many rand (and
+// ≈shares) to put into each holding to steer the portfolio toward that structure
+// — using only the new contribution, never selling. The split fills the most
+// underweight holdings first; any surplus beyond what's needed to reach target
+// is spread across holdings by target weight so the structure keeps holding.
+function TFSABalancer({ positions, prices, onBuyPosition }) {
+  const [targets, setTargets] = usePersistedState('pb.tfsa.targets.v1', {});
+  const [contribution, setContribution] = usePersistedState('pb.tfsa.contribution.v1', '');
+  const [editing, setEditing] = useState(false);
+
+  const rows = positions.map(p => {
+    const q = prices['TFSA:' + p.ticker];
+    const price = q && q.price > 0 ? q.price : p.costBasis;
+    return { id: p.id, ticker: p.ticker, name: p.name, shares: p.shares, price, value: p.shares * price, pos: p };
+  });
+  const totalValue = rows.reduce((s, r) => s + r.value, 0);
+  const targetSum = rows.reduce((s, r) => s + (parseFloat(targets[r.ticker]) || 0), 0);
+  const hasTargets = targetSum > 0;
+  const showEditor = editing || !hasTargets;
+
+  // Keep the editor open through edits — once targets exist it would otherwise
+  // collapse mid-typing (showEditor depends on hasTargets). It only closes on Done.
+  const setTarget = (tk, v) => { setEditing(true); setTargets(prev => ({ ...prev, [tk]: v })); };
+  const useCurrentWeights = () => {
+    if (totalValue <= 0) return;
+    const next = {}; rows.forEach(r => { next[r.ticker] = (r.value / totalValue * 100).toFixed(1); });
+    setEditing(true); setTargets(next);
+  };
+  const useEqualWeight = () => {
+    const each = (100 / (rows.length || 1)).toFixed(1);
+    const next = {}; rows.forEach(r => { next[r.ticker] = each; });
+    setEditing(true); setTargets(next);
+  };
+
+  // ── Allocate the contribution: fill underweight holdings first, spread any
+  //    surplus by target weight. Pure new-cash rebalancing (no sells). ──
+  const C = Math.max(0, parseFloat(contribution) || 0);
+  const newTotal = totalValue + C;
+  const plan = rows.map(r => {
+    const w = hasTargets ? (parseFloat(targets[r.ticker]) || 0) / targetSum : 0;
+    const desired = w * newTotal;
+    return { ...r, w, targetPct: w * 100, curPct: totalValue > 0 ? r.value / totalValue * 100 : 0, desired, gap: Math.max(0, desired - r.value) };
+  });
+  const totalGap = plan.reduce((s, r) => s + r.gap, 0);
+  const allocMap = {};
+  if (C > 0 && hasTargets) {
+    if (totalGap >= C && totalGap > 0) plan.forEach(r => { allocMap[r.ticker] = C * (r.gap / totalGap); });
+    else { const leftover = C - totalGap; plan.forEach(r => { allocMap[r.ticker] = r.gap + r.w * leftover; }); }
+  }
+  plan.forEach(r => {
+    r.alloc = allocMap[r.ticker] || 0;
+    r.afterValue = r.value + r.alloc;
+    r.afterPct = newTotal > 0 ? r.afterValue / newTotal * 100 : 0;
+    r.sharesBuy = r.price > 0 ? r.alloc / r.price : null;
+  });
+  const scaleMax = Math.max(1, ...plan.map(r => Math.max(r.targetPct, r.afterPct, r.curPct)));
+  const planSorted = plan.slice().sort((a, b) => b.alloc - a.alloc || b.targetPct - a.targetPct);
+  const totalAlloc = plan.reduce((s, r) => s + r.alloc, 0);
+
+  // The Collapsible wrapper supplies the "Contribution planner" title, so the
+  // balancer only needs an inline Edit/Done toggle for the target weights.
+  const header = hasTargets ? React.createElement("div", { className: "tfsa-bal-toolbar" },
+    React.createElement("div", { className: "tfsa-bal-toolbar-label" }, "Target weights"),
+    React.createElement("button", { className: "btn btn-secondary btn-sm", type: "button", onClick: () => setEditing(e => !e) },
+      React.createElement(Icon, { name: editing ? "check" : "edit", size: 13 }), " ", editing ? "Done" : "Edit")
+  ) : null;
+
+  const sumClass = Math.abs(targetSum - 100) < 0.1 ? 'ok' : 'warn';
+  const editor = showEditor ? React.createElement("div", { className: "tfsa-target-editor" },
+    React.createElement("div", { className: "tfsa-target-list" },
+      rows.map(r => React.createElement("div", { className: "tfsa-target-row", key: r.id },
+        React.createElement("div", { className: "tfsa-target-id" },
+          React.createElement("span", { className: "tkr" }, r.ticker),
+          r.name ? React.createElement("span", { className: "tfsa-target-name text-dim" }, prettyName(r.name)) : null
+        ),
+        React.createElement("div", { className: "tfsa-target-input" },
+          React.createElement("input", {
+            type: "number", inputMode: "decimal", min: "0", max: "100", step: "0.5",
+            value: targets[r.ticker] != null ? targets[r.ticker] : '',
+            placeholder: "0",
+            onChange: e => setTarget(r.ticker, e.target.value)
+          }),
+          React.createElement("span", { className: "tfsa-target-pct" }, "%")
+        )
+      ))
+    ),
+    React.createElement("div", { className: "tfsa-bal-quick" },
+      React.createElement("button", { className: "tfsa-preset-btn", type: "button", onClick: useCurrentWeights },
+        React.createElement(Icon, { name: "activity", size: 13 }), " Use current %"),
+      React.createElement("button", { className: "tfsa-preset-btn", type: "button", onClick: useEqualWeight },
+        React.createElement(Icon, { name: "gauge", size: 13 }), " Equal weight"),
+      React.createElement("span", { className: `tfsa-sum ${sumClass}` }, "Total ", targetSum.toFixed(1), "%")
+    ),
+    targetSum > 0 && Math.abs(targetSum - 100) >= 0.1 ? React.createElement("div", { className: "tfsa-bal-note" },
+      "Targets total ", targetSum.toFixed(1), "% — used as relative weights. Set them to 100% for clarity.") : null
+  ) : null;
+
+  const contribInput = React.createElement("div", { className: "tfsa-contrib" },
+    React.createElement("label", { className: "tfsa-contrib-label" }, "This month's contribution"),
+    React.createElement("div", { className: "tfsa-contrib-field" },
+      React.createElement("span", { className: "tfsa-contrib-sym" }, "R"),
+      React.createElement("input", {
+        type: "number", inputMode: "decimal", min: "0", step: "100",
+        value: contribution, placeholder: "0",
+        onChange: e => setContribution(e.target.value)
+      })
+    )
+  );
+
+  let planBody;
+  if (!hasTargets) {
+    planBody = React.createElement("div", { className: "tfsa-bal-empty" }, "Set a target % for your holdings above to get a monthly plan.");
+  } else {
+    planBody = React.createElement(React.Fragment, null,
+      C > 0 ? React.createElement("div", { className: "tfsa-plan-head" },
+        React.createElement("span", null, "Buy this month"),
+        React.createElement("span", { className: "mono" }, fmt(totalAlloc, 'TFSA'))
+      ) : React.createElement("div", { className: "tfsa-bal-empty" }, "Enter a contribution to see exactly what to buy — current vs target is shown below."),
+      React.createElement("div", { className: "tfsa-plan-list" },
+        planSorted.map(r => {
+          const buying = r.alloc > 0.005;
+          const over = !buying && r.curPct > r.targetPct + 0.1;
+          const curW = Math.max(0, Math.min(100, r.curPct / scaleMax * 100));
+          const addW = Math.max(0, Math.min(100 - curW, (r.afterPct - r.curPct) / scaleMax * 100));
+          const tgtW = Math.max(0, Math.min(100, r.targetPct / scaleMax * 100));
+          return React.createElement("div", { className: "tfsa-plan-row", key: r.id },
+            React.createElement("div", { className: "tfsa-plan-top" },
+              React.createElement("div", { className: "tfsa-plan-id" },
+                React.createElement("span", { className: "tkr" }, r.ticker),
+                r.name ? React.createElement("span", { className: "tfsa-plan-name text-dim" }, prettyName(r.name)) : null
+              ),
+              buying
+                ? React.createElement("div", { className: "tfsa-plan-action" },
+                    React.createElement("span", { className: "tfsa-buy-amt" }, fmt(r.alloc, 'TFSA')),
+                    r.sharesBuy != null ? React.createElement("span", { className: "tfsa-buy-sh" }, "≈ ", fmtShares(r.sharesBuy), " sh") : null
+                  )
+                : React.createElement("span", { className: `tfsa-plan-tag ${over ? 'over' : 'ok'}` }, over ? "Overweight" : "On target")
+            ),
+            React.createElement("div", { className: "tfsa-plan-bar" },
+              React.createElement("div", { className: "tfsa-plan-fill", style: { width: curW + '%' } }),
+              addW > 0 ? React.createElement("div", { className: "tfsa-plan-add", style: { left: curW + '%', width: addW + '%' } }) : null,
+              React.createElement("div", { className: "tfsa-plan-target", style: { left: tgtW + '%' } })
+            ),
+            React.createElement("div", { className: "tfsa-plan-meta" },
+              React.createElement("span", null, "Target ", r.targetPct.toFixed(1), "% · now ", r.curPct.toFixed(1), "%",
+                C > 0 ? React.createElement(React.Fragment, null, " → ",
+                  React.createElement("span", { className: buying ? "text-up" : "" }, r.afterPct.toFixed(1), "%")) : null),
+              onBuyPosition && buying ? React.createElement("button", { className: "tfsa-plan-buy", onClick: () => onBuyPosition(r.pos) }, "Buy") : null
+            )
+          );
+        })
+      )
+    );
+  }
+
+  return React.createElement("div", { className: "tfsa-bal-inner" }, header, editor, contribInput, planBody);
+}
+function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPosition, onSellPosition,
+                   tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit,
+                   fxRates, sectorCache, fundamentals }) {
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
     return s + (q ? p.shares * q.price : p.shares * p.costBasis);
@@ -6837,28 +7320,56 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
   const totalCost = positions.reduce((s, p) => s + p.shares * p.costBasis, 0);
   const pnl = totalValue - totalCost;
   const pnlPct = totalCost > 0 ? pnl / totalCost * 100 : 0;
+  const hasPositions = positions.length > 0;
+
+  // ── 1. Holdings at a glance — the first thing in the tab ──
+  const holdingsGraph = hasPositions ? React.createElement("div", { className: "card mb-4" },
+    React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Holdings at a glance"),
+    React.createElement(PortfolioPieChart, {
+      positions, prices, displayCurrency: 'ZAR', fxRates,
+      onOpenDetail, sectorCache, fundamentals, availableModes: ['ticker', 'sector']
+    })
+  ) : null;
+
+  // ── 5. TFSA information — collapsible at the bottom (account value + rules) ──
+  const infoPanel = React.createElement(Collapsible, {
+    title: "TFSA information", subtitle: "Account value, cost & the rules", icon: "list"
+  },
+    React.createElement("div", { className: "kv-row", style: { marginBottom: 12 } },
+      React.createElement("div", { className: "kv" },
+        React.createElement("div", { className: "kv-label" }, "Value"),
+        React.createElement("div", { className: "kv-val mono" }, fmtRand(totalValue, 2))),
+      React.createElement("div", { className: "kv" },
+        React.createElement("div", { className: "kv-label" }, "Cost"),
+        React.createElement("div", { className: "kv-val mono" }, fmtRand(totalCost, 2))),
+      React.createElement("div", { className: "kv" },
+        React.createElement("div", { className: "kv-label" }, "P&L"),
+        React.createElement("div", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
+          (pnl >= 0 ? '+' : '−') + fmtRand(pnl, 2),
+          " (", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(1), "%)"))),
+    React.createElement("div", { className: "eyebrow", style: { marginBottom: 6 } }, "Rules"),
+    React.createElement("ul", { className: "bullet-list" },
+      React.createElement("li", null, React.createElement("span", null, fmtRand(TFSA_ANNUAL_LIMIT), " annual contribution limit (per tax year, 1 Mar – end Feb)")),
+      React.createElement("li", null, React.createElement("span", null, fmtRand(TFSA_LIFETIME_LIMIT), " lifetime contribution limit")),
+      React.createElement("li", null, React.createElement("span", null, "All gains, dividends, and interest are ", React.createElement("strong", null, "tax-free"))),
+      React.createElement("li", null, React.createElement("span", null, "Only JSE-listed equities, ETFs, and unit trusts are eligible")),
+      React.createElement("li", null, React.createElement("span", null, "Withdrawals reduce available contribution room permanently")),
+      React.createElement("li", null, React.createElement("span", null, "40% penalty on contributions exceeding the annual limit")))
+  );
+
   return React.createElement("div", null,
-    React.createElement("div", { className: "card mb-4" },
-      React.createElement("div", { className: "eyebrow", style: { marginBottom: 8 } }, "TFSA Overview"),
-      React.createElement("div", { className: "kv-row" },
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "Value"),
-          React.createElement("div", { className: "kv-val mono" }, "R", totalValue.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))),
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "Cost"),
-          React.createElement("div", { className: "kv-val mono" }, "R", totalCost.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))),
-        React.createElement("div", { className: "kv" },
-          React.createElement("div", { className: "kv-label" }, "P&L"),
-          React.createElement("div", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
-            (pnl >= 0 ? '+' : '') + "R" + Math.abs(pnl).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-            " (", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(1), "%)"))),
-      React.createElement("div", { className: "text-xs text-dim", style: { marginTop: 10 } },
-        "Annual limit: R", TFSA_ANNUAL_LIMIT.toLocaleString(), " \xB7 Lifetime limit: R", TFSA_LIFETIME_LIMIT.toLocaleString())),
+    holdingsGraph,
+    // ── 2. Contribution room: annual + lifetime bars + editable deposit log ──
+    React.createElement(TFSAContributions, {
+      deposits: tfsaDeposits || [],
+      onAdd: onAddTfsaDeposit, onUpdate: onUpdateTfsaDeposit, onRemove: onRemoveTfsaDeposit
+    }),
+    // ── 3. Holdings list ──
     React.createElement("div", { className: "flex justify-between items-center mb-3" },
-      React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Holdings"),
+      React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Your holdings"),
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
         React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
-    positions.length === 0
+    !hasPositions
       ? React.createElement("div", { className: "empty" },
           React.createElement(Icon, { name: "briefcase", size: 40 }),
           React.createElement("h3", null, "No TFSA holdings"),
@@ -6873,15 +7384,15 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
             onBuyPosition: onBuyPosition,
             onSellPosition: onSellPosition
           }))),
-    React.createElement("div", { className: "card mt-4" },
-      React.createElement("div", { className: "eyebrow", style: { marginBottom: 6 } }, "TFSA Rules"),
-      React.createElement("ul", { className: "bullet-list" },
-        React.createElement("li", null, React.createElement("span", null, "R", TFSA_ANNUAL_LIMIT.toLocaleString(), " annual contribution limit")),
-        React.createElement("li", null, React.createElement("span", null, "R", TFSA_LIFETIME_LIMIT.toLocaleString(), " lifetime contribution limit")),
-        React.createElement("li", null, React.createElement("span", null, "All gains, dividends, and interest are ", React.createElement("strong", null, "tax-free"))),
-        React.createElement("li", null, React.createElement("span", null, "Only JSE-listed equities, ETFs, and unit trusts are eligible")),
-        React.createElement("li", null, React.createElement("span", null, "Withdrawals reduce available contribution room permanently")),
-        React.createElement("li", null, React.createElement("span", null, "40% penalty on contributions exceeding the annual limit")))));
+    // ── 4. Contribution planner — collapsible dropdown ──
+    hasPositions ? React.createElement("div", { style: { marginTop: 16 } },
+      React.createElement(Collapsible, {
+        title: "Contribution planner", subtitle: "What to buy each month to hold your structure", icon: "gauge"
+      }, React.createElement(TFSABalancer, { positions: positions, prices: prices, onBuyPosition: onBuyPosition }))
+    ) : null,
+    // ── 5. TFSA information — collapsible at the bottom ──
+    infoPanel
+  );
 }
 // ─── Hot Topics ──────────────────────────────────────────────────────────────
 // Earnings countdown across mega-caps + your names + JSE, a scheduled macro
@@ -7136,6 +7647,9 @@ function OverviewView(_ref1) {
 function PriceChart(_refChart) {
   let { history, loading, range, onRangeChange, currency, quote } = _refChart;
   const [hover, setHover] = useState(null);
+  const [sel, setSel] = useState(null);
+  const svgRef = useRef(null);
+  const geomRef = useRef({ len: 0, W: 600, PL: 2, PR: 2, chartW: 596 });
   const sym = ({ ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' })[currency] || '$';
   const ranges = [
     { key: '1d', label: '1D' },
@@ -7155,7 +7669,59 @@ function PriceChart(_refChart) {
     }, r.label))
   );
   const rawPoints = history && history.data && history.data.points ? history.data.points : null;
-  if (!rawPoints || rawPoints.length < 2) {
+  const ready = !!(rawPoints && rawPoints.length >= 2);
+  // Touch interaction (iOS-Stocks style): one finger scrubs a single point; two
+  // fingers select a range and read out the % move + time span between them.
+  // Native non-passive listeners let us preventDefault so the gesture stays
+  // smooth and never scrolls the sheet; rAF-coalesced so rapid moves don't thrash.
+  useEffect(() => {
+    if (!ready) return;
+    const el = svgRef.current;
+    if (!el) return;
+    let raf = 0, pendingV = null;
+    const flush = () => {
+      raf = 0;
+      const p = pendingV; pendingV = null;
+      if (!p) return;
+      if (p.k === 'sel') { setSel({ a: p.a, b: p.b }); setHover(null); }
+      else if (p.k === 'hover') { setHover({ idx: p.idx }); setSel(null); }
+      else { setHover(null); setSel(null); }
+    };
+    const schedule = v => { pendingV = v; if (!raf) raf = requestAnimationFrame(flush); };
+    const idxFromX = clientX => {
+      const g = geomRef.current;
+      const rect = el.getBoundingClientRect();
+      if (!rect.width || g.len < 2) return 0;
+      const x = (clientX - rect.left) / rect.width * g.W;
+      const cx = Math.max(g.PL, Math.min(g.W - g.PR, x));
+      const idx = Math.round((cx - g.PL) / g.chartW * (g.len - 1));
+      return Math.max(0, Math.min(g.len - 1, idx));
+    };
+    const read = e => {
+      const t = e.touches;
+      if (!t || t.length === 0) { schedule({ k: 'clear' }); return; }
+      if (t.length >= 2) schedule({ k: 'sel', a: idxFromX(t[0].clientX), b: idxFromX(t[1].clientX) });
+      else schedule({ k: 'hover', idx: idxFromX(t[0].clientX) });
+    };
+    const onStart = e => { read(e); e.preventDefault(); };
+    const onMoveT = e => { read(e); e.preventDefault(); };
+    const onEnd = e => { read(e); };
+    el.addEventListener('touchstart', onStart, { passive: false });
+    el.addEventListener('touchmove', onMoveT, { passive: false });
+    el.addEventListener('touchend', onEnd);
+    el.addEventListener('touchcancel', onEnd);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMoveT);
+      el.removeEventListener('touchend', onEnd);
+      el.removeEventListener('touchcancel', onEnd);
+    };
+  }, [ready]);
+  // Clear any active scrub/selection when the range changes so stale indices
+  // never point past the freshly-loaded series.
+  useEffect(() => { setHover(null); setSel(null); }, [range]);
+  if (!ready) {
     const dataMissing = history && history.data === null && !loading;
     if (dataMissing) {
       return React.createElement("div", { className: "chart-block" }, rangeBar,
@@ -7233,28 +7799,77 @@ function PriceChart(_refChart) {
   const up = retPct >= 0;
   const color = up ? '#10b981' : '#f43f5e';
   const gradId = `grad-${up ? 'up' : 'down'}`;
-  const onMove = e => {
-    const svg = e.currentTarget;
-    const rect = svg.getBoundingClientRect();
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const x = (clientX - rect.left) / rect.width * W;
+  // Latest geometry for the native touch handlers (they read this ref so the
+  // listeners can stay attached across range/data changes).
+  geomRef.current = { len: points.length, W, PL, PR, chartW };
+  // What a single-point scrub measures its % move "from": the prev-close baseline
+  // on the intraday chart (so it matches the header), else the first point shown.
+  const refP = (is1d && baseline != null) ? baseline : first;
+  const refLabel = (is1d && baseline != null) ? 'from prev close' : 'from start';
+  // Desktop: hovering scrubs a single point (no press needed). Touch (1- and
+  // 2-finger) is handled by the native listeners set up above.
+  const onMouseMove = e => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width * W;
     if (x < PL || x > W - PR) { setHover(null); return; }
-    const idx = Math.round((x - PL) / chartW * (points.length - 1));
-    if (idx >= 0 && idx < points.length) setHover({ idx, x: xFor(idx), y: yFor(points[idx].p) });
+    const idx = Math.max(0, Math.min(points.length - 1, Math.round((x - PL) / chartW * (points.length - 1))));
+    setSel(null);
+    setHover({ idx });
   };
   const label = ranges.find(r => r.key === range)?.label || range;
+  // Single-point scrub geometry.
+  const hoverIdx = hover ? Math.max(0, Math.min(points.length - 1, hover.idx)) : null;
+  const hoverP = hoverIdx != null ? points[hoverIdx].p : 0;
+  const hoverX = hoverIdx != null ? xFor(hoverIdx) : 0;
+  const hoverY = hoverIdx != null ? yFor(hoverP) : 0;
+  const hoverChg = (hoverIdx != null && refP > 0) ? (hoverP - refP) / refP * 100 : 0;
+  // Two-finger range selection: % move and elapsed time between the two held
+  // points. Only active once they resolve to distinct points.
+  let selData = null;
+  if (sel) {
+    const len = points.length;
+    const a = Math.max(0, Math.min(len - 1, sel.a));
+    const b = Math.max(0, Math.min(len - 1, sel.b));
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    if (hi > lo) {
+      const pLo = points[lo].p, pHi = points[hi].p;
+      const pct = pLo > 0 ? (pHi - pLo) / pLo * 100 : 0;
+      selData = {
+        pct, up: pct >= 0,
+        xLo: xFor(lo), xHi: xFor(hi), yLo: yFor(pLo), yHi: yFor(pHi),
+        tLo: points[lo].t, tHi: points[hi].t
+      };
+    }
+  }
+  const selColor = selData && selData.up ? '#10b981' : '#f43f5e';
+  const fmtSpan = (t0, t1) => {
+    const d0 = new Date(t0), d1 = new Date(t1);
+    const ms = Math.max(0, t1 - t0);
+    let dur;
+    if (is1d) {
+      const mins = Math.max(1, Math.round(ms / 60000));
+      const h = Math.floor(mins / 60);
+      dur = h > 0 ? `${h}h ${mins % 60}m` : `${mins}m`;
+      const opt = { hour: 'numeric', minute: '2-digit', hour12: true };
+      return d0.toLocaleTimeString(undefined, opt) + ' – ' + d1.toLocaleTimeString(undefined, opt) + ' · ' + dur;
+    }
+    const days = Math.round(ms / 86400000);
+    if (days <= 1) dur = '1 day';
+    else if (days < 45) dur = days + ' days';
+    else { const months = Math.round(days / 30.44); dur = months < 24 ? months + ' mo' : (days / 365).toFixed(1) + ' yr'; }
+    const opt = { month: 'short', day: 'numeric' };
+    return d0.toLocaleDateString(undefined, opt) + ' – ' + d1.toLocaleDateString(undefined, opt) + ' · ' + dur;
+  };
   return React.createElement("div", { className: "chart-block" },
     rangeBar,
     React.createElement("div", { className: "chart-wrap" },
       React.createElement("svg", {
+        ref: svgRef,
         viewBox: `0 0 ${W} ${H}`,
         preserveAspectRatio: "none",
         className: "chart-svg",
-        onMouseMove: onMove,
-        onMouseLeave: () => setHover(null),
-        onTouchStart: onMove,
-        onTouchMove: onMove,
-        onTouchEnd: () => setHover(null)
+        onMouseMove: onMouseMove,
+        onMouseLeave: () => setHover(null)
       },
         React.createElement("defs", null,
           React.createElement("linearGradient", { id: gradId, x1: "0", y1: "0", x2: "0", y2: "1" },
@@ -7290,18 +7905,25 @@ function PriceChart(_refChart) {
               regSegD && React.createElement("path", { d: regSegD, fill: "none", stroke: color, strokeWidth: 1.6, vectorEffect: "non-scaling-stroke" })
             )
           : React.createElement("path", { d, fill: "none", stroke: color, strokeWidth: 1.5, vectorEffect: "non-scaling-stroke" }),
-        hover && React.createElement("g", null,
-          React.createElement("line", { x1: hover.x, y1: PT, x2: hover.x, y2: H - PB, stroke: "#71717a", strokeWidth: 0.5, strokeDasharray: "2,2", vectorEffect: "non-scaling-stroke" }),
-          React.createElement("circle", { cx: hover.x, cy: hover.y, r: 3.5, fill: color, style: { stroke: 'var(--bg)' }, strokeWidth: 1.2 })
+        selData && React.createElement("g", null,
+          React.createElement("rect", { x: selData.xLo, y: PT, width: Math.max(0, selData.xHi - selData.xLo), height: chartH, fill: selColor, fillOpacity: 0.12 }),
+          React.createElement("line", { x1: selData.xLo, y1: PT, x2: selData.xLo, y2: H - PB, stroke: "#cbd5e1", strokeWidth: 0.6, strokeDasharray: "2,2", strokeOpacity: 0.9, vectorEffect: "non-scaling-stroke" }),
+          React.createElement("line", { x1: selData.xHi, y1: PT, x2: selData.xHi, y2: H - PB, stroke: "#cbd5e1", strokeWidth: 0.6, strokeDasharray: "2,2", strokeOpacity: 0.9, vectorEffect: "non-scaling-stroke" }),
+          React.createElement("circle", { cx: selData.xLo, cy: selData.yLo, r: 3.6, fill: selColor, style: { stroke: 'var(--bg)' }, strokeWidth: 1.2 }),
+          React.createElement("circle", { cx: selData.xHi, cy: selData.yHi, r: 3.6, fill: selColor, style: { stroke: 'var(--bg)' }, strokeWidth: 1.2 })
+        ),
+        !selData && hoverIdx != null && React.createElement("g", null,
+          React.createElement("line", { x1: hoverX, y1: PT, x2: hoverX, y2: H - PB, stroke: "#71717a", strokeWidth: 0.5, strokeDasharray: "2,2", vectorEffect: "non-scaling-stroke" }),
+          React.createElement("circle", { cx: hoverX, cy: hoverY, r: 3.5, fill: color, style: { stroke: 'var(--bg)' }, strokeWidth: 1.2 })
         )
       ),
-      hover && React.createElement("div", {
+      !selData && hoverIdx != null && React.createElement("div", {
         className: "chart-tooltip",
-        style: { left: `${(hover.x / W) * 100}%` }
+        style: { left: `${(hoverX / W) * 100}%` }
       },
-        React.createElement("div", { className: "mono" }, sym + points[hover.idx].p.toFixed(2)),
+        React.createElement("div", { className: "mono" }, sym + hoverP.toFixed(2)),
         React.createElement("div", { className: "chart-tooltip-date" }, (() => {
-          const d = new Date(points[hover.idx].t);
+          const d = new Date(points[hoverIdx].t);
           if (range === '1d') {
             return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
           }
@@ -7310,7 +7932,18 @@ function PriceChart(_refChart) {
               d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
           }
           return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-        })())
+        })()),
+        React.createElement("div", { className: `chart-tooltip-chg mono ${hoverChg >= 0 ? 'text-up' : 'text-down'}` },
+          (hoverChg >= 0 ? '+' : '') + hoverChg.toFixed(2) + '% ',
+          React.createElement("span", { className: "chart-tooltip-ref" }, refLabel))
+      ),
+      selData && React.createElement("div", {
+        className: "chart-tooltip chart-sel-readout",
+        style: { left: `${((selData.xLo + selData.xHi) / 2 / W) * 100}%` }
+      },
+        React.createElement("div", { className: `chart-sel-pct mono ${selData.up ? 'text-up' : 'text-down'}` },
+          (selData.up ? '+' : '') + selData.pct.toFixed(2) + '%'),
+        React.createElement("div", { className: "chart-tooltip-date" }, fmtSpan(selData.tLo, selData.tHi))
       ),
       hasPre && React.createElement("div", {
         className: "chart-open-tag",
@@ -7325,6 +7958,8 @@ function PriceChart(_refChart) {
       hasRegular && React.createElement("span", { className: "chart-session-item" },
         React.createElement("span", { className: "chart-session-swatch reg", style: { borderTopColor: color } }), "Regular session")
     ),
+    React.createElement("div", { className: "chart-hint" },
+      "Drag to scrub · hold two fingers to compare two points"),
     React.createElement("div", { className: "chart-summary" },
       React.createElement("div", null,
         React.createElement("span", { className: "chart-sum-label" }, label + ' return'),
@@ -7333,7 +7968,11 @@ function PriceChart(_refChart) {
         )
       ),
       React.createElement("div", { className: "chart-range-stats" },
-        React.createElement("span", { className: "chart-sum-label" }, 'High'),
+        baseline != null ? React.createElement(React.Fragment, null,
+          React.createElement("span", { className: "chart-sum-label" }, 'Prev close'),
+          React.createElement("span", { className: "mono" }, sym + baseline.toFixed(2)),
+          React.createElement("span", { className: "chart-sum-label", style: { marginLeft: 10 } }, 'High')
+        ) : React.createElement("span", { className: "chart-sum-label" }, 'High'),
         React.createElement("span", { className: "mono" }, sym + max.toFixed(2)),
         React.createElement("span", { className: "chart-sum-label", style: { marginLeft: 10 } }, 'Low'),
         React.createElement("span", { className: "mono" }, sym + min.toFixed(2))
@@ -9150,7 +9789,8 @@ function FxSummary({ positions, contributions, prices, fxRates, displayCurrency,
 
 function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
                         positions, contributions, prices, onExport, onImport, onDeleteHoldings,
-                        ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode, onClose }) {
+                        ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode,
+                        tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -9169,11 +9809,29 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const rates = fxRates?.rates || {};
   const sections = [
     { key: 'display', label: 'Display', icon: 'globe' },
+    { key: 'tabs', label: 'Tabs', icon: 'list' },
     { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
     { key: 'holdings', label: 'Holdings', icon: 'briefcase' },
     { key: 'data', label: 'Data', icon: 'download' },
   ];
+  // ── Tabs section: reorder (up/down) + show/hide. Dashboard stays pinned so the
+  //    nav can't be emptied. Order is stored as a key list; moving/hiding writes
+  //    straight back to the persisted state in App. ──
+  const visibleTabOrder = (tabOrder || DEFAULT_TAB_ORDER);
+  const moveTab = (key, dir) => {
+    const arr = visibleTabOrder.slice();
+    const i = arr.indexOf(key);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= arr.length) return;
+    const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+    onSetTabOrder(arr);
+  };
+  const toggleTabHidden = (key) => {
+    if (key === TAB_ALWAYS_VISIBLE) return;
+    const hidden = (hiddenTabs || []);
+    onSetHiddenTabs(hidden.includes(key) ? hidden.filter(k => k !== key) : [...hidden, key]);
+  };
   // Group positions by market for the delete tool, ordered like the Holdings tabs.
   const marketOrder = MARKETS.map(m => m.value);
   const delGroups = Array.from(new Set(positions.map(p => p.market)))
@@ -9241,6 +9899,34 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               React.createElement(Icon, { name: "globe", size: 12 }), " How FX gain/loss is calculated"),
             React.createElement("div", { className: "settings-info-body" },
               "When you add a position, the live exchange rate is stored. Price P&L tracks native-currency changes. FX impact shows how much your ", displayCurrency, " value has shifted purely from currency moves.")
+          )
+        ),
+        activeSection === 'tabs' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-section-title mb-1" }, "Navigation tabs"),
+          React.createElement("div", { className: "settings-row-desc mb-3" },
+            "Reorder with the arrows and hide tabs you don't use. Dashboard is always shown."),
+          React.createElement("div", { className: "tab-config-list" },
+            visibleTabOrder.map((key, idx) => {
+              const hidden = (hiddenTabs || []).includes(key) && key !== TAB_ALWAYS_VISIBLE;
+              const pinned = key === TAB_ALWAYS_VISIBLE;
+              return React.createElement("div", { key: key, className: "tab-config-row" + (hidden ? " is-hidden" : "") },
+                React.createElement("div", { className: "tab-config-reorder" },
+                  React.createElement("button", {
+                    className: "icon-btn", type: "button", "aria-label": "Move up",
+                    disabled: idx === 0, onClick: () => moveTab(key, -1)
+                  }, React.createElement(Icon, { name: "chevron-up", size: 14 })),
+                  React.createElement("button", {
+                    className: "icon-btn", type: "button", "aria-label": "Move down",
+                    disabled: idx === visibleTabOrder.length - 1, onClick: () => moveTab(key, 1)
+                  }, React.createElement(Icon, { name: "chevron-down", size: 14 }))),
+                React.createElement("span", { className: "tab-config-name" }, TAB_LABELS[key] || key),
+                pinned
+                  ? React.createElement("span", { className: "tab-config-pin" }, "Always on")
+                  : React.createElement("button", {
+                      className: "tab-config-toggle" + (hidden ? "" : " on"), type: "button",
+                      "aria-label": hidden ? "Show tab" : "Hide tab", onClick: () => toggleTabHidden(key)
+                    }, React.createElement(Icon, { name: hidden ? "eye-off" : "eye", size: 15 })));
+            })
           )
         ),
         activeSection === 'ribbon' && React.createElement("div", { className: "settings-section" },
