@@ -150,10 +150,13 @@ function useTtlCache(ttlMs) {
   }, [ttlMs]);
   return [cache, load];
 }
-function useSwipeDownToClose(panelRef, onClose) {
+function useSwipeDownToClose(panelRef, onClose, enabled = true) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
+    // When disabled (e.g. the import review stage), attach nothing at all so a
+    // normal content scroll can never be mistaken for a swipe-to-dismiss.
+    if (enabled === false) return undefined;
     const panel = panelRef.current;
     if (!panel) return;
     const isMobileLayout = () => window.matchMedia('(max-width: 639px)').matches;
@@ -274,7 +277,7 @@ function useSwipeDownToClose(panelRef, onClose) {
       panel.removeEventListener('touchend', finish);
       panel.removeEventListener('touchcancel', finish);
     };
-  }, [panelRef]);
+  }, [panelRef, enabled]);
 }
 const MARKET_CURRENCY = {
   US:   { sym: '$',   code: 'USD', label: 'USD' },
@@ -1968,7 +1971,19 @@ const Icon = _ref => {
     })),
     activity: React.createElement("polyline", {
       points: "22 12 18 12 15 21 9 3 6 12 2 12"
-    })
+    }),
+    grip: React.createElement("g", { fill: "currentColor", stroke: "none" },
+      React.createElement("circle", { cx: "9", cy: "6", r: "1.4" }),
+      React.createElement("circle", { cx: "15", cy: "6", r: "1.4" }),
+      React.createElement("circle", { cx: "9", cy: "12", r: "1.4" }),
+      React.createElement("circle", { cx: "15", cy: "12", r: "1.4" }),
+      React.createElement("circle", { cx: "9", cy: "18", r: "1.4" }),
+      React.createElement("circle", { cx: "15", cy: "18", r: "1.4" })),
+    link: React.createElement("g", null, React.createElement("path", {
+      d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+    }), React.createElement("path", {
+      d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+    }))
   };
   return React.createElement("svg", {
     width: size,
@@ -3312,22 +3327,23 @@ function App() {
     hiddenTabs: hiddenTabs,
     onSetTabOrder: setTabOrder,
     onSetHiddenTabs: setHiddenTabs,
+    perplexityKey: perplexityKey,
+    onSetPerplexityKey: setPerplexityKey,
+    pushBackend: pushBackend,
+    pushStatus: pushStatus,
+    onConnectPush: connectPush,
+    onTestPush: testPush,
+    onDisconnectPush: disconnectPush,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
     triggered: triggered,
     notifPerm: notifPerm,
-    perplexityKey: perplexityKey,
-    onSetPerplexityKey: setPerplexityKey,
     onClose: () => setShowAlerts(false),
     onRemoveAlert: removeAlert,
     onClearTriggered: clearTriggered,
     onRequestPerm: requestNotifPerm,
-    pushBackend: pushBackend,
-    pushStatus: pushStatus,
-    onConnectPush: connectPush,
-    onTestPush: testPush,
-    onDisconnectPush: disconnectPush
+    onOpenDetail: openDetail
   }), posModalOpen && React.createElement(PositionModal, {
     editId: posModalEditId,
     existing: posModalEditId ? positions.find(p => p.id === posModalEditId) : null,
@@ -3339,6 +3355,12 @@ function App() {
         addPosition(data.ticker, data.market, data.shares, data.costBasis, data.notes, data.purchaseDate);
         if (quote) mergePrices({ [priceKey(data.market, data.ticker)]: quote });
         else seedQuote(data.ticker, data.market);
+      }
+      // Remember the sector the user confirmed/picked so the allocation chart uses
+      // it (same learned-cache path the import flow writes to).
+      if (data.sector) {
+        const s = DATA.normalizeSector(data.sector);
+        if (s && s !== 'Other') setSectorCache(prev => ({ ...prev, [priceKey(data.market, data.ticker)]: { sector: s, industry: data.sector, at: Date.now() } }));
       }
       setPosModalOpen(false);
     }
@@ -8959,7 +8981,15 @@ function DetailModal(_ref10) {
       React.createElement(PriceBlock, { quote: quote, size: "xl", showDailyRow: true, market: market }),
       React.createElement("button", {
         className: "detail-alert-bell",
-        onClick: () => setShowAlertForm(f => !f),
+        onClick: () => {
+          // Open the alert popup fresh each time — same behaviour as the
+          // watchlist bell (openAlertPopup): default to "above" and pre-fill
+          // the current price so it's consistent across the app.
+          setDir('above');
+          setTarget(quote ? quote.price.toFixed(2) : '');
+          setNote('');
+          setShowAlertForm(true);
+        },
         "aria-label": "Price alerts"
       }, React.createElement(Icon, { name: "bell", size: 16 }),
         alerts.length > 0 && React.createElement("span", { className: "detail-alert-count" }, alerts.length))
@@ -9019,61 +9049,69 @@ function DetailModal(_ref10) {
     }),
     React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market, fxRates: fxRates }),
 
-    showAlertForm && React.createElement("div", null,
-      React.createElement("div", { className: "eyebrow", style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-        React.createElement("span", null, "Price alerts"),
-        React.createElement("span", { className: "text-xs" }, alerts.length, " active")),
-      alerts.length > 0 && React.createElement("div", {
-        style: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }
-      }, alerts.map(a => React.createElement("div", {
-        key: a.id, className: "alert-item"
-      }, React.createElement("div", null,
-        React.createElement("div", { className: "mono text-sm" },
-          a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, market)),
-        a.note && React.createElement("div", { className: "text-xs text-dim mt-1" }, a.note)),
-        React.createElement("button", {
-          className: "btn btn-ghost btn-xs",
-          onClick: () => onRemoveAlert(a.id), "aria-label": "Remove"
-        }, React.createElement(Icon, { name: "x", size: 12 }))))),
-      React.createElement("div", { className: "card alert-form" },
-        React.createElement("div", { className: "alert-dir-group", role: "radiogroup", "aria-label": "Trigger direction" },
-          React.createElement("button", {
-            type: "button", role: "radio", "aria-checked": dir === 'above',
-            className: `alert-dir-btn up ${dir === 'above' ? 'active' : ''}`,
-            onClick: () => setDir('above')
-          }, React.createElement("span", { className: "alert-dir-arrow" }, "↑"),
-            React.createElement("span", { className: "alert-dir-label" }, "Above")),
-          React.createElement("button", {
-            type: "button", role: "radio", "aria-checked": dir === 'below',
-            className: `alert-dir-btn down ${dir === 'below' ? 'active' : ''}`,
-            onClick: () => setDir('below')
-          }, React.createElement("span", { className: "alert-dir-arrow" }, "↓"),
-            React.createElement("span", { className: "alert-dir-label" }, "Below"))
-        ),
-        React.createElement("div", { className: "alert-target-row" },
-          React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
-            React.createElement("span", { className: "prefix" }, CURRENCY_SYMBOLS[ccy] || '$'),
+    // Price alerts open as a centered popup — the same dialog the watchlist
+    // bell shows — for a consistent experience across the app. Rendered through
+    // a portal to document.body so it isn't trapped inside the detail panel's
+    // transformed (will-change) scroll container, and elevated above the modal.
+    showAlertForm && ReactDOM.createPortal(
+      React.createElement("div", { className: "alert-popup-overlay alert-popup-elevated" },
+        React.createElement("div", { className: "alert-popup-backdrop", onClick: () => setShowAlertForm(false) }),
+        React.createElement("div", { className: "alert-popup-panel" },
+          React.createElement("div", { className: "alert-popup-header" },
+            React.createElement("div", null,
+              React.createElement("div", { className: "modal-title" }, ticker),
+              React.createElement("div", { className: "modal-subtitle" }, "Price alerts \xB7 ", React.createElement("span", { className: "market-badge" }, market))),
+            React.createElement("button", { className: "modal-close", onClick: () => setShowAlertForm(false), "aria-label": "Close" },
+              React.createElement(Icon, { name: "x" }))),
+          alerts.length > 0 && React.createElement("div", {
+            style: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }
+          }, alerts.map(a => React.createElement("div", {
+            key: a.id, className: "alert-item"
+          }, React.createElement("div", null,
+            React.createElement("div", { className: "mono text-sm" },
+              a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, market)),
+            a.note && React.createElement("div", { className: "text-xs text-dim mt-1" }, a.note)),
+            React.createElement("button", {
+              className: "btn btn-ghost btn-xs",
+              onClick: () => onRemoveAlert(a.id), "aria-label": "Remove"
+            }, React.createElement(Icon, { name: "x", size: 12 }))))),
+          React.createElement("div", { className: "alert-form" },
+            React.createElement("div", { className: "alert-dir-group", role: "radiogroup", "aria-label": "Trigger direction" },
+              React.createElement("button", {
+                type: "button", role: "radio", "aria-checked": dir === 'above',
+                className: `alert-dir-btn up ${dir === 'above' ? 'active' : ''}`,
+                onClick: () => setDir('above')
+              }, React.createElement("span", { className: "alert-dir-arrow" }, "↑"),
+                React.createElement("span", { className: "alert-dir-label" }, "Above")),
+              React.createElement("button", {
+                type: "button", role: "radio", "aria-checked": dir === 'below',
+                className: `alert-dir-btn down ${dir === 'below' ? 'active' : ''}`,
+                onClick: () => setDir('below')
+              }, React.createElement("span", { className: "alert-dir-arrow" }, "↓"),
+                React.createElement("span", { className: "alert-dir-label" }, "Below"))
+            ),
+            React.createElement("div", { className: "alert-target-row" },
+              React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
+                React.createElement("span", { className: "prefix" }, CURRENCY_SYMBOLS[ccy] || '$'),
+                React.createElement("input", {
+                  type: "text", inputMode: "decimal",
+                  autoComplete: "off", autoCorrect: "off", spellCheck: false,
+                  placeholder: "Target price", value: target,
+                  onChange: e => setTarget(sanitizeDecimalInput(e.target.value)),
+                  className: "alert-target-input"
+                }))),
             React.createElement("input", {
-              type: "text", inputMode: "decimal",
-              autoComplete: "off", autoCorrect: "off", spellCheck: false,
-              placeholder: "Target price", value: target,
-              onChange: e => setTarget(sanitizeDecimalInput(e.target.value)),
-              className: "alert-target-input"
-            })
-          )
-        ),
-        React.createElement("input", {
-          type: "text", placeholder: "Note (optional)",
-          value: note, onChange: e => setNote(e.target.value),
-          maxLength: "80", className: "alert-note-input"
-        }),
-        React.createElement("button", {
-          className: `btn btn-block mt-3 alert-submit ${dir === 'above' ? 'up' : 'down'}`,
-          onClick: submitAlert
-        }, React.createElement(Icon, { name: "plus" }),
-          " Alert when ", dir === 'above' ? 'above ' : 'below ',
-          target && isFinite(parseDecimal(target)) ? (CURRENCY_SYMBOLS[ccy] || '$') + parseDecimal(target).toFixed(2) : 'target')
-      )
+              type: "text", placeholder: "Note (optional)",
+              value: note, onChange: e => setNote(e.target.value),
+              maxLength: "80", className: "alert-note-input"
+            }),
+            React.createElement("button", {
+              className: `btn btn-block mt-3 alert-submit ${dir === 'above' ? 'up' : 'down'}`,
+              onClick: submitAlert
+            }, React.createElement(Icon, { name: "plus" }),
+              " Alert when ", dir === 'above' ? 'above ' : 'below ',
+              target && isFinite(parseDecimal(target)) ? (CURRENCY_SYMBOLS[ccy] || '$') + parseDecimal(target).toFixed(2) : 'target')))),
+      document.body
     ),
 
     React.createElement("div", null, React.createElement("div", {
@@ -9103,35 +9141,22 @@ function AlertsModal(_ref11) {
     alerts,
     triggered,
     notifPerm,
-    perplexityKey,
-    onSetPerplexityKey,
     onClose,
     onRemoveAlert,
     onClearTriggered,
     onRequestPerm,
-    pushBackend,
-    pushStatus,
-    onConnectPush,
-    onTestPush,
-    onDisconnectPush
+    onOpenDetail
   } = _ref11;
-  const [pkDraft, setPkDraft] = useState(perplexityKey || '');
-  const [pkReveal, setPkReveal] = useState(false);
-  const [pushDraft, setPushDraft] = useState(pushBackend || '');
-  useEffect(() => { setPushDraft(pushBackend || ''); }, [pushBackend]);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
-  useEffect(() => { setPkDraft(perplexityKey || ''); }, [perplexityKey]);
-  const savePk = () => {
-    const v = pkDraft.trim();
-    onSetPerplexityKey(v);
+  // Tapping a trigger or alert jumps straight to that company's chart. Close the
+  // sheet first so the detail card opens cleanly on top of the dashboard.
+  const openChart = (ticker, market) => {
+    if (!onOpenDetail) return;
+    onClose();
+    onOpenDetail(ticker, market);
   };
-  const clearPk = () => {
-    setPkDraft('');
-    onSetPerplexityKey('');
-  };
-  const pkConfigured = !!perplexityKey;
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
   const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   const iOSNeedsInstall = isIOS && !standalone;
@@ -9208,98 +9233,6 @@ function AlertsModal(_ref11) {
   }, "Notifications not supported"), React.createElement("div", {
     className: "perm-body"
   }, "This browser doesn't support web notifications. Alerts will still show as in-app toasts.")),
-    (() => {
-      const meta = ({
-        connected:   { cls: 'ok',   icon: 'checkCircle', label: 'connected' },
-        connecting:  { cls: '',     icon: 'refresh',     label: 'connecting…' },
-        error:       { cls: 'err',  icon: 'alert',       label: 'not connected' },
-        unsupported: { cls: 'warn', icon: 'alert',       label: 'unavailable here' }
-      })[pushStatus] || { cls: '', icon: 'bell', label: 'off' };
-      const body = pushStatus === 'connected'
-        ? 'Connected. Your alerts are checked on the server every minute during market hours and pushed instantly — even with Playbook fully closed, on iPhone and Android.'
-        : pushStatus === 'connecting'
-        ? 'Connecting to your push server…'
-        : pushStatus === 'unsupported'
-        ? "Push isn't available in this browser. On iPhone, install to the Home Screen and reopen from the icon (iOS 16.4+)."
-        : pushStatus === 'error'
-        ? "Couldn't reach the server. Check the URL, make sure notifications are enabled, and that the worker is deployed."
-        : 'Optional — the path to always-on, app-closed alerts. Deploy the free worker in the backend/ folder, then paste its URL here. Without it, iPhone alerts only fire while the app is open or recently used.';
-      return React.createElement("div", { className: `perm-box ${meta.cls}` },
-        React.createElement("div", { className: "perm-title" },
-          React.createElement(Icon, { name: meta.icon, size: 14 }),
-          " Background push server · ", meta.label
-        ),
-        React.createElement("div", { className: "perm-body" }, body),
-        React.createElement("div", { className: "pk-row" },
-          React.createElement("input", {
-            type: "url",
-            inputMode: "url",
-            autoComplete: "off",
-            autoCapitalize: "none",
-            spellCheck: false,
-            placeholder: "https://playbook-push.<you>.workers.dev",
-            value: pushDraft,
-            onChange: e => setPushDraft(e.target.value),
-            className: "pk-input"
-          }),
-          pushStatus === 'connected'
-            ? React.createElement("button", { className: "btn btn-ghost btn-xs", type: "button", onClick: onDisconnectPush }, "Disconnect")
-            : React.createElement("button", {
-                className: "btn btn-primary btn-xs",
-                type: "button",
-                disabled: pushStatus === 'connecting',
-                onClick: () => onConnectPush(pushDraft)
-              }, pushStatus === 'connecting' ? "…" : "Connect")
-        ),
-        pushStatus === 'connected' && React.createElement("button", {
-          className: "btn btn-ghost btn-sm",
-          type: "button",
-          style: { marginTop: '8px' },
-          onClick: onTestPush
-        }, React.createElement(Icon, { name: "bell", size: 14 }), " Send test push")
-      );
-    })(),
-    React.createElement("div", { className: `perm-box ${pkConfigured ? 'ok' : ''}` },
-      React.createElement("div", { className: "perm-title" },
-        React.createElement(Icon, { name: pkConfigured ? "checkCircle" : "bell", size: 14 }),
-        " AI news (Perplexity)", pkConfigured ? " · configured" : ""
-      ),
-      React.createElement("div", { className: "perm-body" },
-        pkConfigured
-          ? "Perplexity is fetching relevant headlines alongside Yahoo Finance RSS. Paste a new key to replace it, or clear to disable."
-          : "Paste a Perplexity API key to pull AI-curated headlines alongside Yahoo Finance RSS. The key is stored locally in your browser."
-      ),
-      React.createElement("div", { className: "pk-row" },
-        React.createElement("input", {
-          type: pkReveal ? "text" : "password",
-          autoComplete: "off",
-          spellCheck: false,
-          placeholder: "pplx-…",
-          value: pkDraft,
-          onChange: e => setPkDraft(e.target.value),
-          className: "pk-input"
-        }),
-        React.createElement("button", {
-          className: "btn btn-ghost btn-xs",
-          type: "button",
-          onClick: () => setPkReveal(v => !v),
-          "aria-label": pkReveal ? "Hide key" : "Reveal key"
-        }, pkReveal ? "Hide" : "Show")
-      ),
-      React.createElement("div", { className: "pk-actions" },
-        React.createElement("button", {
-          className: "btn btn-primary btn-xs",
-          type: "button",
-          disabled: pkDraft.trim() === (perplexityKey || ''),
-          onClick: savePk
-        }, pkConfigured ? "Update key" : "Save key"),
-        pkConfigured && React.createElement("button", {
-          className: "btn btn-ghost btn-xs",
-          type: "button",
-          onClick: clearPk
-        }, "Remove")
-      )
-    ),
     React.createElement("div", null, React.createElement("div", {
     className: "eyebrow",
     style: {
@@ -9322,7 +9255,12 @@ function AlertsModal(_ref11) {
     }
   }, recentTriggered.map(t => React.createElement("div", {
     key: t.id,
-    className: "alert-item"
+    className: "alert-item alert-item-tap",
+    role: "button",
+    tabIndex: 0,
+    "aria-label": `Open ${t.ticker} chart`,
+    onClick: () => openChart(t.ticker, t.market),
+    onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openChart(t.ticker, t.market); } }
   }, React.createElement("div", null, React.createElement("div", null, React.createElement("span", {
     className: "tkr-sm"
   }, t.ticker), " ", React.createElement("span", {
@@ -9331,7 +9269,9 @@ function AlertsModal(_ref11) {
     className: "mono text-sm"
   }, t.direction === 'above' ? '↑ ' : '↓ ', fmt(t.targetPrice, t.market))), React.createElement("div", {
     className: "text-xs text-dim mt-1"
-  }, timeAgo(t.triggeredAt), " \xB7 hit at ", fmt(t.triggerPrice, t.market))))))), React.createElement("div", null, React.createElement("div", {
+  }, timeAgo(t.triggeredAt), " \xB7 hit at ", fmt(t.triggerPrice, t.market))), React.createElement(Icon, {
+    name: "chevron", size: 15, className: "alert-item-go"
+  }))))), React.createElement("div", null, React.createElement("div", {
     className: "eyebrow"
   }, "Active (", alerts.length, ")"), alerts.length === 0 ? React.createElement("div", {
     className: "text-sm text-dim"
@@ -9343,7 +9283,12 @@ function AlertsModal(_ref11) {
     }
   }, alerts.map(a => React.createElement("div", {
     key: a.id,
-    className: "alert-item"
+    className: "alert-item alert-item-tap",
+    role: "button",
+    tabIndex: 0,
+    "aria-label": `Open ${a.ticker} chart`,
+    onClick: () => openChart(a.ticker, a.market),
+    onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openChart(a.ticker, a.market); } }
   }, React.createElement("div", null, React.createElement("div", null, React.createElement("span", {
     className: "tkr-sm"
   }, a.ticker), " ", React.createElement("span", {
@@ -9354,7 +9299,7 @@ function AlertsModal(_ref11) {
     className: "text-xs text-dim mt-1"
   }, a.note)), React.createElement("button", {
     className: "btn btn-ghost btn-xs",
-    onClick: () => onRemoveAlert(a.id),
+    onClick: e => { e.stopPropagation(); onRemoveAlert(a.id); },
     "aria-label": "Remove"
   }, React.createElement(Icon, {
     name: "x",
@@ -9613,11 +9558,21 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrStep, setOcrStep] = useState('');
   const [ocrError, setOcrError] = useState('');
+  // Confirm before discarding a review in progress (only the X button can close
+  // the review stage — swipe and backdrop are disabled there).
+  const [confirmClose, setConfirmClose] = useState(false);
   const fileRef = useRef(null);
   const imgRef = useRef(null);
   const panelRef = useRef(null);
-  useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
+  // Swipe-to-dismiss only on the input stage; the review stage is locked so
+  // scrolling the matches can never flick the sheet closed.
+  useSwipeDownToClose(panelRef, onClose, stage === 'input');
   useBodyScrollLock();
+  // The X (and any close intent) prompts when there's a review in flight.
+  const requestClose = () => {
+    if (stage === 'review' && rows.length > 0 && !importing) setConfirmClose(true);
+    else onClose();
+  };
 
   const toRows = (holdings, market) => holdings.map(h => ({
     id: uid(),
@@ -9828,6 +9783,23 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
 
   const hasShares = (r) => isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0;
   const hasCost = (r) => isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0;
+  // The sector this row will be allocated to in the dashboard — the same static
+  // resolution the allocation chart uses (listing map first, then the name), so
+  // what the user sees here is exactly where it'll land.
+  const sectorForRow = (r) => {
+    if (!(r.status === 'ok' && r.ticker)) return 'Other';
+    const f = DATA.findSector(r.ticker, r.market);
+    if (f.sector !== 'Other') return f.sector;
+    const byName = r.resolvedName ? DATA.classifySectorByName(r.resolvedName) : 'Other';
+    return (byName && byName !== 'Other') ? byName : 'Other';
+  };
+  // The effective sector to commit: an explicit user pick wins, else the detected
+  // one (null only when genuinely unknown, so we never persist "Other").
+  const effectiveSector = (r) => {
+    if (sectorByRow[r.id]) return sectorByRow[r.id];
+    const det = sectorForRow(r);
+    return det !== 'Other' ? det : null;
+  };
   // Importable only once matched to a confirmed live listing with valid qty/cost.
   const validRows = rows.filter(r => r.include && r.ticker.trim() && r.status === 'ok' && hasShares(r) && hasCost(r));
   const notFoundCount = rows.filter(r => r.include && r.status === 'notfound').length;
@@ -9845,7 +9817,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
         costBasis: parseDecimal(r.costBasis),
         purchaseDate: r.purchaseDate || null,
         notes: '',
-        sector: sectorByRow[r.id] || null,
+        sector: effectiveSector(r),
       })));
       onClose();
     } finally {
@@ -9950,25 +9922,33 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     const amt = (!sharesBad && !costBad) ? parseDecimal(r.shares) * parseDecimal(r.costBasis) : null;
     const alts = (r.candidates || []).filter(c => !(c.ticker === r.ticker && c.market === r.market)).slice(0, 6);
     const lowConf = r.status === 'ok' && r.lowConfidence;
-    // When a matched holding can't be auto-classified, ask the user which sector
-    // it belongs to. Their answer is learned (persisted) so the allocation chart
-    // stops dumping it into "Other".
-    const needsSector = r.status === 'ok' && r.ticker && DATA.findSector(r.ticker, r.market).sector === 'Other';
+    // The sector this holding will land in (same resolution as the chart). Shown
+    // for every matched row; when it can't be classified we flag it and the user's
+    // pick is learned (persisted) so the allocation chart stops saying "Other".
+    const matched = r.status === 'ok' && !!r.ticker;
+    const detectedSector = matched ? sectorForRow(r) : null;
+    const sectorValue = sectorByRow[r.id] || (detectedSector && detectedSector !== 'Other' ? detectedSector : '');
+    const sectorUnknown = matched && detectedSector === 'Other' && !sectorByRow[r.id];
     return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") + (lowConf ? " is-low" : "") },
       React.createElement("div", { className: "import-card-top" },
-        React.createElement("label", { className: "import-check" },
-          React.createElement("input", { type: "checkbox", checked: r.include, onChange: e => updateRow(r.id, { include: e.target.checked }) })),
-        React.createElement("input", {
-          className: "import-query-input",
-          value: r.query, placeholder: "Company name",
-          autoComplete: "off", spellCheck: false,
-          onChange: e => updateRow(r.id, { query: e.target.value }),
-          onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); reResolveRow(r.id); } },
-          onBlur: () => { if (r.query.trim() && r.status !== 'resolving') reResolveRow(r.id); }
-        }),
+        React.createElement("label", {
+          className: "import-include" + (r.include ? " on" : ""),
+          title: r.include ? "This holding will be imported — toggle off to skip it" : "Skipped — toggle on to import this holding"
+        },
+          React.createElement("input", { type: "checkbox", className: "import-include-input", checked: r.include, onChange: e => updateRow(r.id, { include: e.target.checked }) }),
+          React.createElement("span", { className: "import-include-track" }, React.createElement("span", { className: "import-include-thumb" })),
+          React.createElement("span", { className: "import-include-label" }, r.include ? "Include" : "Skipped")),
         React.createElement("button", { className: "import-del", onClick: () => removeRow(r.id), "aria-label": "Remove row" },
           React.createElement(Icon, { name: "x", size: 13 }))
       ),
+      React.createElement("input", {
+        className: "import-query-input",
+        value: r.query, placeholder: "Company name",
+        autoComplete: "off", spellCheck: false,
+        onChange: e => updateRow(r.id, { query: e.target.value }),
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); reResolveRow(r.id); } },
+        onBlur: () => { if (r.query.trim() && r.status !== 'resolving') reResolveRow(r.id); }
+      }),
       React.createElement("div", { className: "import-card-match" },
         statusDot(r),
         r.ticker
@@ -9978,10 +9958,6 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
               lowConf ? React.createElement("span", { className: "import-conf-low", title: "Loose match — please confirm or pick an alternative" }, "check?") : null)
           : React.createElement("span", { className: "import-match-name text-dim" },
               r.status === 'resolving' ? "Searching live listings…" : (r.status === 'notfound' ? "No match — try the exact name or another market" : "Not matched yet")),
-        React.createElement("select", {
-          className: "import-input import-select import-card-market", value: r.market,
-          onChange: e => { updateRow(r.id, { market: e.target.value, status: 'resolving', ticker: '' }); reResolveRow(r.id); }
-        }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value }, m.label))),
         alts.length > 0 ? React.createElement("button", {
           className: "btn btn-ghost btn-xs import-alts-toggle",
           onClick: () => updateRow(r.id, { showAlts: !r.showAlts, manualSearch: false })
@@ -10019,13 +9995,21 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
           onSelect: (sel) => { updateRow(r.id, { manualSearch: false }); chooseCandidate(r.id, { ticker: sel.ticker, market: sel.market, name: sel.name }); }
         })
       ) : null,
-      React.createElement("div", { className: "import-qty-field import-date-field" },
-        React.createElement("span", { className: "import-qty-label" }, "Date"),
-        React.createElement("input", {
-          className: "import-input", type: "date", max: todayISO,
-          value: r.purchaseDate || '',
-          onChange: e => updateRow(r.id, { purchaseDate: e.target.value })
-        })),
+      React.createElement("div", { className: "import-card-meta" },
+        React.createElement("div", { className: "import-qty-field import-exch-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Exchange"),
+          React.createElement("select", {
+            className: "import-input import-field-select", value: r.market,
+            onChange: e => { updateRow(r.id, { market: e.target.value, status: 'resolving', ticker: '' }); reResolveRow(r.id); }
+          }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value },
+              m.label + " — " + m.country)))),
+        React.createElement("div", { className: "import-qty-field import-date-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Date"),
+          React.createElement("input", {
+            className: "import-input", type: "date", max: todayISO,
+            value: r.purchaseDate || '',
+            onChange: e => updateRow(r.id, { purchaseDate: e.target.value })
+          }))),
       React.createElement("div", { className: "import-card-qty" },
         React.createElement("div", { className: "import-qty-field" },
           React.createElement("span", { className: "import-qty-label" }, "Shares"),
@@ -10044,16 +10028,19 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
       amt != null ? React.createElement("div", { className: "import-amount-line" },
         React.createElement("span", null, "Holding amount"),
         React.createElement("span", { className: "mono" }, fmt(amt, r.market))) : null,
-      needsSector ? React.createElement("div", { className: "import-sector-row" },
-        React.createElement("span", { className: "import-sector-q" },
-          React.createElement(Icon, { name: "alert", size: 12 }),
-          " Which sector? We'll remember it."),
+      matched ? React.createElement("div", { className: "import-qty-field import-sector-field" + (sectorUnknown ? " is-unknown" : "") },
+        React.createElement("span", { className: "import-qty-label" },
+          "Sector",
+          React.createElement("span", { className: "import-sector-hint" },
+            sectorUnknown
+              ? React.createElement(React.Fragment, null, React.createElement(Icon, { name: "alert", size: 11 }), " pick one — we'll remember it")
+              : " · where it lands in your allocation")),
         React.createElement("select", {
-          className: "import-input import-select import-sector-select",
-          value: sectorByRow[r.id] || '',
+          className: "import-input import-field-select" + (sectorUnknown ? " bad" : ""),
+          value: sectorValue,
           onChange: e => setSectorByRow(prev => ({ ...prev, [r.id]: e.target.value }))
         },
-          React.createElement("option", { value: "" }, "Choose sector…"),
+          React.createElement("option", { value: "" }, sectorUnknown ? "Choose sector…" : "Other (uncategorised)"),
           (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s)))
       ) : null
     );
@@ -10096,16 +10083,27 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   return React.createElement("div", { className: "modal" },
     React.createElement("div", { className: "modal-backdrop", onClick: stage === 'input' ? onClose : undefined }),
     React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 620 } },
-      React.createElement("div", { className: "modal-handle" }),
+      stage === 'input' ? React.createElement("div", { className: "modal-handle" }) : null,
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,
           React.createElement("div", { className: "modal-title" }, defaultMarket === 'TFSA' ? "Import TFSA holdings" : "Import holdings"),
           React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "Match company names to live listings" : "Review matches before importing")
         ),
-        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))
+        React.createElement("button", { className: "modal-close", onClick: requestClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))
       ),
       stage === 'input' ? renderInput() : renderReview()
-    )
+    ),
+    confirmClose ? React.createElement("div", { className: "import-confirm" },
+      React.createElement("div", { className: "import-confirm-card" },
+        React.createElement("div", { className: "import-confirm-title" }, "Discard this import?"),
+        React.createElement("div", { className: "import-confirm-body" },
+          "You're reviewing ", React.createElement("strong", null, rows.length, " holding", rows.length !== 1 ? "s" : ""),
+          ". Closing now discards these matches — nothing will be added to your portfolio."),
+        React.createElement("div", { className: "import-confirm-actions" },
+          React.createElement("button", { className: "btn btn-secondary", onClick: () => setConfirmClose(false) }, "Keep editing"),
+          React.createElement("button", { className: "btn btn-danger", onClick: () => { setConfirmClose(false); onClose(); } }, "Discard import"))
+      )
+    ) : null
   );
 }
 function PositionModal(_ref12) {
@@ -10126,9 +10124,15 @@ function PositionModal(_ref12) {
   const [purchaseDate, setPurchaseDate] = useState(existing?.purchaseDate || todayISO);
   const [verifying, setVerifying] = useState(false);
   const [tickerError, setTickerError] = useState('');
+  // Sector this holding will be allocated to — auto-detected from the ticker,
+  // overridable, and learned so the allocation chart reflects it.
+  const [sectorOverride, setSectorOverride] = useState(existing?.sector || '');
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
+  const detectedSector = ticker.trim() ? DATA.findSector(ticker.trim().toUpperCase(), market).sector : 'Other';
+  const sectorValue = sectorOverride || (detectedSector !== 'Other' ? detectedSector : '');
+  const sectorUnknown = !!ticker.trim() && detectedSector === 'Other' && !sectorOverride;
   const submit = async () => {
     if (!ticker.trim()) return;
     const s = parseDecimal(shares);
@@ -10155,7 +10159,8 @@ function PositionModal(_ref12) {
     onSave({
       ticker: ticker.trim().toUpperCase(),
       market, shares: s, costBasis: c, notes,
-      purchaseDate: purchaseDate || null
+      purchaseDate: purchaseDate || null,
+      sector: sectorValue || null
     }, verifiedQuote);
   };
   const ccy = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).sym;
@@ -10205,6 +10210,20 @@ function PositionModal(_ref12) {
     onMarketChange: m2 => { setMarket(m2); setTickerError(''); },
     disabled: isEdit
   }), tickerError ? React.createElement("div", { className: "verify-error" }, tickerError) : null), React.createElement("div", {
+    className: "form-group"
+  }, React.createElement("label", {
+    className: "form-label"
+  }, "Sector"), React.createElement("select", {
+    className: "import-field-select" + (sectorUnknown ? " bad" : ""),
+    value: sectorValue,
+    onChange: e => setSectorOverride(e.target.value)
+  }, React.createElement("option", { value: "" }, "Other (uncategorised)"),
+     (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s))),
+    React.createElement("div", { className: "form-help" },
+      !ticker.trim() ? "Pick a ticker first — we'll auto-detect the sector."
+        : sectorUnknown ? "Couldn't auto-detect this one — choose where it lands in your allocation chart."
+        : "Where this lands in your allocation chart (auto-detected — change if needed).")
+  ), React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {
     className: "form-label"
@@ -10606,17 +10625,148 @@ function FxSummary({ positions, contributions, prices, fxRates, displayCurrency,
   );
 }
 
+// Premium drag-to-reorder list for Settings → Tabs. Pointer-driven (works with
+// mouse + touch via setPointerCapture). The dragged row lifts and tracks the
+// finger 1:1; the others glide to their new slots with a FLIP animation. The
+// working order lives in local state during a drag and is committed to the
+// parent on release, so persistence only fires once.
+function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden }) {
+  const [order, setOrder] = useState(tabOrder);
+  const [dragKey, setDragKey] = useState(null);
+  const orderRef = useRef(order);
+  orderRef.current = order;
+  const draggingRef = useRef(false);
+  const dragRef = useRef(null);
+  const rowEls = useRef(new Map());
+  const prevTops = useRef(new Map());
+
+  // Re-sync when the parent order changes and we're not mid-drag.
+  useEffect(() => { if (!draggingRef.current) setOrder(tabOrder); }, [tabOrder]);
+
+  // FLIP: animate the non-dragged rows from their captured positions to the new
+  // layout after each reorder commit.
+  useLayoutEffect(() => {
+    const prev = prevTops.current;
+    if (!prev.size) return;
+    rowEls.current.forEach((el, key) => {
+      if (!el || key === dragKey) return;
+      const before = prev.get(key);
+      if (before == null) return;
+      const after = el.getBoundingClientRect().top;
+      const dy = before - after;
+      if (!dy) return;
+      el.style.transition = 'none';
+      el.style.transform = `translateY(${dy}px)`;
+      void el.offsetHeight; // force reflow so the next change animates
+      el.style.transition = 'transform 0.24s cubic-bezier(0.22,1,0.36,1)';
+      el.style.transform = '';
+    });
+    prev.clear();
+  }, [order, dragKey]);
+
+  const captureTops = () => {
+    const m = prevTops.current; m.clear();
+    rowEls.current.forEach((el, key) => { if (el) m.set(key, el.getBoundingClientRect().top); });
+  };
+
+  const onHandleDown = (e, key) => {
+    if (e.button != null && e.button !== 0) return;
+    const el = rowEls.current.get(key);
+    if (!el) return;
+    e.preventDefault();
+    draggingRef.current = true;
+    const stride = el.offsetHeight + 8; // row height + list gap
+    // Track a synchronous working copy + index so the gesture stays correct even
+    // before React commits the reorder (setState is batched/async).
+    const work = orderRef.current.slice();
+    dragRef.current = { key, startY: e.clientY, stride, idx: work.indexOf(key), work };
+    setDragKey(key);
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_e) {}
+  };
+  const onHandleMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const el = rowEls.current.get(d.key);
+    const dy = e.clientY - d.startY;
+    if (el) el.style.transform = `translateY(${dy}px)`;
+    let target = d.idx + Math.round(dy / d.stride);
+    target = Math.max(0, Math.min(d.work.length - 1, target));
+    if (target !== d.idx) {
+      captureTops();
+      // Keep the lifted row under the finger: shift the anchor by the slots moved.
+      const shift = (target - d.idx) * d.stride;
+      d.startY += shift;
+      d.work.splice(target, 0, d.work.splice(d.idx, 1)[0]);
+      d.idx = target;
+      if (el) el.style.transform = `translateY(${e.clientY - d.startY}px)`;
+      setOrder(d.work.slice());
+    }
+  };
+  const endDrag = () => {
+    const d = dragRef.current;
+    if (!d) { draggingRef.current = false; setDragKey(null); return; }
+    const el = rowEls.current.get(d.key);
+    if (el) {
+      el.style.transition = 'transform 0.24s cubic-bezier(0.22,1,0.36,1)';
+      el.style.transform = '';
+      const clear = () => { el.style.transition = ''; };
+      el.addEventListener('transitionend', clear, { once: true });
+      setTimeout(clear, 320);
+    }
+    const finalOrder = d.work;
+    dragRef.current = null;
+    draggingRef.current = false;
+    setDragKey(null);
+    onSetTabOrder(finalOrder);
+  };
+
+  return React.createElement("div", { className: "tab-config-list" + (dragKey ? " dragging" : "") },
+    order.map((key) => {
+      const hidden = (hiddenTabs || []).includes(key) && key !== TAB_ALWAYS_VISIBLE;
+      const pinned = key === TAB_ALWAYS_VISIBLE;
+      return React.createElement("div", {
+        key: key,
+        ref: el => { if (el) rowEls.current.set(key, el); else rowEls.current.delete(key); },
+        className: "tab-config-row" + (hidden ? " is-hidden" : "") + (dragKey === key ? " is-dragging" : "")
+      },
+        React.createElement("button", {
+          className: "tab-config-grip", type: "button", "aria-label": "Drag to reorder",
+          onPointerDown: e => onHandleDown(e, key),
+          onPointerMove: onHandleMove,
+          onPointerUp: endDrag,
+          onPointerCancel: endDrag
+        }, React.createElement(Icon, { name: "grip", size: 18 })),
+        React.createElement("span", { className: "tab-config-name" }, TAB_LABELS[key] || key),
+        pinned
+          ? React.createElement("span", { className: "tab-config-pin" }, "Always on")
+          : React.createElement("button", {
+              className: "tab-config-toggle" + (hidden ? "" : " on"), type: "button",
+              "aria-label": hidden ? "Show tab" : "Hide tab", onClick: () => onToggleHidden(key)
+            }, React.createElement(Icon, { name: hidden ? "eye-off" : "eye", size: 15 })));
+    })
+  );
+}
+
 function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
                         positions, contributions, prices, onExport, onImport, onDeleteHoldings,
                         ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode,
-                        tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs, onClose }) {
+                        tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
+                        perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
+                        onConnectPush, onTestPush, onDisconnectPush, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [pkDraft, setPkDraft] = useState(perplexityKey || '');
+  const [pkReveal, setPkReveal] = useState(false);
+  const [pushDraft, setPushDraft] = useState(pushBackend || '');
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
-  useSwipeDownToClose(panelRef, onClose);
+  // Settings is a centered dialog (premium app feel), not a swipe-down sheet,
+  // so it doesn't use useSwipeDownToClose — close via the X or backdrop.
   useBodyScrollLock();
+  useEffect(() => { setPkDraft(perplexityKey || ''); }, [perplexityKey]);
+  useEffect(() => { setPushDraft(pushBackend || ''); }, [pushBackend]);
   const snap = useMemo(
     () => computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency }),
     [positions, contributions, prices, fxRates, displayCurrency]
@@ -10626,26 +10776,19 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
     try { await onRefreshFx(); } finally { setRefreshing(false); }
   };
   const rates = fxRates?.rates || {};
+  // Connections (AI news + push) handlers
+  const pkConfigured = !!perplexityKey;
+  const savePk = () => onSetPerplexityKey(pkDraft.trim());
+  const clearPk = () => { setPkDraft(''); onSetPerplexityKey(''); };
   const sections = [
-    { key: 'display', label: 'Display', icon: 'globe' },
+    { key: 'display', label: 'Currency', icon: 'globe' },
     { key: 'tabs', label: 'Tabs', icon: 'list' },
     { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
     { key: 'holdings', label: 'Holdings', icon: 'briefcase' },
+    { key: 'connections', label: 'Connections', icon: 'link' },
     { key: 'data', label: 'Data', icon: 'download' },
   ];
-  // ── Tabs section: reorder (up/down) + show/hide. Dashboard stays pinned so the
-  //    nav can't be emptied. Order is stored as a key list; moving/hiding writes
-  //    straight back to the persisted state in App. ──
-  const visibleTabOrder = (tabOrder || DEFAULT_TAB_ORDER);
-  const moveTab = (key, dir) => {
-    const arr = visibleTabOrder.slice();
-    const i = arr.indexOf(key);
-    const j = i + dir;
-    if (i < 0 || j < 0 || j >= arr.length) return;
-    const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
-    onSetTabOrder(arr);
-  };
   const toggleTabHidden = (key) => {
     if (key === TAB_ALWAYS_VISIBLE) return;
     const hidden = (hiddenTabs || []);
@@ -10671,34 +10814,46 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
     rows.forEach(r => allSel ? next.delete(r.id) : next.add(r.id));
     return next;
   });
+  const selectedRows = positions.filter(p => selectedDel.has(p.id));
+  // Delete is a two-step in-dialog confirm (premium feel — no jarring browser
+  // confirm()). The trash button arms `confirmDel`, which swaps the list for a
+  // confirmation panel; only its red "Delete" commits.
   const doDeleteHoldings = () => {
     const ids = Array.from(selectedDel);
-    if (ids.length === 0 || !onDeleteHoldings) return;
-    const names = positions.filter(p => selectedDel.has(p.id)).map(p => p.ticker);
-    const preview = names.slice(0, 8).join(', ') + (names.length > 8 ? `, +${names.length - 8} more` : '');
-    if (window.confirm(`Permanently delete ${ids.length} holding${ids.length === 1 ? '' : 's'}?\n\n${preview}\n\nThis removes the position(s) without recording a sale and can't be undone.`)) {
-      onDeleteHoldings(ids);
-      setSelectedDel(new Set());
-    }
+    if (ids.length === 0 || !onDeleteHoldings) { setConfirmDel(false); return; }
+    onDeleteHoldings(ids);
+    setSelectedDel(new Set());
+    setConfirmDel(false);
   };
-  return React.createElement("div", { className: "modal" },
-    React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
-    React.createElement("div", { className: "modal-panel settings-panel", ref: panelRef },
-      React.createElement("div", { className: "modal-handle" }),
-      React.createElement("div", { className: "modal-header" },
-        React.createElement("div", { className: "modal-title" }, "Settings"),
+  const holdingValue = (p) => {
+    const q = prices[priceKey(p.market, p.ticker)];
+    const px = q && isFinite(q.price) ? q.price : (isFinite(p.costBasis) ? p.costBasis : null);
+    return px == null ? null : px * p.shares;
+  };
+  const activeLabel = (sections.find(s => s.key === activeSection) || {}).label || '';
+  return React.createElement("div", { className: "settings-overlay" },
+    React.createElement("div", { className: "settings-backdrop", onClick: onClose }),
+    React.createElement("div", { className: "settings-dialog", ref: panelRef },
+      React.createElement("div", { className: "settings-dialog-header" },
+        React.createElement("div", { className: "settings-logo" }, React.createElement(Icon, { name: "settings", size: 18 })),
+        React.createElement("div", { className: "settings-dialog-titles" },
+          React.createElement("div", { className: "settings-dialog-title" }, "Settings"),
+          React.createElement("div", { className: "settings-dialog-sub" }, "Preferences \xB7 portfolio \xB7 data")),
         React.createElement("button", { className: "modal-close", onClick: onClose, 'aria-label': "Close" },
           React.createElement(Icon, { name: "x" })
         )
       ),
-      React.createElement("div", { className: "settings-tabs" },
-        sections.map(s => React.createElement("button", {
-          key: s.key,
-          className: `settings-tab ${activeSection === s.key ? 'active' : ''}`,
-          onClick: () => setActiveSection(s.key)
-        }, React.createElement(Icon, { name: s.icon, size: 13 }), " ", s.label))
-      ),
-      React.createElement("div", { className: "modal-body" },
+      React.createElement("div", { className: "settings-dialog-body" },
+        React.createElement("nav", { className: "settings-nav", "aria-label": "Settings sections" },
+          sections.map(s => React.createElement("button", {
+            key: s.key,
+            className: `settings-nav-item ${activeSection === s.key ? 'active' : ''}`,
+            "aria-current": activeSection === s.key ? 'page' : undefined,
+            onClick: () => setActiveSection(s.key)
+          }, React.createElement(Icon, { name: s.icon, size: 16 }), React.createElement("span", null, s.label)))
+        ),
+        React.createElement("div", { className: "settings-content" },
+        React.createElement("div", { className: "settings-content-title" }, activeLabel),
         activeSection === 'display' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-row" },
             React.createElement("div", { className: "settings-row-label" },
@@ -10723,30 +10878,13 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
         activeSection === 'tabs' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-section-title mb-1" }, "Navigation tabs"),
           React.createElement("div", { className: "settings-row-desc mb-3" },
-            "Reorder with the arrows and hide tabs you don't use. Dashboard is always shown."),
-          React.createElement("div", { className: "tab-config-list" },
-            visibleTabOrder.map((key, idx) => {
-              const hidden = (hiddenTabs || []).includes(key) && key !== TAB_ALWAYS_VISIBLE;
-              const pinned = key === TAB_ALWAYS_VISIBLE;
-              return React.createElement("div", { key: key, className: "tab-config-row" + (hidden ? " is-hidden" : "") },
-                React.createElement("div", { className: "tab-config-reorder" },
-                  React.createElement("button", {
-                    className: "icon-btn", type: "button", "aria-label": "Move up",
-                    disabled: idx === 0, onClick: () => moveTab(key, -1)
-                  }, React.createElement(Icon, { name: "chevron-up", size: 14 })),
-                  React.createElement("button", {
-                    className: "icon-btn", type: "button", "aria-label": "Move down",
-                    disabled: idx === visibleTabOrder.length - 1, onClick: () => moveTab(key, 1)
-                  }, React.createElement(Icon, { name: "chevron-down", size: 14 }))),
-                React.createElement("span", { className: "tab-config-name" }, TAB_LABELS[key] || key),
-                pinned
-                  ? React.createElement("span", { className: "tab-config-pin" }, "Always on")
-                  : React.createElement("button", {
-                      className: "tab-config-toggle" + (hidden ? "" : " on"), type: "button",
-                      "aria-label": hidden ? "Show tab" : "Hide tab", onClick: () => toggleTabHidden(key)
-                    }, React.createElement(Icon, { name: hidden ? "eye-off" : "eye", size: 15 })));
-            })
-          )
+            "Drag the handle to reorder, and tap the eye to hide tabs you don't use. Dashboard is always shown."),
+          React.createElement(TabReorderList, {
+            tabOrder: (tabOrder || DEFAULT_TAB_ORDER),
+            hiddenTabs: hiddenTabs,
+            onSetTabOrder: onSetTabOrder,
+            onToggleHidden: toggleTabHidden
+          })
         ),
         activeSection === 'ribbon' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-row mb-3" },
@@ -10824,41 +10962,168 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             ? React.createElement("div", { className: "settings-empty" },
                 React.createElement(Icon, { name: "briefcase", size: 24 }),
                 React.createElement("p", null, "No holdings to manage yet."))
+          : confirmDel
+            // ── Step 2: confirmation panel (replaces the list while armed) ──
+            ? React.createElement("div", { className: "hm-confirm" },
+                React.createElement("div", { className: "hm-confirm-icon" },
+                  React.createElement(Icon, { name: "trash", size: 22 })),
+                React.createElement("div", { className: "hm-confirm-title" },
+                  "Delete ", selectedRows.length, " holding", selectedRows.length === 1 ? "" : "s", "?"),
+                React.createElement("div", { className: "hm-confirm-body" },
+                  "This permanently removes the position", selectedRows.length === 1 ? "" : "s",
+                  " without recording a sale and can't be undone."),
+                React.createElement("div", { className: "hm-confirm-list" },
+                  selectedRows.map(p => {
+                    const nm = positionDisplayName(p, p.market);
+                    return React.createElement("div", { key: p.id, className: "hm-confirm-chip" },
+                      React.createElement("span", { className: "hm-chip-tkr" }, p.ticker),
+                      nm && nm !== p.ticker ? React.createElement("span", { className: "hm-chip-name" }, nm) : null,
+                      React.createElement("span", { className: "hm-chip-mkt" }, MARKET_LABELS[p.market] || p.market));
+                  })),
+                React.createElement("div", { className: "hm-confirm-actions" },
+                  React.createElement("button", { className: "btn btn-ghost", onClick: () => setConfirmDel(false) }, "Cancel"),
+                  React.createElement("button", { className: "btn btn-danger", onClick: doDeleteHoldings },
+                    React.createElement(Icon, { name: "trash", size: 14 }),
+                    " Delete ", selectedRows.length, " holding", selectedRows.length === 1 ? "" : "s"))
+              )
+            // ── Step 1: premium selectable list ──
             : React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "settings-row-desc mb-3" },
-                  "Select holdings to permanently delete. This removes positions without recording a sale — use Sell on the Holdings screen if you actually sold one."),
-                delGroups.map(g => React.createElement("div", { key: g.market, className: "del-group" },
-                  React.createElement("label", { className: "del-group-head" },
-                    React.createElement("input", {
-                      type: "checkbox",
-                      checked: g.rows.every(r => selectedDel.has(r.id)),
-                      onChange: () => toggleDelMarket(g.rows)
-                    }),
-                    React.createElement("span", { className: "del-group-title" }, g.label),
-                    React.createElement("span", { className: "del-group-count" }, g.rows.length)),
-                  React.createElement("div", { className: "del-rows" },
-                    g.rows.map(p => {
-                      const nm = positionDisplayName(p, p.market);
-                      return React.createElement("label", {
-                        key: p.id, className: "del-row" + (selectedDel.has(p.id) ? " sel" : "")
-                      },
-                        React.createElement("input", { type: "checkbox", checked: selectedDel.has(p.id), onChange: () => toggleDel(p.id) }),
-                        React.createElement("span", { className: "del-row-tkr" }, p.ticker),
-                        React.createElement("span", { className: "del-row-name" }, nm && nm !== p.ticker ? nm : ''),
-                        React.createElement("span", { className: "del-row-qty" }, p.shares, " sh"));
-                    })))),
-                React.createElement("div", { className: "del-actions" },
-                  React.createElement("button", {
-                    className: "btn btn-ghost btn-sm",
-                    disabled: selectedDel.size === 0,
-                    onClick: () => setSelectedDel(new Set())
-                  }, "Clear"),
-                  React.createElement("button", {
-                    className: "btn btn-danger btn-sm",
-                    disabled: selectedDel.size === 0,
-                    onClick: doDeleteHoldings
-                  }, React.createElement(Icon, { name: "trash", size: 13 }), " Delete", selectedDel.size > 0 ? " (" + selectedDel.size + ")" : " selected"))
+                  "Select holdings to permanently delete. This removes positions without recording a sale — use ", React.createElement("b", null, "Sell"), " on the Holdings screen if you actually sold one."),
+                React.createElement("div", { className: "hm-list" },
+                  delGroups.map(g => {
+                    const allSel = g.rows.every(r => selectedDel.has(r.id));
+                    return React.createElement("div", { key: g.market, className: "hm-group" },
+                      React.createElement("div", { className: "hm-group-head" },
+                        React.createElement("span", { className: "hm-group-title" }, g.label),
+                        React.createElement("span", { className: "hm-group-count" }, g.rows.length),
+                        React.createElement("button", {
+                          className: "hm-selectall", type: "button",
+                          onClick: () => toggleDelMarket(g.rows)
+                        }, allSel ? "Deselect all" : "Select all")),
+                      React.createElement("div", { className: "hm-rows" },
+                        g.rows.map(p => {
+                          const nm = positionDisplayName(p, p.market);
+                          const sel = selectedDel.has(p.id);
+                          const val = holdingValue(p);
+                          return React.createElement("button", {
+                            key: p.id, type: "button",
+                            className: "hm-row" + (sel ? " sel" : ""),
+                            "aria-pressed": sel,
+                            onClick: () => toggleDel(p.id)
+                          },
+                            React.createElement("span", { className: "hm-check" + (sel ? " on" : "") },
+                              sel ? React.createElement(Icon, { name: "check", size: 13 }) : null),
+                            React.createElement("span", { className: "hm-row-main" },
+                              React.createElement("span", { className: "hm-row-tkr" }, p.ticker),
+                              nm && nm !== p.ticker ? React.createElement("span", { className: "hm-row-name" }, nm) : null),
+                            React.createElement("span", { className: "hm-row-meta" },
+                              React.createElement("span", { className: "hm-row-val" }, val == null ? "—" : fmt(val, p.market)),
+                              React.createElement("span", { className: "hm-row-qty" }, p.shares, " sh")));
+                        })));
+                  })),
+                React.createElement("div", { className: "hm-bar" },
+                  React.createElement("span", { className: "hm-bar-count" },
+                    selectedDel.size > 0 ? selectedDel.size + " selected" : "None selected"),
+                  React.createElement("div", { className: "hm-bar-actions" },
+                    React.createElement("button", {
+                      className: "btn btn-ghost btn-sm",
+                      disabled: selectedDel.size === 0,
+                      onClick: () => setSelectedDel(new Set())
+                    }, "Clear"),
+                    React.createElement("button", {
+                      className: "btn btn-danger btn-sm",
+                      disabled: selectedDel.size === 0,
+                      onClick: () => setConfirmDel(true)
+                    }, React.createElement(Icon, { name: "trash", size: 13 }),
+                       selectedDel.size > 0 ? " Delete (" + selectedDel.size + ")" : " Delete")))
               )
+        ),
+        activeSection === 'connections' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-row-desc mb-3" },
+            "Optional integrations that power AI news and always-on alerts. Keys and URLs are stored locally in this browser only."),
+          // ── AI news (Perplexity) ──
+          React.createElement("div", { className: "conn-card" + (pkConfigured ? " ok" : "") },
+            React.createElement("div", { className: "conn-card-head" },
+              React.createElement("div", { className: "conn-card-icon" }, React.createElement(Icon, { name: "activity", size: 16 })),
+              React.createElement("div", { className: "conn-card-titles" },
+                React.createElement("div", { className: "conn-card-title" }, "AI news"),
+                React.createElement("div", { className: "conn-card-sub" }, "Perplexity")),
+              React.createElement("span", { className: "conn-status" + (pkConfigured ? " on" : "") },
+                pkConfigured ? "Configured" : "Off")),
+            React.createElement("div", { className: "conn-card-body" },
+              pkConfigured
+                ? "Perplexity is pulling AI-curated headlines alongside Yahoo Finance RSS. Paste a new key to replace it, or remove to disable."
+                : "Paste a Perplexity API key to pull AI-curated headlines alongside Yahoo Finance RSS."),
+            React.createElement("div", { className: "pk-row" },
+              React.createElement("input", {
+                type: pkReveal ? "text" : "password",
+                autoComplete: "off", spellCheck: false,
+                placeholder: "pplx-…", value: pkDraft,
+                onChange: e => setPkDraft(e.target.value),
+                className: "pk-input"
+              }),
+              React.createElement("button", {
+                className: "btn btn-ghost btn-xs", type: "button",
+                onClick: () => setPkReveal(v => !v),
+                "aria-label": pkReveal ? "Hide key" : "Reveal key"
+              }, pkReveal ? "Hide" : "Show")),
+            React.createElement("div", { className: "pk-actions" },
+              React.createElement("button", {
+                className: "btn btn-primary btn-xs", type: "button",
+                disabled: pkDraft.trim() === (perplexityKey || ''),
+                onClick: savePk
+              }, pkConfigured ? "Update key" : "Save key"),
+              pkConfigured && React.createElement("button", {
+                className: "btn btn-ghost btn-xs", type: "button", onClick: clearPk
+              }, "Remove"))
+          ),
+          // ── Background push server ──
+          (() => {
+            const meta = ({
+              connected:   { cls: 'ok',   label: 'Connected' },
+              connecting:  { cls: '',     label: 'Connecting…' },
+              error:       { cls: 'err',  label: 'Not connected' },
+              unsupported: { cls: 'warn', label: 'Unavailable' }
+            })[pushStatus] || { cls: '', label: 'Off' };
+            const body = pushStatus === 'connected'
+              ? 'Connected. Your alerts are checked on the server every minute during market hours and pushed instantly — even with Playbook fully closed, on iPhone and Android.'
+              : pushStatus === 'connecting'
+              ? 'Connecting to your push server…'
+              : pushStatus === 'unsupported'
+              ? "Push isn't available in this browser. On iPhone, install to the Home Screen and reopen from the icon (iOS 16.4+)."
+              : pushStatus === 'error'
+              ? "Couldn't reach the server. Check the URL, make sure notifications are enabled, and that the worker is deployed."
+              : 'The path to always-on, app-closed alerts. Deploy the free worker in the backend/ folder, then paste its URL here.';
+            return React.createElement("div", { className: "conn-card " + meta.cls },
+              React.createElement("div", { className: "conn-card-head" },
+                React.createElement("div", { className: "conn-card-icon" }, React.createElement(Icon, { name: "bell", size: 16 })),
+                React.createElement("div", { className: "conn-card-titles" },
+                  React.createElement("div", { className: "conn-card-title" }, "Background push server"),
+                  React.createElement("div", { className: "conn-card-sub" }, "Always-on alerts")),
+                React.createElement("span", { className: "conn-status" + (pushStatus === 'connected' ? " on" : "") }, meta.label)),
+              React.createElement("div", { className: "conn-card-body" }, body),
+              React.createElement("div", { className: "pk-row" },
+                React.createElement("input", {
+                  type: "url", inputMode: "url", autoComplete: "off",
+                  autoCapitalize: "none", spellCheck: false,
+                  placeholder: "https://playbook-push.<you>.workers.dev",
+                  value: pushDraft,
+                  onChange: e => setPushDraft(e.target.value),
+                  className: "pk-input"
+                }),
+                pushStatus === 'connected'
+                  ? React.createElement("button", { className: "btn btn-ghost btn-xs", type: "button", onClick: onDisconnectPush }, "Disconnect")
+                  : React.createElement("button", {
+                      className: "btn btn-primary btn-xs", type: "button",
+                      disabled: pushStatus === 'connecting',
+                      onClick: () => onConnectPush(pushDraft)
+                    }, pushStatus === 'connecting' ? "…" : "Connect")),
+              pushStatus === 'connected' && React.createElement("div", { className: "pk-actions" },
+                React.createElement("button", {
+                  className: "btn btn-ghost btn-xs", type: "button", onClick: onTestPush
+                }, React.createElement(Icon, { name: "bell", size: 13 }), " Send test push")));
+          })()
         ),
         activeSection === 'data' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-data-row" },
@@ -10887,6 +11152,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               "Backups include all your positions, watchlist tickers, price alerts, and contribution history."
             )
           )
+        )
         )
       )
     )
