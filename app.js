@@ -1888,6 +1888,13 @@ const Icon = _ref => {
       x2: "12",
       y2: "3"
     })),
+    image: React.createElement("g", null, React.createElement("rect", {
+      x: "3", y: "3", width: "18", height: "18", rx: "2", ry: "2"
+    }), React.createElement("circle", {
+      cx: "8.5", cy: "8.5", r: "1.5"
+    }), React.createElement("path", {
+      d: "M21 15l-5-5L5 21"
+    })),
     share: React.createElement("g", null, React.createElement("circle", {
       cx: "18",
       cy: "5",
@@ -2769,6 +2776,7 @@ function App() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [posModalEditId, setPosModalEditId] = useState(null);
   const [posModalOpen, setPosModalOpen] = useState(false);
+  const [posModalDefaultMarket, setPosModalDefaultMarket] = useState('US');
   const [showImport, setShowImport] = useState(false);
   const [importMarket, setImportMarket] = useState('US');
   const [sellModalPos, setSellModalPos] = useState(null);
@@ -3120,8 +3128,12 @@ function App() {
       onOpenDetail: openDetail,
       onAddPosition: () => {
         setPosModalEditId(null);
+        // Default the new holding to whichever market tab the user is on (US / JSE
+        // / TFSA / LSE / ASX / …), not just the three primary ones.
+        setPosModalDefaultMarket(MARKETS.some(mk => mk.value === marketFilter) ? marketFilter : 'US');
         setPosModalOpen(true);
       },
+      onEditPosition: pos => { setPosModalEditId(pos.id); setPosModalOpen(true); },
       onImportPositions: () => { setImportMarket(marketFilter); setShowImport(true); },
       onBuyPosition: pos => setBuyModalPos(pos),
       onSellPosition: pos => setSellModalPos(pos)
@@ -3162,7 +3174,8 @@ function App() {
       positions: positions.filter(p => p.market === 'TFSA'),
       prices: prices,
       onOpenDetail: openDetail,
-      onAddPosition: () => { setPosModalEditId(null); setPosModalOpen(true); },
+      onAddPosition: () => { setPosModalEditId(null); setPosModalDefaultMarket('TFSA'); setPosModalOpen(true); },
+      onEditPosition: pos => { setPosModalEditId(pos.id); setPosModalOpen(true); },
       onBuyPosition: pos => setBuyModalPos(pos),
       onSellPosition: pos => setSellModalPos(pos),
       tfsaDeposits: tfsaDeposits,
@@ -3318,6 +3331,7 @@ function App() {
   }), posModalOpen && React.createElement(PositionModal, {
     editId: posModalEditId,
     existing: posModalEditId ? positions.find(p => p.id === posModalEditId) : null,
+    defaultMarket: posModalDefaultMarket,
     onClose: () => setPosModalOpen(false),
     onSave: (data, quote) => {
       if (posModalEditId) updatePosition(posModalEditId, data);
@@ -3480,20 +3494,42 @@ function PriceBlock(_ref5) {
   !showDailyRow && !hideChange && React.createElement("span", {
     className: `chg ${up ? 'up' : 'down'}`
   }, up ? '▲' : '▼', " ", up ? '+' : '', quote.changePct.toFixed(2), "%")),
-  showDailyRow && !hideChange && React.createElement("div", { className: "daily-row" },
-    React.createElement("span", { className: "daily-label" }, "Today"),
-    React.createElement("span", { className: `daily-val mono ${up ? 'up' : 'down'}` },
-      (up ? '+' : '') + quote.changePct.toFixed(2) + '%',
-      chgAbs != null ? ' · ' + (up ? '+' : '-') + sym + Math.abs(chgAbs).toFixed(2) : ''
+  // Detail card: lay the daily figures (Today + Prev close) in a left column,
+  // then a vertical divider, then the extended-hours (pre-market) move on the
+  // right so the user can read "what happened today" vs "what's happening before
+  // the open" side by side.
+  showDailyRow && !hideChange && React.createElement("div", { className: "daily-block" },
+    React.createElement("div", { className: "daily-col" },
+      React.createElement("div", { className: "daily-row" },
+        React.createElement("span", { className: "daily-label" }, "Today"),
+        React.createElement("span", { className: `daily-val mono ${up ? 'up' : 'down'}` },
+          (up ? '+' : '') + quote.changePct.toFixed(2) + '%',
+          chgAbs != null ? ' · ' + (up ? '+' : '-') + sym + Math.abs(chgAbs).toFixed(2) : ''
+        )
+      ),
+      // The previous close is the reference every daily/intraday move is measured
+      // from, so surface it explicitly alongside the "Today" move.
+      prevClose != null && React.createElement("div", { className: "daily-row prevclose-row" },
+        React.createElement("span", { className: "daily-label" }, "Prev close"),
+        React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + prevClose.toFixed(2))
+      )
+    ),
+    hasExt && React.createElement("div", { className: "daily-divider" }),
+    hasExt && React.createElement("div", { className: "daily-col" },
+      React.createElement("div", { className: "daily-row" },
+        React.createElement("span", { className: "daily-label" }, extLabel),
+        React.createElement("span", { className: `daily-val mono ${extUp ? 'up' : 'down'}` },
+          (extUp ? '+' : '') + quote.extChangePct.toFixed(2) + '%'
+        )
+      ),
+      React.createElement("div", { className: "daily-row prevclose-row" },
+        React.createElement("span", { className: "daily-label" }, extLabel === 'Pre-market' ? 'Pre price' : 'Ext price'),
+        React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + quote.extPrice.toFixed(2))
+      )
     )
   ),
-  // The previous close is the reference every daily/intraday move is measured
-  // from, so surface it explicitly alongside the "Today" move.
-  showDailyRow && !hideChange && prevClose != null && React.createElement("div", { className: "daily-row prevclose-row" },
-    React.createElement("span", { className: "daily-label" }, "Prev close"),
-    React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + prevClose.toFixed(2))
-  ),
-  hasExt && React.createElement("div", {
+  // Outside the detail card (rows/lists) keep the original inline ext-hours chip.
+  !showDailyRow && hasExt && React.createElement("div", {
     className: "ext-hours"
   }, React.createElement("span", {
     className: "ext-label"
@@ -4352,7 +4388,7 @@ function DashboardView(_ref6) {
 //  • Middle — total gain/loss for the holding: the amount on top, the % below.
 //  • Right — current holding value on top, the day's movement underneath.
 function HoldingRow(_refHR) {
-  let { position: p, market, quote: q, onOpenDetail, onBuyPosition, onSellPosition } = _refHR;
+  let { position: p, market, quote: q, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
   // Heading is the company/instrument name. Resolve it from every source — the
   // name saved on the holding, the live quote's company name, the curated lists,
   // then the learned name cache — and only fall back to the bare ticker when
@@ -4383,7 +4419,11 @@ function HoldingRow(_refHR) {
         onSellPosition ? React.createElement("button", {
           className: "btn-sell-inline",
           onClick: e => { e.stopPropagation(); onSellPosition(p); }
-        }, "Sell") : null)),
+        }, "Sell") : null,
+        onEditPosition ? React.createElement("button", {
+          className: "btn-edit-inline",
+          onClick: e => { e.stopPropagation(); onEditPosition(p); }
+        }, "Edit") : null)),
     // MIDDLE — total gain/loss: amount on top, % below
     React.createElement("div", { className: "holding-gl" },
       gain != null
@@ -4408,6 +4448,7 @@ function CurrentView(_ref7) {
     setMarketFilter,
     onOpenDetail,
     onAddPosition,
+    onEditPosition,
     onImportPositions,
     onBuyPosition,
     onSellPosition
@@ -4444,7 +4485,8 @@ function CurrentView(_ref7) {
       quote: prices[priceKey(market, p.ticker)],
       onOpenDetail: onOpenDetail,
       onBuyPosition: onBuyPosition,
-      onSellPosition: onSellPosition
+      onSellPosition: onSellPosition,
+      onEditPosition: onEditPosition
     }))));
   };
   return React.createElement("div", null, React.createElement("div", {
@@ -4456,9 +4498,12 @@ function CurrentView(_ref7) {
     className: "toggle-group toggle-group-scroll"
   }, tabs.map(m => React.createElement("button", {
     key: m,
-    className: `toggle-opt ${activeMarket === m ? 'active' : ''}`,
+    className: `toggle-opt toggle-opt-market ${activeMarket === m ? 'active' : ''}`,
     onClick: () => setMarketFilter(m)
-  }, tabLabel(m), " (", countFor(m), ")"))),
+  },
+    React.createElement("span", { className: "toggle-opt-label" }, tabLabel(m)),
+    React.createElement("span", { className: "toggle-opt-count" }, countFor(m))
+  ))),
     React.createElement("div", { className: "flex gap-2 items-center" },
       onImportPositions ? React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onImportPositions },
         React.createElement(Icon, { name: "download", size: 13 }), " Import") : null,
@@ -4996,6 +5041,348 @@ async function parseImportFile(file) {
   }
   const text = await file.text();
   return parseHoldingsFromText(text);
+}
+
+// ── Easy Equities screenshot import (on-device OCR) ─────────────────────────
+// The user screenshots their holdings inside the Easy Equities app (either a
+// single holding page or the portfolio list) and drops the images in. We OCR
+// them entirely in-browser with Tesseract.js — loaded lazily from a CDN only
+// when an image is actually scanned, so nothing is uploaded and the feature
+// adds no weight to first paint. The extracted name / JSE code / share count /
+// average price funnel into the same import-review flow as every other source,
+// so any OCR slip is correctable before it's committed.
+const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+// The worker is created once and reused across a batch of screenshots — spinning
+// up a fresh wasm worker per image would re-download the language data each time.
+let _eeOcrWorker = null;
+let _eeOcrProgress = null;
+async function getOcrWorker() {
+  await loadScriptOnce(TESSERACT_CDN);
+  if (!window.Tesseract) throw new Error('On-device reader failed to load. Check your connection and try again.');
+  if (!_eeOcrWorker) {
+    _eeOcrWorker = await window.Tesseract.createWorker('eng', 1, {
+      logger: m => { if (_eeOcrProgress && m && m.status === 'recognizing text') _eeOcrProgress(m.progress || 0); },
+    });
+  }
+  return _eeOcrWorker;
+}
+async function _eeLoadBitmap(file) {
+  if (typeof createImageBitmap === 'function') { try { return await createImageBitmap(file); } catch (_) {} }
+  if (typeof Image === 'undefined') return null;
+  const url = URL.createObjectURL(file);
+  try {
+    return await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('img decode failed')); im.src = url; });
+  } finally { setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 4000); }
+}
+// The instrument name lives in the Easy Equities purple title bar as white text on
+// a violet background — the lowest-accuracy thing on the page for OCR, and where
+// names lost detail / picked up amounts. We isolate that band (by detecting the
+// purple, with a fixed-slice fallback), then OCR it on its own as a 2× inverted,
+// high-contrast crop so the full title reads cleanly with nothing else around it.
+async function _eeHeaderCanvas(file) {
+  if (typeof document === 'undefined') return null;
+  const bmp = await _eeLoadBitmap(file).catch(() => null);
+  if (!bmp) return null;
+  const w = bmp.width || bmp.naturalWidth || 0;
+  const h = bmp.height || bmp.naturalHeight || 0;
+  if (!w || !h) return null;
+  const probe = document.createElement('canvas');
+  probe.width = w; probe.height = Math.min(h, Math.round(h * 0.30));
+  const pctx = probe.getContext('2d', { willReadFrequently: true });
+  pctx.drawImage(bmp, 0, 0);
+  const px = pctx.getImageData(0, 0, w, probe.height).data;
+  const purpleRow = (y) => {
+    let hit = 0, n = 0;
+    for (let xx = Math.round(w * 0.12); xx < Math.round(w * 0.88); xx += 8) {
+      const i = (y * w + xx) * 4, r = px[i], g = px[i + 1], b = px[i + 2];
+      n++;
+      // Saturated violet: blue dominant, green clearly the lowest channel.
+      if (b > 80 && r > 45 && g + 25 < b && g + 10 < r && b - g > 35) hit++;
+    }
+    return n > 0 && hit / n > 0.5;
+  };
+  let y0 = -1, y1 = -1;
+  for (let y = Math.round(h * 0.015); y < probe.height; y++) {
+    if (purpleRow(y)) { if (y0 < 0) y0 = y; y1 = y; }
+    else if (y0 >= 0 && y - y1 > Math.round(h * 0.012)) break;   // band ended
+  }
+  if (y0 < 0 || (y1 - y0) < Math.round(h * 0.018)) { y0 = Math.round(h * 0.045); y1 = Math.round(h * 0.140); }
+  y0 = Math.max(0, y0 - Math.round(h * 0.004));
+  y1 = Math.min(h, y1 + Math.round(h * 0.004));
+  const bandH = y1 - y0;
+  if (bandH <= 0) return null;
+  const scale = 2;
+  const c = document.createElement('canvas');
+  c.width = Math.round(w * scale); c.height = Math.round(bandH * scale);
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+  x.drawImage(bmp, 0, y0, w, bandH, 0, 0, c.width, c.height);
+  const im = x.getImageData(0, 0, c.width, c.height), d = im.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let g = 255 - (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]); // invert → dark text on light
+    g = (g - 128) * 1.45 + 128;                                          // boost contrast
+    d[i] = d[i + 1] = d[i + 2] = g < 0 ? 0 : g > 255 ? 255 : g;
+  }
+  x.putImageData(im, 0, 0);
+  return c;
+}
+// Returns { text, headerText }: the full-page OCR (body fields, code, fallback
+// name) plus a dedicated, cleaner read of just the title bar for the name.
+async function ocrImageFile(file, onProgress) {
+  const worker = await getOcrWorker();
+  _eeOcrProgress = onProgress || null;
+  try {
+    const full = await worker.recognize(file);
+    let headerText = '';
+    try {
+      const headerCanvas = await _eeHeaderCanvas(file);
+      if (headerCanvas) { const hr = await worker.recognize(headerCanvas); headerText = (hr.data && hr.data.text) || ''; }
+    } catch (_) {}
+    return { text: (full.data && full.data.text) || '', headerText };
+  } finally {
+    _eeOcrProgress = null;
+  }
+}
+
+// Numbers in the Easy Equities UI use a space as the thousands separator and a
+// dot as the decimal ("R8 100.69", "0.6010", "157"). Pull the value off a line,
+// preferring the right-most number (values are right-aligned beside their label).
+const EE_MONEY_RE = /(\d{1,3}(?:[  ,]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/g;
+function eeNumFromLine(line) {
+  const s = String(line || '');
+  EE_MONEY_RE.lastIndex = 0;
+  let m, last = null;
+  while ((m = EE_MONEY_RE.exec(s))) last = m[1];
+  if (last == null) return null;
+  const v = parseDecimal(last);
+  return isFinite(v) ? v : null;
+}
+// Find the value for a labelled row. The label and its value usually share one
+// OCR line ("Avg. Purchase Price R39.93"); occasionally the value wraps to the
+// next line, so we look a couple of lines ahead as a fallback.
+function eeFieldValue(lines, labelRe) {
+  for (let i = 0; i < lines.length; i++) {
+    if (!labelRe.test(lines[i])) continue;
+    const onLine = eeNumFromLine(lines[i].replace(labelRe, ' '));
+    if (onLine != null) return onLine;
+    for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+      const n = eeNumFromLine(lines[j]);
+      if (n != null) return n;
+    }
+    return null;
+  }
+  return null;
+}
+function isEEDetailScreenshot(text) {
+  const t = String(text || '').toLowerCase();
+  return /my holding/.test(t)
+    || /avg\.?,?\s*purchase\s*price/.test(t)
+    || (/#?\s*shares\b/.test(t) && /f\s?s\s?r/.test(t))
+    || (/profit\s*\/?\s*loss/.test(t) && /previous\s*close/.test(t));
+}
+// Chrome / label text that must never be mistaken for an instrument name.
+const EE_CHROME_RE = /(profit\s*\/?\s*loss|exchange|^open$|^closed$|^sell$|buy more|my holding|current value|purchase value|purchase price|previous close|dividend rewards|tap here|^pricing$|last updated|selling at|buying at|last price|delayed|biz news|own the market|asset management|portfolio|watchlist|notify|my funds|\btotal\b|my investments|available|net value|account value|view all|all holdings|^(?:jse|jnb|nasdaq|nsdq|nyse|nyq|nms|arca|amex|bats|lse|lon|asx|fra|fwb|etr|par|epa|ams|xetra)$)/i;
+// Words that mark a line as a fund / instrument name even when it's short.
+const EE_NAME_KW_RE = /(\betf\b|fund|index|feeder|satrix|1nvest|invest|\bivy\b|easyetf|msci|govi|top\s?40|s&p|innovation|managed|equity|bond|property|global|emerging|reit|dividend plus|world|nasdaq|s&p ?500|all ?share)/i;
+function eeLooksLikeName(line) {
+  const l = String(line || '').trim();
+  if (l.length < 3) return false;
+  if (/^[0-9R$£€%.,\s:+\-↑↓v^]+$/i.test(l)) return false;   // status bar, P/L, %s
+  if (EE_CHROME_RE.test(l)) return false;
+  const letters = (l.match(/[A-Za-z]/g) || []).length;
+  if (letters < 3) return false;
+  const words = l.split(/\s+/).filter(Boolean);
+  if (words.length >= 2 || EE_NAME_KW_RE.test(l)) return true;
+  // A single-word name ("Naspers", "Visa", "Prosus") is fine too — as long as it
+  // isn't an all-caps ticker-shaped token (those are the JSE/US code, not a name).
+  return /[a-z]/.test(l) && !/^[A-Z][A-Z0-9]{1,6}$/.test(l);
+}
+// Strip money / price / percentage tokens (and arrows) out of an OCR'd name, so a
+// header that ran into an adjacent value ("Satrix GOVI ETF R125.00") never books
+// the amount as part of the holding's name. Bare integers that are genuinely part
+// of a name ("Satrix 40", "1nvest S&P 500") are deliberately preserved.
+function eeCleanName(s) {
+  return String(s || '')
+    .replace(/[↑↓▲▼]/g, ' ')
+    .replace(/\d+(?:\.\d+)?\s?%/g, ' ')                      // 28.72%  (before the decimal rule eats the number)
+    .replace(/[R$£€]\s?\d[\d  .,]*/g, ' ')                 // R8 100.69, $1,234.56
+    .replace(/\b\d{1,3}(?:[  ,]\d{3})+(?:\.\d+)?\b/g, ' ') // 8 100.69, 1,234
+    .replace(/\b\d+\.\d+\b/g, ' ')                           // 39.93, 1.97, 13.20
+    .replace(/[%↑↓]/g, ' ')                                  // any orphaned symbols
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[^A-Za-z0-9(]+/, '')                           // leading symbol glyphs (chevron read as <, £, €…)
+    // The EE back-chevron at the start of the title bar can OCR as a lone digit
+    // ("4 INVEST…", "4 1NVEST…"); drop a single leading digit + space. A real
+    // leading number in a name has no following space ("1nvest", "40 ETF", "3M").
+    .replace(/^[0-9]\s+(?=[A-Za-z0-9])/, '')
+    .replace(/[\s.,:;|%]+$/, '')
+    .trim();
+}
+// Map an Easy Equities EXCHANGE value to the app's market code. EE shows the
+// listing exchange (JSE / NYSE / NASDAQ / LSE …) beside the flag — that's where
+// the share actually trades, so this works for any market, not just the JSE.
+const EE_EXCHANGE_MAP = [
+  [/johannesburg|\bjse\b|\bjnb\b/i, 'JSE'],
+  [/nasdaq|nsdq|\bnyse\b|\bnms\b|\bnyq\b|\barca\b|\bamex\b|\bbats\b|new york/i, 'US'],
+  [/london|\blse\b|\blon\b/i, 'LSE'],
+  [/australian|\basx\b/i, 'ASX'],
+  [/frankfurt|xetra|\bfra\b|\bfwb\b|\betr\b|\bger\b/i, 'FRA'],
+  [/euronext\s*paris|\bpar\b|\bepa\b/i, 'PAR'],
+  [/amsterdam|\bams\b/i, 'AMS'],
+];
+function eeDetectMarket(lines, fallback) {
+  const zones = [];
+  const idx = lines.findIndex(l => /exchange/i.test(l));
+  if (idx >= 0) zones.push(lines.slice(idx, idx + 3).join(' '));  // the value next to EXCHANGE
+  zones.push(lines.slice(0, 22).join(' '));                       // else anywhere in the header
+  for (const zone of zones) {
+    for (const [re, mk] of EE_EXCHANGE_MAP) if (re.test(zone)) return mk;
+  }
+  return fallback || null;
+}
+// Resolve a holding's final market: trust the exchange detected on the screenshot,
+// falling back to the market the user started from. TFSA holdings list on the JSE,
+// so a JSE detection while the user is on the TFSA tab stays TFSA.
+function eeResolveMarket(detected, fallback) {
+  let m = detected || fallback || 'US';
+  if (fallback === 'TFSA' && (m === 'JSE' || m === 'TFSA')) m = 'TFSA';
+  return m;
+}
+// From the header region of a holding page, pick the descriptive instrument name
+// and the standalone listing code (e.g. "Satrix 40 ETF" + "STX40", "Apple Inc" + "AAPL").
+function eeExtractNameTicker(lines) {
+  let cut = lines.findIndex(l => /my holding/i.test(l));
+  if (cut < 0) cut = Math.min(lines.length, 18);
+  const top = lines.slice(0, cut);
+  const TICKER_STOP = /^(JSE|JNB|OPEN|CLOSED|ETF|ETN|ETP|SELL|BUY|USD|ZAR|GBP|EUR|AUD|PROFIT|LOSS|EXCHANGE|NYSE|NASDAQ|NSDQ|NMS|NYQ|ARCA|AMEX|BATS|LSE|LON|ASX|FRA|FWB|ETR|PAR|EPA|AMS|XETRA|MY|FSR|FSRS|R|AMETF|MSCI|STANLIB)$/i;
+  // The JSE code sits in its own cell right beside the PROFIT/LOSS · EXCHANGE
+  // block, so proximity to those labels — not length — is the reliable signal.
+  // (EE codes range from 3-letter share codes like NPN to 6-char ETF codes.)
+  const near = (i) => top.slice(Math.max(0, i - 2), i + 3).some(x => /profit|loss|exchange/i.test(x));
+  const codeShape = (s) => /^[A-Z][A-Z0-9]{2,6}$/.test(s) && !TICKER_STOP.test(s);
+  const tickerCands = [];
+  top.forEach((raw, i) => {
+    const l = raw.trim();
+    if (codeShape(l)) {
+      let score = i;                     // later (closer to the holding block) wins ties
+      if (near(i)) score += 100;
+      if (/\d/.test(l)) score += 5;
+      if (l.length >= 5) score += 3;
+      tickerCands.push({ l, score });
+    }
+    // OCR sometimes merges the code with the adjacent PROFIT/LOSS · EXCHANGE
+    // labels onto one row ("STX40 PROFIT/LOSS EXCHANGE") — recover the code token.
+    if (/profit|loss|exchange/i.test(l) || near(i)) {
+      for (const tok of l.split(/\s+/)) {
+        if (codeShape(tok) && !/profit|loss|exchange/i.test(tok)) {
+          let score = i + 90;
+          if (/\d/.test(tok)) score += 5;
+          if (tok.length >= 5) score += 3;
+          tickerCands.push({ l: tok, score });
+        }
+      }
+    }
+  });
+  tickerCands.sort((a, b) => b.score - a.score);
+  const ticker = tickerCands.length ? tickerCands[0].l : null;
+  let best = '', bestScore = -1;
+  for (const raw of top) {
+    const l = raw.trim().replace(/\s{2,}/g, ' ').replace(/^[^A-Za-z0-9(]+/, '');
+    if (!eeLooksLikeName(l)) continue;
+    if (ticker && l.toUpperCase() === ticker) continue;
+    const cleaned = eeCleanName(l);
+    const letters = (cleaned.match(/[A-Za-z]/g) || []).length;
+    if (letters < 3) continue;
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    // eeCleanName already strips any amount, so this is only a mild tiebreak that
+    // prefers a pristine header line over one OCR ran a value into.
+    const hadMoney = /[R$£€]\s?\d|\b\d+\.\d{2}\b|%|↑|↓/.test(l);
+    const score = letters + (EE_NAME_KW_RE.test(cleaned) ? 1000 : 0)
+                + (words.length >= 3 ? 50 : 0) - (hadMoney ? 12 : 0);
+    if (score > bestScore) { bestScore = score; best = cleaned; }
+  }
+  return { name: best, ticker };
+}
+// Pick the fullest clean name out of the dedicated title-bar OCR. The strip holds
+// only the title (the back-chevron and any stray status glyphs clean away), so we
+// take the line with the most letters after stripping amounts.
+function eeBestHeaderName(headerText) {
+  if (!headerText) return '';
+  const lines = String(headerText).split('\n').map(s => s.replace(/ /g, ' ').trim()).filter(Boolean);
+  let best = '', bestLetters = 2;
+  for (const raw of lines) {
+    const l = raw.replace(/^[^A-Za-z0-9(]+/, '');
+    if (!eeLooksLikeName(l)) continue;
+    const cleaned = eeCleanName(l);
+    const letters = (cleaned.match(/[A-Za-z]/g) || []).length;
+    if (letters > bestLetters) { bestLetters = letters; best = cleaned; }
+  }
+  return best;
+}
+function parseEEDetailScreenshot(lines, market, headerText) {
+  const heur = eeExtractNameTicker(lines);
+  const ticker = heur.ticker;
+  // The dedicated title-bar read is the authoritative full name (read at full
+  // width, so it isn't truncated, and isolated, so no amount bleeds in). Trust it
+  // whenever it produced a real name; fall back to the full-page heuristic only
+  // when the title strip was missed or came back too short to be a name.
+  const headerName = eeBestHeaderName(headerText);
+  const name = (headerName.match(/[A-Za-z]/g) || []).length >= 4 ? headerName : heur.name;
+  const sharesWhole = eeFieldValue(lines, /#?\s*shares\b/i);
+  const fsrs = eeFieldValue(lines, /#?\s*f\s?s\s?rs?\b/i);
+  const avgPrice = eeFieldValue(lines, /avg\b[.,]?\s*purchase\s*price/i);
+  const purchaseValue = eeFieldValue(lines, /purchase\s*value/i);
+  // Easy Equities splits a position into whole "Shares" plus fractional-share
+  // rights ("FSRs"); the real quantity — and therefore the value that matches
+  // what EE shows — is the sum of the two.
+  let shares = sharesWhole != null ? sharesWhole + (fsrs != null ? fsrs : 0) : null;
+  let cost = (avgPrice != null && avgPrice > 0) ? avgPrice : null;
+  // Cross-fill from Purchase Value (= shares × avg price) when one side is missing.
+  if ((shares == null || shares <= 0) && purchaseValue != null && cost != null && cost > 0) shares = purchaseValue / cost;
+  if (cost == null && purchaseValue != null && shares != null && shares > 0) cost = purchaseValue / shares;
+  const query = name || ticker || '';
+  if (!query && shares == null && cost == null) return null;
+  return {
+    query,
+    nameHint: name || '',
+    tickerHint: ticker || null,
+    marketHint: market,
+    shares: (shares != null && isFinite(shares) && shares > 0) ? shares : null,
+    costBasis: (cost != null && isFinite(cost) && cost > 0) ? cost : null,
+    purchaseDate: '',
+  };
+}
+// Best-effort parse of the Easy Equities portfolio list, where many holdings
+// share one screenshot. The list view rarely shows per-share cost, so these
+// rows arrive as name-only and the user fills in shares / cost in review.
+function parseEEListScreenshot(lines, market) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of lines) {
+    const l0 = raw.trim().replace(/\s{2,}/g, ' ');
+    if (!eeLooksLikeName(l0)) continue;
+    const l = eeCleanName(l0);
+    if ((l.match(/[A-Za-z]/g) || []).length < 3) continue;
+    const key = l.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ query: l, nameHint: l, tickerHint: null, marketHint: market, shares: null, costBasis: null, purchaseDate: '' });
+  }
+  return out;
+}
+// defaultMarket = the market the user started from (the Holdings tab they were on
+// when they tapped Import). It's the fallback when a screenshot's own exchange
+// can't be read, and it disambiguates JSE vs TFSA (which share listings).
+function parseEasyEquitiesScreenshot(text, defaultMarket, opts) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n')
+    .map(s => s.replace(/ /g, ' ').trim()).filter(Boolean);
+  if (lines.length === 0) return [];
+  const market = eeResolveMarket(eeDetectMarket(lines, defaultMarket), defaultMarket);
+  if (isEEDetailScreenshot(text)) {
+    const h = parseEEDetailScreenshot(lines, market, opts && opts.headerText);
+    return h ? [h] : [];
+  }
+  return parseEEListScreenshot(lines, market);
 }
 
 // ── Deposit / withdrawal (cash-flow) import ────────────────────────────────
@@ -7493,7 +7880,7 @@ function TFSABalancer({ positions, prices, onBuyPosition }) {
 
   return React.createElement("div", { className: "tfsa-bal-inner" }, header, editor, contribInput, planBody);
 }
-function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPosition, onSellPosition,
+function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit,
                    fxRates, sectorCache, fundamentals }) {
   const totalValue = positions.reduce((s, p) => {
@@ -7563,7 +7950,8 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onBuyPositio
             quote: prices['TFSA:' + p.ticker],
             onOpenDetail: onOpenDetail,
             onBuyPosition: onBuyPosition,
-            onSellPosition: onSellPosition
+            onSellPosition: onSellPosition,
+            onEditPosition: onEditPosition
           }))),
     // ── 3. Contribution planner — collapsible dropdown ──
     hasPositions ? React.createElement("div", { style: { marginTop: 16 } },
@@ -8103,13 +8491,28 @@ function PriceChart(_refChart) {
           React.createElement("circle", { cx: selData.xHi, cy: selData.yHi, r: 3.6, fill: selColor, style: { stroke: 'var(--bg)' }, strokeWidth: 1.2 })
         ),
         !selData && hoverIdx != null && React.createElement("g", null,
-          React.createElement("line", { x1: hoverX, y1: PT, x2: hoverX, y2: H - PB, stroke: "#71717a", strokeWidth: 0.5, strokeDasharray: "2,2", vectorEffect: "non-scaling-stroke" }),
+          React.createElement("line", { x1: hoverX, y1: PT, x2: hoverX, y2: H - PB, stroke: "#a1a1aa", strokeWidth: 1, strokeDasharray: "3,2", strokeOpacity: 0.9, vectorEffect: "non-scaling-stroke" }),
+          React.createElement("circle", { cx: hoverX, cy: hoverY, r: 5, fill: color, fillOpacity: 0.18, style: { stroke: 'none' } }),
           React.createElement("circle", { cx: hoverX, cy: hoverY, r: 3.5, fill: color, style: { stroke: 'var(--bg)' }, strokeWidth: 1.2 })
         )
       ),
       !selData && hoverIdx != null && React.createElement("div", {
         className: "chart-tooltip",
-        style: { left: `${(hoverX / W) * 100}%` }
+        // Anchor the readout at the scrub point, but slide it dynamically so it
+        // never spills past the chart edges: translateX goes 0% → -100% as the
+        // point moves left → right (−50% / centred in the middle). This keeps the
+        // whole price/date box on-screen no matter where you touch. Vertically we
+        // flip it to the opposite half from the dot (drop to the bottom when the
+        // point sits high, sit at the top when it's low) so it never covers the
+        // very point it's describing.
+        style: (() => {
+          const fx = hoverX / W;
+          const dropToBottom = hoverY < H / 2;
+          return {
+            left: `${fx * 100}%`, transform: `translateX(${-fx * 100}%)`,
+            ...(dropToBottom ? { top: 'auto', bottom: 0 } : { top: 0, bottom: 'auto' })
+          };
+        })()
       },
         React.createElement("div", { className: "mono" }, sym + hoverP.toFixed(2)),
         React.createElement("div", { className: "chart-tooltip-date" }, (() => {
@@ -8129,7 +8532,15 @@ function PriceChart(_refChart) {
       ),
       selData && React.createElement("div", {
         className: "chart-tooltip chart-sel-readout",
-        style: { left: `${((selData.xLo + selData.xHi) / 2 / W) * 100}%` }
+        style: (() => {
+          const fx = (selData.xLo + selData.xHi) / 2 / W;
+          // Flip below the points when either marker sits in the top half.
+          const dropToBottom = Math.min(selData.yLo, selData.yHi) < H / 2;
+          return {
+            left: `${fx * 100}%`, transform: `translateX(${-fx * 100}%)`,
+            ...(dropToBottom ? { top: 'auto', bottom: 0 } : { top: 0, bottom: 'auto' })
+          };
+        })()
       },
         React.createElement("div", { className: `chart-sel-pct mono ${selData.up ? 'text-up' : 'text-down'}` },
           (selData.up ? '+' : '') + selData.pct.toFixed(2) + '%'),
@@ -9197,7 +9608,13 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   // Sector the user picks for a row the classifier can't place ("Other"). Saved
   // to the persistent sector cache on import so it's remembered next time.
   const [sectorByRow, setSectorByRow] = useState({});
+  // On-device OCR of Easy Equities screenshots: progress + status while reading.
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrStep, setOcrStep] = useState('');
+  const [ocrError, setOcrError] = useState('');
   const fileRef = useRef(null);
+  const imgRef = useRef(null);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
   useBodyScrollLock();
@@ -9235,9 +9652,14 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     resolveRows(r);
   };
 
+  const isImageFile = (f) => !!f && (/^image\//.test(f.type) || /\.(png|jpe?g|webp|heic|heif|bmp|gif)$/i.test(f.name || ''));
+
   const handleFiles = async (files) => {
     const file = files && files[0];
     if (!file) return;
+    // Screenshots (Easy Equities holdings) route to the on-device OCR path; every
+    // other file type (CSV / XLSX / PDF / text) goes through the native parsers.
+    if (isImageFile(file)) return handleScreenshots(files);
     setParsing(true); setParseError('');
     try {
       const holdings = await parseImportFile(file);
@@ -9246,6 +9668,40 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
       setParseError(e?.message || 'Could not read that file. Try CSV, XLSX, or paste the rows instead.');
     } finally {
       setParsing(false);
+    }
+  };
+
+  // OCR one or more Easy Equities screenshots in-browser, then hand the extracted
+  // holdings to the same review flow as a pasted list. Each detail screenshot
+  // yields one holding; a portfolio-list screenshot can yield several.
+  const handleScreenshots = async (files) => {
+    const imgs = Array.from(files || []).filter(isImageFile);
+    if (!imgs.length) return;
+    setOcrBusy(true); setOcrError(''); setParseError(''); setOcrProgress(0);
+    try {
+      const all = [];
+      for (let k = 0; k < imgs.length; k++) {
+        setOcrStep(imgs.length > 1 ? `Reading screenshot ${k + 1} of ${imgs.length}…` : 'Reading screenshot…');
+        setOcrProgress(0);
+        const { text, headerText } = await ocrImageFile(imgs[k], p => setOcrProgress(p));
+        // Each holding's market comes from the screenshot's own EXCHANGE field,
+        // falling back to the market the user started from (defaultMarket). The
+        // dedicated title-bar read (headerText) gives the cleanest full name.
+        all.push(...parseEasyEquitiesScreenshot(text, defaultMarket, { headerText }));
+      }
+      if (!all.length) {
+        setOcrError("Couldn't read any holdings from those images. Use a full Easy Equities holding page (showing “# Shares” and “Avg. Purchase Price”) or your portfolio list — and crop out anything else.");
+        return;
+      }
+      // Highlight the market most rows landed on (their detected exchange, else
+      // the tab the user started from) so the review chips match.
+      const mk = all.find(h => h.marketHint)?.marketHint;
+      if (mk) setChosenMarket(mk);
+      handleParsed(all);
+    } catch (e) {
+      setOcrError(e?.message || 'Could not read those screenshots. Try again, or paste your holdings instead.');
+    } finally {
+      setOcrBusy(false); setOcrStep(''); setOcrProgress(0);
     }
   };
 
@@ -9409,6 +9865,38 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
         }, m.label))),
       React.createElement("div", { className: "form-help" }, "Guides name matching — e.g. “Naspers” → NPN on JSE. You can change any row afterwards.")
     ),
+    React.createElement("div", { className: "ee-scan" },
+      React.createElement("div", { className: "ee-scan-head" },
+        React.createElement("div", { className: "ee-scan-badge" }, React.createElement(Icon, { name: "image", size: 18 })),
+        React.createElement("div", null,
+          React.createElement("div", { className: "ee-scan-title" }, "Scan Easy Equities screenshots"),
+          React.createElement("div", { className: "ee-scan-sub" }, "Add holdings from screenshots — read on your device, nothing uploaded."))),
+      React.createElement("div", {
+        className: "ee-scan-drop" + (ocrBusy ? " busy" : ""),
+        onDragOver: e => { e.preventDefault(); },
+        onDrop: e => { e.preventDefault(); if (!ocrBusy) handleScreenshots(e.dataTransfer.files); },
+        onClick: () => { if (!ocrBusy) imgRef.current?.click(); }
+      },
+        ocrBusy
+          ? React.createElement(React.Fragment, null,
+              React.createElement(Icon, { name: "refresh", size: 22, className: "spin" }),
+              React.createElement("div", { className: "ee-scan-status" }, ocrStep || "Reading…"),
+              React.createElement("div", { className: "ee-scan-bar" },
+                React.createElement("div", { className: "ee-scan-bar-fill", style: { width: Math.round(ocrProgress * 100) + "%" } })),
+              React.createElement("div", { className: "ee-scan-hint" }, "First scan downloads the on-device reader — a few seconds."))
+          : React.createElement(React.Fragment, null,
+              React.createElement(Icon, { name: "image", size: 24 }),
+              React.createElement("div", { className: "ee-scan-cta" }, "Tap to choose screenshots"),
+              React.createElement("div", { className: "ee-scan-hint" }, "One holding page each, or your portfolio list — add several at once.")),
+        React.createElement("input", {
+          ref: imgRef, type: "file", accept: "image/*", multiple: true,
+          style: { display: 'none' },
+          onChange: e => { handleScreenshots(e.target.files); e.target.value = ''; }
+        })
+      ),
+      ocrError ? React.createElement("div", { className: "verify-error", style: { marginTop: 8 } }, ocrError) : null
+    ),
+    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or import a file")),
     React.createElement("div", {
       className: "import-drop" + (dragOver ? " over" : ""),
       onDragOver: e => { e.preventDefault(); setDragOver(true); },
@@ -9624,12 +10112,13 @@ function PositionModal(_ref12) {
   let {
     editId,
     existing,
+    defaultMarket,
     onClose,
     onSave
   } = _ref12;
   const isEdit = !!editId;
   const [ticker, setTicker] = useState(existing?.ticker || '');
-  const [market, setMarket] = useState(existing?.market || 'US');
+  const [market, setMarket] = useState(existing?.market || defaultMarket || 'US');
   const [shares, setShares] = useState(existing?.shares?.toString() || '');
   const [costBasis, setCostBasis] = useState(existing?.costBasis?.toString() || '');
   const [notes, setNotes] = useState(existing?.notes || '');
@@ -9780,6 +10269,7 @@ function PositionModal(_ref12) {
 }
 function SellModal({ position, prices, onClose, onSell }) {
   const [shares, setShares] = useState('');
+  const [pctStr, setPctStr] = useState('');
   const [sellPrice, setSellPrice] = useState('');
   const todayISO = new Date().toISOString().slice(0, 10);
   const [sellDate, setSellDate] = useState(todayISO);
@@ -9794,6 +10284,36 @@ function SellModal({ position, prices, onClose, onSell }) {
   const ccy = (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
   const numShares = parseDecimal(shares);
   const numPrice = parseDecimal(sellPrice);
+  // Sell by % of holding: typing a % (or clicking a chip) fills the share count,
+  // and the app works out the rest. 100% sells the whole position cleanly. The %
+  // box and the shares box stay in sync — editing either updates the other.
+  const sharesFromPct = (pct) => {
+    if (!isFinite(pct)) return;
+    const c = Math.max(0, Math.min(100, pct));
+    if (c >= 100) { setShares(position.shares.toString()); return; }
+    const raw = position.shares * c / 100;
+    // Round to 4 dp to avoid float noise, then trim trailing zeros.
+    setShares(parseFloat(raw.toFixed(4)).toString());
+  };
+  // Drive everything from the % box: set the displayed % and the matching shares.
+  const applyPctInput = (v) => {
+    setPctStr(v);
+    sharesFromPct(parseDecimal(v));
+  };
+  // Quick chip: fill both boxes from a round percentage.
+  const applyPctChip = (pct) => {
+    setPctStr(String(pct));
+    sharesFromPct(pct);
+  };
+  // Editing the shares box directly keeps the % box in step.
+  const applySharesInput = (v) => {
+    setShares(v);
+    const n = parseDecimal(v);
+    setPctStr(isFinite(n) && position.shares > 0
+      ? String(parseFloat((n / position.shares * 100).toFixed(2)))
+      : '');
+  };
+  const pctOfHolding = isFinite(numShares) && position.shares > 0 ? numShares / position.shares * 100 : null;
   const valid = isFinite(numShares) && numShares > 0 && numShares <= position.shares && isFinite(numPrice) && numPrice > 0;
   const pnl = valid ? (numPrice - position.costBasis) * numShares : null;
   const submit = () => {
@@ -9814,15 +10334,40 @@ function SellModal({ position, prices, onClose, onSell }) {
           React.createElement(Icon, { name: "x" }))),
       React.createElement("div", { className: "modal-body" },
         React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Portion to sell"),
+          React.createElement("div", { className: "sell-pct-row" },
+            React.createElement("div", { className: "sell-pct-chips" },
+              [25, 50, 75, 100].map(pct => {
+                const active = pctOfHolding != null && Math.abs(pctOfHolding - pct) < 0.05;
+                return React.createElement("button", {
+                  key: pct, type: "button",
+                  className: `sell-pct-chip ${active ? 'active' : ''}`,
+                  onClick: () => applyPctChip(pct)
+                }, pct === 100 ? "All" : pct + "%");
+              })),
+            React.createElement("div", { className: "input-suffix-wrap sell-pct-input" },
+              React.createElement("input", {
+                type: "text", inputMode: "decimal",
+                autoComplete: "off", autoCorrect: "off", spellCheck: false,
+                "aria-label": "Percent to sell",
+                placeholder: "0",
+                value: pctStr, onChange: e => applyPctInput(sanitizeDecimalInput(e.target.value))
+              }),
+              React.createElement("span", { className: "suffix" }, "%"))),
+          React.createElement("div", { className: "form-help" }, "Type a percentage (or tap a chip) and we'll work out the shares — or enter an exact share count below.")),
+        React.createElement("div", { className: "form-group" },
           React.createElement("label", { className: "form-label" }, "Shares to sell"),
           React.createElement("input", {
             type: "text", inputMode: "decimal",
             autoComplete: "off", autoCorrect: "off", spellCheck: false,
             placeholder: position.shares.toString(),
-            value: shares, onChange: e => setShares(sanitizeDecimalInput(e.target.value))
+            value: shares, onChange: e => applySharesInput(sanitizeDecimalInput(e.target.value))
           }),
           React.createElement("div", { className: "form-help" },
             "Max: ", position.shares,
+            pctOfHolding != null && numShares > 0 && numShares <= position.shares
+              ? React.createElement("span", { className: "text-dim" }, " · ", pctOfHolding.toFixed(pctOfHolding % 1 === 0 ? 0 : 1), "% of holding")
+              : null,
             numShares > position.shares && React.createElement("span", { className: "text-down" }, " — exceeds your holding"))),
         React.createElement("div", { className: "form-group" },
           React.createElement("label", { className: "form-label" }, "Sell price per share"),
