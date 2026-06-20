@@ -1445,12 +1445,16 @@ async function poolMap(items, concurrency, fn) {
 }
 // Merge live AI output (when a key is set) with actively-fetched earnings dates
 // for US names, the built-in macro calendar, and any cached fundamentals.
-async function buildHotTopics(apiKey, userSymbols, fundamentals) {
-  const ownedTickers = new Set((userSymbols || []).map(s => s.ticker));
+async function buildHotTopics(apiKey, userSymbols, fundamentals, heldTickers) {
+  // The full universe (holdings + watchlist + curated mega-cap/JSE names) drives
+  // which stocks the briefing covers. The "Yours" badge, however, must reflect
+  // only actual portfolio holdings — so it's keyed off a separate held-set.
+  const universeTickers = new Set((userSymbols || []).map(s => s.ticker));
+  const owned = heldTickers instanceof Set ? heldTickers : universeTickers;
   // Fetch the AI briefing and the US earnings sweep in parallel to cut latency.
   const usSymbols = (userSymbols || []).filter(s => s.market === 'US');
   const [ai, saDates] = await Promise.all([
-    fetchHotTopicsAI(apiKey, [...ownedTickers]),
+    fetchHotTopicsAI(apiKey, [...universeTickers]),
     poolMap(usSymbols, 8, s => fetchEarningsDateSA(s.ticker).catch(() => null))
   ]);
 
@@ -1468,7 +1472,7 @@ async function buildHotTopics(apiKey, userSymbols, fundamentals) {
       market: e.market || 'US',
       date: hotDateKey(e.date),
       when: e.when || 'TBD',
-      yours: ownedTickers.has(ticker)
+      yours: owned.has(ticker)
     });
   };
   // Priority: AI (has BMO/AMC + company) → live US sweep → cached fundamentals.
@@ -1599,6 +1603,13 @@ function fmtSigned(n, market) {
   if (n == null || !isFinite(n)) return '—';
   const sign = n >= 0 ? '+' : '−';
   return sign + fmt(n, market);
+}
+// Plain number with thousands separators + 2 decimals (no currency symbol).
+// Use wherever a price/value is concatenated with its own symbol so large
+// figures read as "1,929.68" rather than "1929.68".
+function fmtNum(n, decimals = 2) {
+  if (n == null || !isFinite(n)) return '—';
+  return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 function timeAgo(dateStr) {
   try {
@@ -3045,7 +3056,10 @@ function App() {
     }
     for (const t of HOT_MEGACAPS) { const k = 'US:' + t; if (!seen.has(k)) { seen.add(k); userSymbols.push({ ticker: t, market: 'US' }); } }
     for (const t of HOT_JSE) { const k = 'JSE:' + t; if (!seen.has(k)) { seen.add(k); userSymbols.push({ ticker: t, market: 'JSE' }); } }
-    return loadHotTopicsRaw('hot', () => buildHotTopics(perplexityKey, userSymbols, fundamentalsByTicker), force);
+    // "Yours" reflects only stocks you actually hold (positions) — not watchlist
+    // names or the curated mega-cap/JSE universe that also seed the calendar.
+    const heldTickers = new Set(positions.map(p => (p.ticker || '').toUpperCase()));
+    return loadHotTopicsRaw('hot', () => buildHotTopics(perplexityKey, userSymbols, fundamentalsByTicker, heldTickers), force);
   }, [loadHotTopicsRaw, positions, watchlist, perplexityKey, fundamentalsByTicker]);
   const handleInstall = async () => {
     if (installEvent) {
@@ -3509,7 +3523,7 @@ function PriceBlock(_ref5) {
     className: "flex items-baseline gap-2"
   }, React.createElement("span", {
     className: klass
-  }, sym, quote.price.toFixed(2)),
+  }, sym, fmtNum(quote.price)),
   // When the "Today" row is shown it carries the day's move (with the cash
   // amount), so omit the inline chip here to avoid showing the % twice.
   // hideChange renders the price alone (the caller shows the move elsewhere).
@@ -3526,14 +3540,14 @@ function PriceBlock(_ref5) {
         React.createElement("span", { className: "daily-label" }, "Today"),
         React.createElement("span", { className: `daily-val mono ${up ? 'up' : 'down'}` },
           (up ? '+' : '') + quote.changePct.toFixed(2) + '%',
-          chgAbs != null ? ' · ' + (up ? '+' : '-') + sym + Math.abs(chgAbs).toFixed(2) : ''
+          chgAbs != null ? ' · ' + (up ? '+' : '-') + sym + fmtNum(Math.abs(chgAbs)) : ''
         )
       ),
       // The previous close is the reference every daily/intraday move is measured
       // from, so surface it explicitly alongside the "Today" move.
       prevClose != null && React.createElement("div", { className: "daily-row prevclose-row" },
         React.createElement("span", { className: "daily-label" }, "Prev close"),
-        React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + prevClose.toFixed(2))
+        React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + fmtNum(prevClose))
       )
     ),
     hasExt && React.createElement("div", { className: "daily-divider" }),
@@ -3546,7 +3560,7 @@ function PriceBlock(_ref5) {
       ),
       React.createElement("div", { className: "daily-row prevclose-row" },
         React.createElement("span", { className: "daily-label" }, extLabel === 'Pre-market' ? 'Pre price' : 'Ext price'),
-        React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + quote.extPrice.toFixed(2))
+        React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + fmtNum(quote.extPrice))
       )
     )
   ),
@@ -3557,7 +3571,7 @@ function PriceBlock(_ref5) {
     className: "ext-label"
   }, extLabel), React.createElement("span", {
     className: "ext-price mono"
-  }, sym, quote.extPrice.toFixed(2)), React.createElement("span", {
+  }, sym, fmtNum(quote.extPrice)), React.createElement("span", {
     className: `ext-chg mono ${extUp ? 'up' : 'down'}`
   }, extUp ? '+' : '', quote.extChangePct.toFixed(2), "%")));
 }
@@ -4324,7 +4338,7 @@ function DashboardView(_ref6) {
       // Contribution history modal
       showContribHistory && React.createElement("div", { className: "modal", onClick: e => { if (e.target.classList.contains('modal-backdrop')) setShowContribHistory(false); } },
         React.createElement("div", { className: "modal-backdrop", onClick: () => setShowContribHistory(false) }),
-        React.createElement("div", { className: "modal-panel", style: { maxWidth: 480 } },
+        React.createElement("div", { className: "modal-panel", style: { maxWidth: 520 } },
           React.createElement("div", { className: "modal-handle" }),
           React.createElement("div", { className: "modal-header" },
             React.createElement("div", null,
@@ -4382,11 +4396,11 @@ function DashboardView(_ref6) {
                         React.createElement("span", { style: { fontWeight: 600, fontSize: 13 } }, tx.ticker),
                         React.createElement("span", { className: "market-badge" }, tx.market)),
                       React.createElement("div", { className: "text-xs text-dim" },
-                        tx.shares, " shares @ ", ccy, tx.price.toFixed(2),
+                        tx.shares, " shares @ ", ccy, fmtNum(tx.price),
                         tx.notes ? ' \xB7 ' + tx.notes : '')),
                     React.createElement("div", { style: { textAlign: 'right' } },
                       React.createElement("div", { className: `transaction-amount ${isBuy ? '' : 'up'}` },
-                        (isBuy ? '-' : '+') + ccy + total.toFixed(2)),
+                        (isBuy ? '-' : '+') + ccy + fmtNum(total)),
                       React.createElement("div", { className: "text-xs text-dim" },
                         new Date(tx.date + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }))));
                 }))));
@@ -4427,25 +4441,14 @@ function HoldingRow(_refHR) {
   return React.createElement("button", {
     key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
   },
-    // LEFT — name (main), ticker + holding detail (sub), actions
+    // LEFT — ticker + market badge (main), company name (sub). Avg cost lives on
+    // the bottom action strip beside Edit (see ACTIONS below).
     React.createElement("div", { className: "row-main" },
-      React.createElement("div", { className: "hold-name" }, name),
+      React.createElement("div", { className: "hold-id" },
+        React.createElement("span", { className: "hold-tkr-main" }, p.ticker),
+        React.createElement("span", { className: "mkt-badge" }, market)),
       React.createElement("div", { className: "row-meta" },
-        hasName ? React.createElement("span", { className: "hold-tkr" }, p.ticker) : null,
-        hasName ? " \xB7 avg " : "avg ", fmt(p.costBasis, market)),
-      React.createElement("div", { className: "row-actions" },
-        onBuyPosition ? React.createElement("button", {
-          className: "btn-buy-inline",
-          onClick: e => { e.stopPropagation(); onBuyPosition(p); }
-        }, "Buy more") : null,
-        onSellPosition ? React.createElement("button", {
-          className: "btn-sell-inline",
-          onClick: e => { e.stopPropagation(); onSellPosition(p); }
-        }, "Sell") : null,
-        onEditPosition ? React.createElement("button", {
-          className: "btn-edit-inline",
-          onClick: e => { e.stopPropagation(); onEditPosition(p); }
-        }, "Edit") : null)),
+        hasName ? React.createElement("span", { className: "hold-co-name" }, name) : null)),
     // MIDDLE — total gain/loss: amount on top, % below
     React.createElement("div", { className: "holding-gl" },
       gain != null
@@ -4460,7 +4463,24 @@ function HoldingRow(_refHR) {
       React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmt(marketValue, market) : "—"),
       dayPct != null ? React.createElement("div", {
         className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
-      }, (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null));
+      }, (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
+    // ACTIONS — full-width strip beneath the three zones: the Buy/Sell/Edit cluster
+    // on the left (identically sized on every card), with Avg cost on the right.
+    React.createElement("div", { className: "row-actions" },
+      React.createElement("div", { className: "row-actions-btns" },
+        onBuyPosition ? React.createElement("button", {
+          className: "btn-buy-inline",
+          onClick: e => { e.stopPropagation(); onBuyPosition(p); }
+        }, "Buy") : null,
+        onSellPosition ? React.createElement("button", {
+          className: "btn-sell-inline",
+          onClick: e => { e.stopPropagation(); onSellPosition(p); }
+        }, "Sell") : null,
+        onEditPosition ? React.createElement("button", {
+          className: "btn-edit-inline",
+          onClick: e => { e.stopPropagation(); onEditPosition(p); }
+        }, "Edit") : null),
+      React.createElement("span", { className: "hold-avg" }, "Avg cost ", fmt(p.costBasis, market))));
 }
 function CurrentView(_ref7) {
   let {
@@ -6463,7 +6483,6 @@ function WatchlistView(_ref8) {
         const ac = alerts.filter(a => a.ticker === w.ticker && a.market === w.market).length;
         const hasDay = q && typeof q.changePct === 'number' && isFinite(q.changePct);
         const dayUp = hasDay && q.changePct >= 0;
-        const dayAbs = q && typeof q.change === 'number' && isFinite(q.change) ? q.change : null;
         return React.createElement("div", {
           key: w.id,
           ref: setCardRef(w.id),
@@ -6490,26 +6509,25 @@ function WatchlistView(_ref8) {
                   activeList === 'all' && listOf(w) !== 'default'
                     ? React.createElement("span", { className: "wl-card-list" }, listNameById(listOf(w))) : null),
                 displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null),
-              React.createElement("div", { className: "flex items-center gap-2" },
-                athBadge)),
+              // Stock price now sits top-right (swapped with the 52W high below).
+              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, market: w.market })),
             React.createElement("div", { className: "watch-body" },
-              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, market: w.market }),
-              // Day's move — centred in the middle of the card so it stays visible
-              // at every width (it used to be hidden on narrow / PWA screens).
-              hasDay
-                ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
-                    React.createElement("div", { className: "watch-today-pct mono" },
-                      (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'),
-                    dayAbs != null ? React.createElement("div", { className: "watch-today-amt mono" },
-                      (dayUp ? '+' : '−') + fmt(dayAbs, w.market) + ' today') : null)
-                : React.createElement("div", { className: "watch-today" }),
+              // 52W high now sits bottom-left (swapped with the price), with the
+              // alert bell directly beside it.
+              athBadge,
               React.createElement("button", {
                 className: "card-alert-bell",
                 "data-no-drag": true,
                 onClick: e => { e.stopPropagation(); openAlertPopup(w.ticker, w.market); },
                 "aria-label": "Alerts"
               }, React.createElement(Icon, { name: "bell", size: 13 }),
-                ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)))));
+                ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)),
+              // Day's move (% only) anchored to the right of the card.
+              hasDay
+                ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
+                    React.createElement("div", { className: "watch-today-pct mono" },
+                      (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
+                : React.createElement("div", { className: "watch-today" }))));
       })),
 
     alertPopup && React.createElement("div", { className: "alert-popup-overlay" },
@@ -6568,7 +6586,7 @@ function WatchlistView(_ref8) {
             onClick: submitAlertPopup
           }, React.createElement(Icon, { name: "plus" }),
             " Alert when ", alertDir === 'above' ? 'above ' : 'below ',
-            alertTarget && isFinite(parseDecimal(alertTarget)) ? (popupCcy === 'ZAR' ? 'R' : '$') + parseDecimal(alertTarget).toFixed(2) : 'target')))),
+            alertTarget && isFinite(parseDecimal(alertTarget)) ? (popupCcy === 'ZAR' ? 'R' : '$') + fmtNum(parseDecimal(alertTarget)) : 'target')))),
 
     React.createElement("div", { className: "eyebrow suggestions-head" },
       React.createElement("span", null, "Suggested for you"),
@@ -7960,7 +7978,7 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
         React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
     !hasPositions
-      ? React.createElement("div", { className: "empty" },
+      ? React.createElement("div", { className: "empty empty-tfsa mb-4" },
           React.createElement(Icon, { name: "briefcase", size: 40 }),
           React.createElement("h3", null, "No TFSA holdings"),
           React.createElement("p", null, "Add JSE-listed ETFs and equities for your Tax-Free Savings Account (or use Import on the Holdings tab)."))
@@ -9326,7 +9344,7 @@ function ContributionModal({ onClose, onSave, onOpenImport }) {
   const ccy = currency === 'ZAR' ? 'R' : '$';
   return React.createElement("div", { className: "modal" },
     React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
-    React.createElement("div", { className: "modal-panel", style: { maxWidth: 420 }, ref: panelRef },
+    React.createElement("div", { className: "modal-panel", style: { maxWidth: 520 }, ref: panelRef },
       React.createElement("div", { className: "modal-handle" }),
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,
@@ -9465,10 +9483,15 @@ function ContributionImportModal({ onClose, onImport }) {
 
   const CCYS = ['USD', 'ZAR', 'GBP', 'AUD', 'EUR'];
   const inputStage = React.createElement(React.Fragment, null,
-    React.createElement("div", { className: "form-group" },
-      React.createElement("label", { className: "form-label" }, "Default currency"),
-      React.createElement("select", { value: defaultCurrency, onChange: e => setDefaultCurrency(e.target.value) },
-        CCYS.map(c => React.createElement("option", { key: c, value: c }, c + ' (' + (CURRENCY_SYMBOLS[c] || '') + ')')))),
+    React.createElement("div", { className: "import-market-pick" },
+      React.createElement("div", { className: "form-label" }, "Default currency"),
+      React.createElement("div", { className: "import-bulk-chips" },
+        CCYS.map(c => React.createElement("button", {
+          key: c, type: "button",
+          className: "import-bulk-chip" + (defaultCurrency === c ? " active" : ""),
+          onClick: () => setDefaultCurrency(c)
+        }, c, React.createElement("span", { className: "import-chip-sym" }, CURRENCY_SYMBOLS[c] || '')))),
+      React.createElement("div", { className: "form-help" }, "Applied to any pasted row that doesn't name its own currency — you can change any row in the next step.")),
     React.createElement("div", {
       className: "import-drop" + (dragOver ? " over" : ""),
       onClick: () => fileRef.current && fileRef.current.click(),
@@ -9489,8 +9512,8 @@ function ContributionImportModal({ onClose, onImport }) {
       onChange: e => setPasteText(e.target.value), rows: 5
     }),
     parseError ? React.createElement("div", { className: "verify-error", style: { marginTop: 10 } }, parseError) : null,
-    React.createElement("div", { className: "form-actions" },
-      React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"),
+    React.createElement("div", { className: "form-actions", style: { marginTop: 4 } },
+      React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
       React.createElement("button", { className: "btn btn-primary", onClick: handlePaste, disabled: parsing || !pasteText.trim() }, parsing ? "Reading…" : "Review")));
 
   const reviewStage = React.createElement(React.Fragment, null,
@@ -9522,7 +9545,7 @@ function ContributionImportModal({ onClose, onImport }) {
           React.createElement("input", { className: "cfi-note", type: "text", value: r.note, placeholder: "Note", maxLength: 100, onChange: e => updateRow(r.id, { note: e.target.value }) })))),
     ),
     React.createElement("div", { className: "form-actions" },
-      React.createElement("button", { className: "btn btn-ghost", onClick: () => setStage('input') }, "Back"),
+      React.createElement("button", { className: "btn btn-secondary", onClick: () => setStage('input') }, "Back"),
       React.createElement("button", { className: "btn btn-primary", onClick: doImport, disabled: validRows.length === 0 },
         "Import ", validRows.length, " ", validRows.length === 1 ? "entry" : "entries")));
 
@@ -10082,7 +10105,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
 
   return React.createElement("div", { className: "modal" },
     React.createElement("div", { className: "modal-backdrop", onClick: stage === 'input' ? onClose : undefined }),
-    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 620 } },
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 520 } },
       stage === 'input' ? React.createElement("div", { className: "modal-handle" }) : null,
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,
@@ -10173,7 +10196,7 @@ function PositionModal(_ref12) {
     className: "modal-panel",
     ref: panelRef,
     style: {
-      maxWidth: 480
+      maxWidth: 520
     }
   }, React.createElement("div", {
     className: "modal-handle"
@@ -10342,7 +10365,7 @@ function SellModal({ position, prices, onClose, onSell }) {
   };
   return React.createElement("div", { className: "modal" },
     React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
-    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 480 } },
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 520 } },
       React.createElement("div", { className: "modal-handle" }),
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,
@@ -10454,7 +10477,7 @@ function BuyModal({ position, prices, onClose, onBuy }) {
   };
   return React.createElement("div", { className: "modal" },
     React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
-    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 480 } },
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 520 } },
       React.createElement("div", { className: "modal-handle" }),
       React.createElement("div", { className: "modal-header" },
         React.createElement("div", null,

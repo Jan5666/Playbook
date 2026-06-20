@@ -428,7 +428,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .btn-edit-inline:active { background: color-mix(in srgb, var(--text-dim) 14%, transparent); color: var(--text); }
 /* Holding-row action buttons sit on their own line under the meta */
 .row-actions { display: flex; gap: 6px; margin-top: 8px; }
-.row-actions .btn-sell-inline, .row-actions .btn-buy-inline, .row-actions .btn-edit-inline { margin-left: 0; padding: 4px 12px; font-size: 11px; }
+.row-actions .btn-sell-inline, .row-actions .btn-buy-inline, .row-actions .btn-edit-inline { margin-left: 0; padding: 4px 5px; font-size: 11px; }
 /* Sell-by-percentage quick chips in the Sell modal */
 .sell-pct-chips { display: flex; gap: 8px; }
 .sell-pct-chip {
@@ -450,16 +450,40 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
   color: var(--text-dim); font-size: 14px; pointer-events: none;
 }
-/* Three-zone holding row: name (left, main) · gain/loss (middle) · value (right) */
-.holding-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; }
-/* Let the full company name wrap across lines instead of being clipped to
-   "Sygnia Itrix 4th Indu…" — the row is grid-aligned, so a taller name cell
-   just grows the row and stays vertically centred against value/gain. */
-.hold-name {
-  font-size: 15px; font-weight: 600; line-height: 1.25;
-  white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+/* Three-zone holding row: name (left, main) · gain/loss (middle) · value (right),
+   with a full-width action strip beneath. */
+.holding-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px 12px; align-items: center; }
+/* Bottom strip spans the full width: the Buy / Sell / Edit cluster sits in the
+   left corner (~30% of the card width, the three sharing it equally so they stay
+   identical on every card), and the Avg cost figure is pushed to the right edge,
+   on the same row as Edit. */
+.holding-row .row-actions { grid-column: 1 / -1; width: 100%; margin-top: 2px; gap: 10px; align-items: center; }
+.holding-row .row-actions-btns { display: flex; gap: 5px; width: 30%; min-width: 116px; flex-shrink: 0; }
+.holding-row .row-actions-btns > button { flex: 1 1 0; justify-content: center; min-width: 0; }
+.holding-row .row-actions .hold-avg { margin-left: auto; font-size: 12px; }
+/* Ticker leads (main heading) with a small market badge beside it; the company
+   name sits underneath. Both the ticker line and the name/avg-cost line are a
+   single fixed-height row, so every holding box shares one compact height. */
+.holding-row { padding: 11px 13px; }
+.hold-id { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.hold-tkr-main {
+  font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--text);
+  letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.hold-tkr { font-family: var(--mono); font-weight: 700; font-size: 11px; color: var(--text-muted); letter-spacing: 0.02em; }
+.mkt-badge {
+  flex-shrink: 0; font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+  line-height: 1; text-transform: lowercase; letter-spacing: 0.02em;
+  color: var(--text-muted); background: var(--bg-elev);
+  border: 1px solid var(--border); border-radius: 5px; padding: 2px 5px;
+}
+/* Sub-line: company name only (ellipsised). min-height reserves the line even
+   when a holding has no resolved name, so every box stays the same height. */
+.holding-row .row-meta { flex-wrap: nowrap; gap: 5px; margin-top: 3px; min-width: 0; min-height: 14px; }
+.hold-co-name {
+  min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text-muted);
+}
+.hold-avg { flex: 0 0 auto; white-space: nowrap; color: var(--text-dim); }
 .holding-gl { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; text-align: right; }
 .holding-gl-amt { font-size: 13px; font-weight: 700; }
 .holding-gl-pct { font-size: 11px; font-weight: 600; }
@@ -563,6 +587,10 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .empty svg { width: 40px; height: 40px; opacity: 0.3; margin: 0 auto 12px; display: block; }
 .empty h3 { font-family: var(--serif); font-size: 18px; color: var(--text-muted); margin-bottom: 4px; }
 .empty p { font-size: 13px; color: var(--text-dim); margin-bottom: 16px; max-width: 320px; margin-left: auto; margin-right: auto; line-height: 1.5; }
+/* TFSA empty state isn't terminal — cards follow it — so trim the padding and the
+   trailing CTA margin (there's no button) for an even, balanced block. */
+.empty.empty-tfsa { padding: 34px 22px; }
+.empty.empty-tfsa p { margin-bottom: 0; }
 
 /* Stat cards (dashboard) */
 .stat-card {
@@ -667,8 +695,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   border-top: 1px solid var(--border-strong);
   border-top-left-radius: 20px; border-top-right-radius: 20px;
   width: 100%; max-width: 600px;
+  /* Every sheet opens at the same fixed height (not hugging its content) so a
+     short form and a long import rise to the same size — see stock-detail note. */
+  height: calc(100vh - 48px); height: calc(100dvh - 48px);
   max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px);
-  overflow-y: auto;
+  display: flex; flex-direction: column;
+  overflow: hidden;
   animation: slide-up 0.46s cubic-bezier(0.22, 1, 0.36, 1);
   padding-bottom: var(--safe-bottom);
   -webkit-overflow-scrolling: touch;
@@ -677,9 +709,15 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: contain;
 }
-/* Stock detail card always opens at a fixed, almost-fullscreen height so every
-   stock — regardless of how much fundamentals/chart content it has — opens to
-   the same size instead of hugging its content. */
+/* Handle + header stay fixed; the body is the single scrolling region and fills
+   the remaining height so its content/actions sit consistently within the sheet. */
+.modal-panel > .modal-handle, .modal-panel > .modal-header { flex: 0 0 auto; }
+.modal-panel > .modal-body { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+/* In a fixed-height sheet the action row sits at the bottom (a pinned action bar)
+   so short forms don't strand their buttons mid-sheet. When content is tall enough
+   to scroll, the auto margin collapses and the buttons flow naturally after it. */
+.modal-panel > .modal-body > .form-actions { margin-top: auto; }
+/* Stock detail keeps the same fixed height; its body manages its own layout. */
 .modal-panel.stock-detail-panel {
   height: calc(100vh - 48px); height: calc(100dvh - 48px);
 }
@@ -1857,14 +1895,13 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   touch-action: pan-y;
 }
 .watchlist-list .pos-head { margin-bottom: 8px; }
-/* Watchlist card body: price (left, flexible) · today's move (fixed column) ·
-   alert bell (fixed). The day-change and bell sit in fixed-width tracks anchored
-   to the right, so the day change lines up in a column down the whole list
-   regardless of price width or whether a card has an alert badge. */
-.watch-body { display: grid; grid-template-columns: minmax(0, 1fr) 112px 30px; align-items: center; gap: 10px; }
-.watch-body .price-block-wrap { min-width: 0; }
+/* Watchlist card body: 52W-high badge + alert bell (left) · today's move (right).
+   The price lives in the header now; the day change is pushed to the right edge
+   with margin-left:auto so it lines up down the whole list. */
+.watch-body { display: flex; align-items: center; gap: 10px; }
+.watchlist-list .pos-head .price-block-wrap { text-align: right; }
 .watch-today {
-  text-align: right; min-width: 0; white-space: nowrap;
+  margin-left: auto; text-align: right; min-width: 0; white-space: nowrap;
   display: flex; flex-direction: column; gap: 1px; line-height: 1.2;
 }
 .watch-today-pct { font-size: 15px; font-weight: 700; }
@@ -1886,7 +1923,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .watchlist-list .ath-badge-label { font-size: 7px; }
   .watchlist-list .ath-badge-val { font-size: 10px; }
   .watchlist-list .price-lg { font-size: 17px; }
-  .watch-body { grid-template-columns: minmax(0, 1fr) 92px 28px; gap: 8px; }
+  .watch-body { gap: 8px; }
   .watch-today-pct { font-size: 13px; }
   .watch-today-amt { font-size: 10px; }
   .watch-body .card-alert-bell { width: 28px; height: 28px; }
@@ -2714,6 +2751,8 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .import-bulk-chip:hover { border-color: var(--blue); color: var(--blue); }
 .import-bulk-chip:active { transform: scale(0.94); }
 .import-bulk-chip.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+.import-chip-sym { margin-left: 5px; opacity: 0.6; font-weight: 500; }
+.import-bulk-chip.active .import-chip-sym { opacity: 0.85; }
 .import-market-pick { margin-bottom: 14px; }
 .import-market-pick .import-bulk-chips { margin-top: 6px; }
 
