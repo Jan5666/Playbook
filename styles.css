@@ -199,6 +199,14 @@ a { color: inherit; text-decoration: none; }
 }
 .ribbon-pill-chg.up { color: var(--emerald); background: color-mix(in srgb, var(--emerald) 14%, transparent); }
 .ribbon-pill-chg.down { color: var(--rose); background: color-mix(in srgb, var(--rose) 14%, transparent); }
+/* Ribbon pills are tappable — they open a full card (chart, explanation, alerts). */
+.ribbon-pill-tappable {
+  cursor: pointer; user-select: none;
+  transition: border-color 0.15s, background 0.15s, transform 0.08s;
+}
+.ribbon-pill-tappable:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text-dim) 7%, var(--bg-raised)); }
+.ribbon-pill-tappable:active { transform: scale(0.97); }
+.ribbon-pill-tappable:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
 /* Market ribbon — marquee */
 .ribbon-marquee {
@@ -2230,6 +2238,54 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .ribbon-catalog-name {
   font-size: 10px; color: var(--text-dim); margin-top: 1px;
   line-height: 1.3;
+}
+.ribbon-catalog-subhead {
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--mono);
+  margin: 14px 0 8px;
+}
+.ribbon-catalog-subhead:first-child { margin-top: 2px; }
+
+/* Indicator "deep dive" explanation card (macro/market indicator detail) */
+.indicator-about {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 12px; padding: 13px 14px; margin: 2px 0 4px;
+}
+.indicator-about-head {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 600; color: var(--text);
+  margin-bottom: 7px;
+}
+.indicator-about-head svg { color: var(--blue); flex-shrink: 0; }
+.indicator-about-what {
+  font-size: 12.5px; line-height: 1.55; color: var(--text); margin: 0;
+}
+.indicator-about-sub {
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--mono);
+  margin: 12px 0 5px;
+}
+.indicator-about-interpret {
+  font-size: 12.5px; line-height: 1.55; color: var(--text-muted, var(--text)); margin: 0;
+}
+.indicator-levels {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px;
+}
+.indicator-level {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 9px; border-radius: 8px;
+  background: color-mix(in srgb, var(--blue) 7%, var(--bg-raised));
+  border: 1px solid var(--border);
+}
+.indicator-level-label {
+  font-size: 10px; font-weight: 600; color: var(--text);
+}
+.indicator-level-range {
+  font-size: 10px; color: var(--text-dim); font-family: var(--mono);
+}
+.indicator-about-note {
+  font-size: 10.5px; color: var(--text-dim); margin-top: 11px;
+  padding-top: 9px; border-top: 1px solid var(--border);
 }
 
 /* Heatmap */
