@@ -484,19 +484,42 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   color: var(--text-muted);
 }
 .hold-avg { flex: 0 0 auto; white-space: nowrap; color: var(--text-dim); }
-.holding-gl { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; text-align: right; }
-.holding-gl-amt { font-size: 13px; font-weight: 700; }
+.holding-gl { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; text-align: right; margin-left: 10px; }
+/* Gain/loss amount matches the current-value figure size so the two primary
+   numbers on a row carry equal weight. */
+.holding-gl-amt { font-size: 15px; font-weight: 700; }
 .holding-gl-pct { font-size: 11px; font-weight: 600; }
 /* Right zone: current value large, the day's move small underneath.
    Extra left margin sets the value apart from the gain/loss column. */
 .holding-row .row-right { margin-left: 14px; }
 .holding-value { font-family: var(--mono); font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
-.holding-day { font-family: var(--mono); font-size: 11px; font-weight: 500; margin-top: 3px; }
+/* Today's move as a flat, solid green/red box with white numerals — matches the
+   watchlist day-move box so the two lists read as one system. */
+.holding-day {
+  font-family: var(--mono); font-size: 11px; font-weight: 700; margin-top: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px 9px; border-radius: 7px; line-height: 1; letter-spacing: -0.01em; min-width: 62px;
+}
+.holding-day.text-up { color: #fff; background: var(--emerald); }
+.holding-day.text-down { color: #fff; background: var(--rose); }
+/* Subtle column header above a holdings list — labels the three zones
+   (Holding · P/L · Current value). Mirrors the row's horizontal padding and
+   the P/L / value margins so the labels sit over their columns and the value
+   column's right edge lines up exactly. */
+.holding-list-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0 12px; align-items: baseline;
+  padding: 0 13px 8px; margin-top: 2px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
+}
+.holding-list-head .hlh-gl { text-align: right; margin-left: 10px; }
+.holding-list-head .hlh-val { text-align: right; margin-left: 14px; white-space: nowrap; }
 @media (max-width: 380px) {
   .holding-row { gap: 8px; }
   .holding-row .row-right { margin-left: 8px; }
   .holding-value { font-size: 14px; }
-  .holding-gl-amt { font-size: 12px; }
+  .holding-gl-amt { font-size: 14px; }
 }
 /* Buy-more preview card */
 .buy-preview { border-color: color-mix(in srgb, var(--blue) 25%, transparent); background: color-mix(in srgb, var(--blue) 5%, var(--bg-raised)); }
@@ -1901,13 +1924,19 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .watch-body { display: flex; align-items: center; gap: 10px; }
 .watchlist-list .pos-head .price-block-wrap { text-align: right; }
 .watch-today {
-  margin-left: auto; text-align: right; min-width: 0; white-space: nowrap;
-  display: flex; flex-direction: column; gap: 1px; line-height: 1.2;
+  margin-left: auto; white-space: nowrap; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: flex-end; gap: 1px; line-height: 1;
 }
-.watch-today-pct { font-size: 15px; font-weight: 700; }
-.watch-today-amt { font-size: 11px; font-weight: 500; opacity: 0.85; }
-.watch-today.up .watch-today-pct, .watch-today.up .watch-today-amt { color: var(--emerald); }
-.watch-today.down .watch-today-pct, .watch-today.down .watch-today-amt { color: var(--rose); }
+/* Day's move rendered as a flat, solid green/red box with crisp white numerals. */
+.watch-today.up, .watch-today.down {
+  justify-content: center; padding: 5px 11px; border-radius: 7px; min-width: 76px;
+}
+.watch-today-pct { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+.watch-today-amt { font-size: 11px; font-weight: 600; }
+.watch-today.up { background: var(--emerald); }
+.watch-today.down { background: var(--rose); }
+.watch-today.up .watch-today-pct, .watch-today.up .watch-today-amt,
+.watch-today.down .watch-today-pct, .watch-today.down .watch-today-amt { color: #fff; }
 /* Bell in a fixed track so it never shifts the day-change column; badge floats. */
 .watch-body .card-alert-bell {
   position: relative; top: auto; right: auto; flex: 0 0 auto;
