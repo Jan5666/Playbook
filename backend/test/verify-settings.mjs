@@ -189,6 +189,22 @@ try {
   ok('Alerts: triggered rows are tappable', (await evals(ws, `return document.querySelectorAll('.alert-item-tap[role="button"]').length;`)) >= 2);
   await shot(ws, 'alerts-menu');
 
+  // Scroll the notifications menu up and down — must move and settle correctly.
+  const scrollTest = await evals(ws, `
+    const sc = document.querySelector('.modal-panel');
+    if (!sc) return JSON.stringify({ err: 'no panel' });
+    const overflow = sc.scrollHeight - sc.clientHeight;
+    sc.scrollTop = sc.scrollHeight; await new Promise(r=>setTimeout(r,120));
+    const down = sc.scrollTop;
+    sc.scrollTop = 0; await new Promise(r=>setTimeout(r,120));
+    const up = sc.scrollTop;
+    return JSON.stringify({ overflow, down, up });
+  `);
+  const st = JSON.parse(scrollTest);
+  console.log('  scroll:', scrollTest);
+  ok('Alerts: menu overflows and scrolls down', st.overflow > 40 && st.down > 40, scrollTest);
+  ok('Alerts: menu scrolls back to top', st.up === 0, scrollTest);
+
   // Tap a triggered row → should open that company's stock detail chart.
   await evals(ws, `document.querySelector('.alert-item-tap').click(); return true;`);
   await sleep(900);
