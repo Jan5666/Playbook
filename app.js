@@ -333,9 +333,72 @@ const RIBBON_CATALOG = [
   { key: 'US:PL=F',    ticker: 'PL=F',    market: 'US', label: 'Platinum',        short: 'PLAT', decimals: 2, invertColor: false },
   { key: 'US:BTC-USD', ticker: 'BTC-USD', market: 'US', label: 'Bitcoin',         short: 'BTC',  decimals: 0, invertColor: false },
   { key: 'US:ETH-USD', ticker: 'ETH-USD', market: 'US', label: 'Ethereum',        short: 'ETH',  decimals: 0, invertColor: false },
+  // ── Macro & rates ──────────────────────────────────────────────────────────
+  // These carry a `unit` (so the app formats them as %/points/score, not "$…"),
+  // an optional non-Yahoo `source`, and chart range hints. `unit` is also the
+  // flag the UI uses to switch a card into "indicator" mode (explanation card,
+  // unit-aware price block, no fundamentals/news).
+  { key: 'US:^TNX', ticker: '^TNX', market: 'US', label: '10-Year Treasury Yield', short: 'US10Y', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'pct',   defaultRange: '1y' },
+  { key: 'US:DX-Y.NYB', ticker: 'DX-Y.NYB', market: 'US', label: 'U.S. Dollar Index (DXY)', short: 'DXY', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'index', defaultRange: '1y' },
+  { key: 'US:^DJT', ticker: '^DJT', market: 'US', label: 'Dow Jones Transports (DJT)', short: 'DJT', decimals: 0, invertColor: false,
+    group: 'macro', unit: 'index', defaultRange: '1y' },
+  { key: 'MACRO:FEDFUNDS', ticker: 'FEDFUNDS', market: 'MACRO', label: 'Federal Funds Rate', short: 'FEDFUNDS', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'pct',   source: 'fred', fredSeries: 'DFF',       fredTransform: 'level',      defaultRange: '1y', chartRanges: ['3mo','6mo','1y','5y','max'] },
+  { key: 'MACRO:CPI', ticker: 'CPI', market: 'MACRO', label: 'Inflation — CPI (YoY)', short: 'CPI', decimals: 1, invertColor: false,
+    group: 'macro', unit: 'pct',   source: 'fred', fredSeries: 'CPIAUCSL',  fredTransform: 'yoy',        defaultRange: '5y', chartRanges: ['1y','5y','max'] },
+  { key: 'MACRO:NFP', ticker: 'NFP', market: 'MACRO', label: 'Non-Farm Payrolls', short: 'NFP', decimals: 0, invertColor: false,
+    group: 'macro', unit: 'k_jobs', source: 'fred', fredSeries: 'PAYEMS',   fredTransform: 'mom_change', defaultRange: '5y', chartRanges: ['1y','5y','max'] },
+  { key: 'MACRO:GLI', ticker: 'GLI', market: 'MACRO', label: 'Global Liquidity (proxy)', short: 'GLI', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'usd_t', source: 'gli',                                                        defaultRange: '5y', chartRanges: ['1y','5y','max'] },
+  { key: 'MACRO:FNG', ticker: 'FNG', market: 'MACRO', label: 'Fear & Greed (VIX-based)', short: 'F&G', decimals: 0, invertColor: false,
+    group: 'macro', unit: 'score', source: 'vixmood',                                                    defaultRange: '1y', chartRanges: ['1mo','3mo','6mo','1y','5y','max'] },
 ];
 const RIBBON_CATALOG_MAP = Object.fromEntries(RIBBON_CATALOG.map(r => [r.key, r]));
 const DEFAULT_RIBBON_ITEMS = ['US:^SPX', 'US:^VIX'];
+// Plain-English deep-dives shown on each indicator's card. Kept short and
+// jargon-light on purpose — the goal is to help a retail investor understand
+// what the number means and how to read it. Keyed by the catalog `key`.
+const INDICATOR_INFO = {
+  'US:^TNX': {
+    what: "The interest rate the U.S. government pays to borrow money for 10 years. It's the world's benchmark “risk-free” rate — it sets the tone for mortgages, loans, and how every other asset (stocks included) gets valued.",
+    interpret: "Rising yields make borrowing pricier and bonds more competitive with stocks — usually a headwind, especially for expensive growth names. Falling yields mean cheaper money and are generally supportive for stocks. Watch the trend more than today's exact number.",
+    levels: [{ label: 'Low', range: 'below 3%' }, { label: 'Normal (recent years)', range: '3–4.5%' }, { label: 'Elevated', range: 'above 5%' }]
+  },
+  'US:DX-Y.NYB': {
+    what: "Measures the U.S. dollar's strength against a basket of major currencies (euro, yen, pound and others). Around 100 is the long-run baseline.",
+    interpret: "A rising dollar (higher DXY) tends to pressure commodities like gold and oil, emerging markets, and U.S. companies that earn a lot overseas. A falling dollar is usually a tailwind for those same assets.",
+    levels: [{ label: 'Weak', range: 'below ~95' }, { label: 'Neutral', range: '~100' }, { label: 'Strong', range: 'above ~105' }]
+  },
+  'US:^DJT': {
+    what: "Tracks 20 major U.S. transport companies — airlines, railroads, trucking and delivery firms. Because they physically move goods, they're an early read on real economic activity.",
+    interpret: "When transports rise alongside the broader market it confirms a healthy economy (the old “Dow Theory”). When they fall or lag while the Dow keeps climbing, it can be an early warning that growth is slowing."
+  },
+  'MACRO:FEDFUNDS': {
+    what: "The Federal Reserve's key short-term interest rate — what U.S. banks charge each other overnight. The Fed raises it to cool inflation and cuts it to support growth. (Shown here is the effective rate; the Fed actually sets a target range.)",
+    interpret: "Higher rates make borrowing more expensive and slow the economy — generally a headwind for stocks, especially growth. Lower rates mean cheaper money and are usually supportive. Markets care most about the direction and the Fed's next likely move."
+  },
+  'MACRO:CPI': {
+    what: "The main inflation gauge: how much prices for everyday goods and services have risen over the past 12 months (year-over-year). Updated monthly.",
+    interpret: "The Fed targets about 2%. Hotter CPI pushes the Fed toward higher rates (a headwind for stocks and bonds); cooling CPI gives the Fed room to ease, which markets usually welcome.",
+    levels: [{ label: 'Fed target', range: '~2%' }, { label: 'Elevated', range: '3–5%' }, { label: 'Hot', range: 'above 5%' }]
+  },
+  'MACRO:NFP': {
+    what: "The number of jobs the U.S. economy added (or lost) last month, excluding farms. Released the first Friday of each month — one of the most market-moving data points there is.",
+    interpret: "Strong job growth signals a healthy economy, but if it runs too hot it can keep the Fed hawkish (rates higher for longer). Weak or negative payrolls point to a slowing economy and can push the Fed to cut. Markets judge it against expectations.",
+    levels: [{ label: 'Soft', range: 'below ~100K' }, { label: 'Solid', range: '~150–250K' }, { label: 'Hot', range: 'above ~300K' }]
+  },
+  'MACRO:GLI': {
+    what: "A transparent proxy for “global liquidity” — the combined balance sheets of the world's three biggest central banks (U.S. Fed, European Central Bank, Bank of Japan), converted to U.S. dollars. (A do-it-yourself proxy, not the proprietary CrossBorder Capital index.)",
+    interpret: "Rising liquidity (central banks expanding) tends to lift risk assets — stocks, crypto, gold. Falling liquidity (tightening / quantitative tightening) is often a headwind. Think of it as a slow-moving tide: watch the direction over months, not days."
+  },
+  'MACRO:FNG': {
+    what: "A 0–100 market-mood gauge built from the VIX (Wall Street's “fear index”): 0 = extreme fear, 100 = extreme greed. A transparent VIX-based stand-in for the popular Fear & Greed gauge.",
+    interpret: "Extreme fear (low readings) often marks moments of maximum pessimism — historically closer to bottoms than tops. Extreme greed (high readings) suggests complacency and can precede pullbacks. The classic contrarian rule: be cautious when others are greedy, look for opportunity when others are fearful. Use it as a sentiment check, not a precise timing tool.",
+    levels: [{ label: 'Extreme fear', range: '0–24' }, { label: 'Neutral', range: '~50' }, { label: 'Extreme greed', range: '76–100' }]
+  }
+};
 // CORS proxies for endpoints that don't allow direct browser fetches
 // (Yahoo Finance, Stooq). Tried in order; first valid response wins. Ordering
 // is by observed reliability when called from a deployed origin (not localhost).
@@ -663,7 +726,200 @@ function parseStooqCsv(text, market) {
     source: 'stooq'
   };
 }
+// ─────────────────────────────────────────────────────────────────────────
+// Macro / market indicators (the ribbon "stock cards"). These aren't ordinary
+// Yahoo tickers — they're sourced from FRED (the public fredgraph.csv endpoint,
+// no API key), a transparent central-bank balance-sheet proxy for global
+// liquidity, and a VIX-derived market-mood gauge. Each produces the SAME quote
+// and history shapes the rest of the app consumes, so charts, price triggers
+// and the ribbon all work unchanged. fetchQuote / fetchHistory route to these
+// based on the catalog descriptor's `source`.
+// ─────────────────────────────────────────────────────────────────────────
+const FRED_TTL_MS = 6 * 60 * 60 * 1000; // FRED series update daily at most
+const _fredCache = {}; // id -> { ts, data: [{date, value}] }
+function parseFredCsv(text) {
+  const lines = String(text || '').trim().split('\n');
+  const out = [];
+  for (let i = 1; i < lines.length; i++) { // row 0 is the header
+    const row = lines[i].split(',');
+    const date = row[0];
+    const value = parseFloat(row[1]);
+    if (!date || !isFinite(value)) continue; // FRED writes '.' for missing days
+    out.push({ date, value });
+  }
+  return out;
+}
+async function fetchFredSeries(id) {
+  const cached = _fredCache[id];
+  if (cached && Date.now() - cached.ts < FRED_TTL_MS) return cached.data;
+  const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}`;
+  const text = await fetchViaProxies(url, { timeoutMs: 10000 });
+  if (text) {
+    const data = parseFredCsv(text);
+    if (data.length) { _fredCache[id] = { ts: Date.now(), data }; return data; }
+  }
+  return cached ? cached.data : null; // fall back to any stale copy on failure
+}
+// Most-recent value at or before a YYYY-MM-DD date (series is chronological;
+// lexical string compare is valid for zero-padded ISO dates).
+function fredAsOf(series, dateStr) {
+  if (!series) return null;
+  let v = null;
+  for (let i = 0; i < series.length; i++) {
+    if (series[i].date <= dateStr) v = series[i].value; else break;
+  }
+  return v;
+}
+// Re-express a raw FRED series in the indicator's display unit: as-is (level),
+// year-over-year % (CPI inflation), or month-over-month change (payrolls).
+function fredTransformSeries(series, transform) {
+  if (!Array.isArray(series) || !series.length) return [];
+  if (transform === 'yoy') {
+    const out = [];
+    for (let i = 12; i < series.length; i++) {
+      const base = series[i - 12].value;
+      if (base) out.push({ date: series[i].date, value: (series[i].value / base - 1) * 100 });
+    }
+    return out;
+  }
+  if (transform === 'mom_change') {
+    const out = [];
+    for (let i = 1; i < series.length; i++) {
+      out.push({ date: series[i].date, value: series[i].value - series[i - 1].value });
+    }
+    return out;
+  }
+  return series.map(p => ({ date: p.date, value: p.value }));
+}
+function rangeCutoffMs(range) {
+  const day = 86400000;
+  switch (range) {
+    case '1d': return day;          case '5d': return 5 * day;
+    case '1mo': return 31 * day;    case '3mo': return 92 * day;
+    case '6mo': return 184 * day;   case '1y': return 366 * day;
+    case '2y': return 731 * day;    case '5y': return 1827 * day;
+    default: return Infinity;       // max / all
+  }
+}
+// Build a quote ({price, prevClose, change, changePct, asOf}) from the last two
+// points of a transformed [{date, value}] series.
+function indicatorQuoteFromSeries(series, source) {
+  if (!series || series.length < 2) return null;
+  const last = series[series.length - 1];
+  const prev = series[series.length - 2];
+  const price = last.value, prevClose = prev.value;
+  return {
+    price, prevClose,
+    change: price - prevClose,
+    changePct: prevClose !== 0 ? (price - prevClose) / prevClose * 100 : 0,
+    currency: 'USD', marketState: 'UNKNOWN',
+    asOf: last.date,            // the data's own timestamp (release date)
+    fetchedAt: Date.now(), source
+  };
+}
+// Build a chart history ({points:[{t,p,session}]}) from a transformed series,
+// clipped to the requested range.
+function indicatorHistoryFromSeries(series, range) {
+  if (!series || series.length < 2) return null;
+  const cutoff = Date.now() - rangeCutoffMs(range);
+  const points = [];
+  for (const p of series) {
+    const t = new Date(p.date + 'T00:00:00Z').getTime();
+    if (!isFinite(t) || t < cutoff) continue;
+    points.push({ t, p: p.value, session: 'regular' });
+  }
+  if (points.length < 2) return null;
+  return { points, range, fetchedAt: Date.now(), regularStart: null, regularEnd: null };
+}
+async function fetchFredIndicatorQuote(cat) {
+  const series = await fetchFredSeries(cat.fredSeries);
+  return series ? indicatorQuoteFromSeries(fredTransformSeries(series, cat.fredTransform), 'fred:' + cat.fredSeries) : null;
+}
+async function fetchFredIndicatorHistory(cat, range) {
+  const series = await fetchFredSeries(cat.fredSeries);
+  return series ? indicatorHistoryFromSeries(fredTransformSeries(series, cat.fredTransform), range) : null;
+}
+// Combined major-central-bank balance sheets (Fed + ECB + BoJ) in USD trillions
+// — a transparent "global liquidity" proxy. ECB (EUR millions) and BoJ
+// (100-million-yen units) are converted with contemporaneous FRED FX so the
+// historical line reflects real USD scale, not just today's exchange rate.
+async function buildGliSeries() {
+  const [fed, ecb, boj, eur, jpy] = await Promise.all([
+    fetchFredSeries('WALCL'),      // $ millions, weekly
+    fetchFredSeries('ECBASSETSW'), // EUR millions, weekly
+    fetchFredSeries('JPNASSETS'),  // 100-million-yen, monthly
+    fetchFredSeries('DEXUSEU'),    // USD per 1 EUR, daily
+    fetchFredSeries('DEXJPUS')     // JPY per 1 USD, daily
+  ]);
+  if (!fed || !ecb || !boj) return null;
+  const out = [];
+  for (const row of fed) {
+    const d = row.date;
+    const eurusd = fredAsOf(eur, d), jpyusd = fredAsOf(jpy, d);
+    const ecbV = fredAsOf(ecb, d), bojV = fredAsOf(boj, d);
+    if (ecbV == null || bojV == null || !eurusd || !jpyusd) continue;
+    const fedT = row.value / 1e6;          // $M → $T
+    const ecbT = ecbV * eurusd / 1e6;      // €M → $M → $T
+    const bojT = bojV / jpyusd / 1e4;      // 100M-yen → yen → $ → $T
+    out.push({ date: d, value: fedT + ecbT + bojT });
+  }
+  return out.length ? out : null;
+}
+async function fetchGliQuote() {
+  return indicatorQuoteFromSeries(await buildGliSeries(), 'gli');
+}
+async function fetchGliHistory(range) {
+  return indicatorHistoryFromSeries(await buildGliSeries(), range);
+}
+// 0–100 market-mood gauge from the VIX: low volatility → greed, high → fear.
+// Anchored so VIX ~13 ≈ 72 (greed), ~20 ≈ neutral, ~35 ≈ deep fear. A
+// transparent proxy for the popular Fear & Greed gauge using data we already
+// fetch reliably.
+function vixToMood(vix) {
+  if (vix == null || !isFinite(vix)) return null;
+  return Math.max(2, Math.min(98, Math.round(72 - 2.76 * (vix - 13))));
+}
+async function fetchVixMoodQuote() {
+  const q = await fetchQuote('^VIX', 'US');
+  if (!q) return null;
+  const price = vixToMood(q.price);
+  if (price == null) return null;
+  const prevClose = vixToMood(q.prevClose);
+  const pc = prevClose != null ? prevClose : price;
+  return {
+    price, prevClose: pc,
+    change: price - pc,
+    changePct: pc !== 0 ? (price - pc) / pc * 100 : 0,
+    currency: 'USD', marketState: q.marketState || 'UNKNOWN',
+    vix: q.price, fetchedAt: Date.now(), source: 'vixmood'
+  };
+}
+async function fetchVixMoodHistory(range) {
+  const h = await fetchHistory('^VIX', 'US', range);
+  if (!h || !Array.isArray(h.points)) return null;
+  const points = h.points.map(p => ({ t: p.t, p: vixToMood(p.p), session: p.session }))
+                         .filter(p => p.p != null);
+  return points.length >= 2 ? { ...h, points } : null;
+}
+// Dispatch a non-Yahoo indicator quote based on its catalog `source`.
+async function fetchIndicatorQuote(cat) {
+  if (cat.source === 'fred') return fetchFredIndicatorQuote(cat);
+  if (cat.source === 'gli') return fetchGliQuote();
+  if (cat.source === 'vixmood') return fetchVixMoodQuote();
+  return null;
+}
+async function fetchIndicatorHistory(cat, range) {
+  if (cat.source === 'fred') return fetchFredIndicatorHistory(cat, range);
+  if (cat.source === 'gli') return fetchGliHistory(range);
+  if (cat.source === 'vixmood') return fetchVixMoodHistory(range);
+  return null;
+}
 async function fetchQuote(ticker, market) {
+  // Macro indicators sourced outside Yahoo (FRED / liquidity proxy / VIX mood)
+  // route here before the Yahoo path. Yahoo-native indicators (^TNX, DXY, ^DJT)
+  // carry no `source` and fall through to the normal fetch below.
+  const _indCat = RIBBON_CATALOG_MAP[priceKey(market, ticker)];
+  if (_indCat && _indCat.source) return fetchIndicatorQuote(_indCat);
   // Two ranges in parallel-of-attempts: 5d for daily prevClose context, 1d/1m
   // for intraday freshness on actively-traded sessions. We try 5d first because
   // its daily bars feed derivePrevClose; if Yahoo's regularMarketTime on that
@@ -862,6 +1118,8 @@ function parseHistoryResult(result, ticker, market, r) {
   return { points, range: r, fetchedAt: Date.now(), regularStart, regularEnd };
 }
 async function fetchHistory(ticker, market, range) {
+  const _indCat = RIBBON_CATALOG_MAP[priceKey(market, ticker)];
+  if (_indCat && _indCat.source) return fetchIndicatorHistory(_indCat, range || '1y');
   const sym = yahooSymbol(ticker, market);
   const r = range || '1y';
   const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === '1y') ? '1d' : '1wk');
@@ -1610,6 +1868,31 @@ function fmtSigned(n, market) {
 function fmtNum(n, decimals = 2) {
   if (n == null || !isFinite(n)) return '—';
   return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+// Returns the catalog descriptor for a macro/market indicator (those carrying a
+// `unit`), or null for ordinary stocks. `unit` is the single flag that flips a
+// detail card into "indicator" mode.
+function indicatorFor(market, ticker) {
+  const c = RIBBON_CATALOG_MAP[priceKey(market, ticker)];
+  return (c && c.unit) ? c : null;
+}
+// Unit-aware value formatter for indicators: yields/CPI as "4.45%", DXY/DJT as
+// "98.50"/"16,120", Global Liquidity as "$18.05T", payrolls as "+172K", and the
+// Fear & Greed score as a bare 0–100 integer.
+function fmtIndicator(cat, v, opts) {
+  if (v == null || !isFinite(v)) return '—';
+  const d = cat && cat.decimals != null ? cat.decimals : 2;
+  const signed = opts && opts.signed;
+  const sign = v > 0 ? '+' : (v < 0 ? '−' : '');
+  const abs = Math.abs(v);
+  switch (cat && cat.unit) {
+    case 'pct':    return (signed ? sign : (v < 0 ? '−' : '')) + abs.toFixed(d) + '%';
+    case 'score':  return (signed ? sign : '') + String(Math.round(abs));
+    case 'usd_t':  return (signed ? sign : (v < 0 ? '−' : '')) + '$' + abs.toFixed(d) + 'T';
+    case 'k_jobs': return (signed ? sign : (v < 0 ? '−' : '')) + abs.toLocaleString('en-US', { maximumFractionDigits: 0 }) + 'K';
+    case 'index':  return (signed ? sign : (v < 0 ? '−' : '')) + abs.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    default:       return (signed ? sign : (v < 0 ? '−' : '')) + fmtNum(abs, d);
+  }
 }
 function timeAgo(dateStr) {
   try {
@@ -3124,14 +3407,23 @@ function App() {
     return loadFundamentalsRaw(`${market}:${ticker}`, () => fetchFundamentals(ticker, market, info?.name, perplexityKey));
   }, [loadFundamentalsRaw, perplexityKey]);
   const openDetail = (ticker, market, opts) => {
+    const mkt = market || 'US';
     setSelected({
       ticker,
-      market: market || 'US',
+      market: mkt,
       openAlerts: !!(opts && opts.openAlerts)
     });
-    loadNews(ticker, market || 'US');
-    loadHistory(ticker, market || 'US', '1y');
-    loadFundamentals(ticker, market || 'US');
+    // Macro/market indicators show a chart + explanation + price triggers, but
+    // no company news or fundamentals — so skip those fetches and prefetch the
+    // indicator's preferred chart range instead of the stock default.
+    const ind = indicatorFor(mkt, ticker);
+    if (ind) {
+      loadHistory(ticker, mkt, ind.defaultRange || '1y');
+    } else {
+      loadNews(ticker, mkt);
+      loadHistory(ticker, mkt, '1y');
+      loadFundamentals(ticker, mkt);
+    }
   };
   const views = {
     dashboard: React.createElement(DashboardView, {
@@ -3281,7 +3573,8 @@ function App() {
   })))), React.createElement(Hero, {
     prices: prices,
     ribbonItems: ribbonItems,
-    ribbonMode: ribbonMode
+    ribbonMode: ribbonMode,
+    onOpenDetail: openDetail
   }), React.createElement("nav", {
     className: "nav",
     ref: navRef
@@ -3413,12 +3706,16 @@ function Hero(_ref4) {
   let {
     prices,
     ribbonItems,
-    ribbonMode
+    ribbonMode,
+    onOpenDetail
   } = _ref4;
   const ribbonScrollRef = useRef(null);
   const ribbonAnimRef = useRef(null);
   const ribbonOffsetRef = useRef(0);
   const ribbonDragRef = useRef(null);
+  // Tracks whether the last touch interaction was a drag (scrub) rather than a
+  // tap, so dragging the marquee never accidentally opens a card on release.
+  const ribbonMovedRef = useRef(false);
 
   useEffect(() => {
     if (ribbonMode !== 'marquee') return;
@@ -3445,6 +3742,7 @@ function Hero(_ref4) {
   const onRibbonTouchStart = (e) => {
     const touch = e.touches[0];
     if (!touch) return;
+    ribbonMovedRef.current = false;
     ribbonDragRef.current = { startX: touch.clientX, startOffset: ribbonOffsetRef.current };
   };
   const onRibbonTouchMove = (e) => {
@@ -3453,12 +3751,17 @@ function Hero(_ref4) {
     const touch = e.touches[0];
     if (!touch) return;
     const dx = touch.clientX - drag.startX;
+    if (Math.abs(dx) > 6) ribbonMovedRef.current = true;
     ribbonOffsetRef.current = drag.startOffset - dx;
     const el = ribbonScrollRef.current;
     if (el) el.style.transform = `translateX(-${ribbonOffsetRef.current}px)`;
   };
   const onRibbonTouchEnd = () => { ribbonDragRef.current = null; };
 
+  const openPill = (cat) => {
+    if (ribbonMovedRef.current) return; // a drag, not a tap — don't open a card
+    if (onOpenDetail) onOpenDetail(cat.ticker, cat.market);
+  };
   const renderPill = (key, suffix) => {
     const cat = RIBBON_CATALOG_MAP[key];
     if (!cat) return null;
@@ -3466,9 +3769,19 @@ function Hero(_ref4) {
     const has = !!quote;
     const up = has && quote.changePct >= 0;
     const colorUp = cat.invertColor ? !up : up;
-    return React.createElement("div", { key: key + (suffix || ''), className: "ribbon-pill" },
+    const valStr = !has ? '—'
+      : (cat.unit ? fmtIndicator(cat, quote.price)
+                  : quote.price.toLocaleString('en-US', { minimumFractionDigits: cat.decimals, maximumFractionDigits: cat.decimals }));
+    return React.createElement("div", {
+      key: key + (suffix || ''),
+      className: "ribbon-pill ribbon-pill-tappable",
+      role: "button", tabIndex: 0,
+      title: cat.label + ' — tap for chart, info & alerts',
+      onClick: () => openPill(cat),
+      onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPill(cat); } }
+    },
       React.createElement("span", { className: "ribbon-pill-label" }, cat.short),
-      React.createElement("span", { className: "ribbon-pill-val" }, has ? quote.price.toLocaleString('en-US', { minimumFractionDigits: cat.decimals, maximumFractionDigits: cat.decimals }) : '—'),
+      React.createElement("span", { className: "ribbon-pill-val" }, valStr),
       React.createElement("span", { className: `ribbon-pill-chg ${colorUp ? 'up' : 'down'}` },
         has ? (quote.changePct >= 0 ? '+' : '') + quote.changePct.toFixed(2) + '%' : ''
       )
@@ -8274,13 +8587,16 @@ function OverviewView(_ref1) {
   }))));
 }
 function PriceChart(_refChart) {
-  let { history, loading, range, onRangeChange, currency, quote } = _refChart;
+  let { history, loading, range, onRangeChange, currency, quote, indicator, rangeKeys } = _refChart;
   const [hover, setHover] = useState(null);
   const [sel, setSel] = useState(null);
   const svgRef = useRef(null);
   const geomRef = useRef({ len: 0, W: 600, PL: 2, PR: 2, chartW: 596 });
   const sym = ({ ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' })[currency] || '$';
-  const ranges = [
+  // Axis/scrub value formatter: indicators print in their own unit (e.g.
+  // "4.45%", "$18.05T", "20"); ordinary prices keep the currency symbol.
+  const vfmt = indicator ? (v => fmtIndicator(indicator, v)) : (v => sym + v.toFixed(2));
+  const allRanges = [
     { key: '1d', label: '1D' },
     { key: '5d', label: '1W' },
     { key: '1mo', label: '1M' },
@@ -8290,6 +8606,11 @@ function PriceChart(_refChart) {
     { key: '5y', label: '5Y' },
     { key: 'max', label: 'Max' }
   ];
+  // Indicators with sparse (monthly/weekly) data restrict the range bar to the
+  // windows that actually have enough points to chart.
+  const ranges = (rangeKeys && rangeKeys.length)
+    ? allRanges.filter(r => rangeKeys.includes(r.key))
+    : allRanges;
   const rangeBar = React.createElement("div", { className: "chart-ranges" },
     ranges.map(r => React.createElement("button", {
       key: r.key,
@@ -8565,7 +8886,7 @@ function PriceChart(_refChart) {
           };
         })()
       },
-        React.createElement("div", { className: "mono" }, sym + hoverP.toFixed(2)),
+        React.createElement("div", { className: "mono" }, vfmt(hoverP)),
         React.createElement("div", { className: "chart-tooltip-date" }, (() => {
           const d = new Date(points[hoverIdx].t);
           if (range === '1d') {
@@ -8622,12 +8943,12 @@ function PriceChart(_refChart) {
       React.createElement("div", { className: "chart-range-stats" },
         baseline != null ? React.createElement(React.Fragment, null,
           React.createElement("span", { className: "chart-sum-label" }, 'Prev close'),
-          React.createElement("span", { className: "mono" }, sym + baseline.toFixed(2)),
+          React.createElement("span", { className: "mono" }, vfmt(baseline)),
           React.createElement("span", { className: "chart-sum-label", style: { marginLeft: 10 } }, 'High')
         ) : React.createElement("span", { className: "chart-sum-label" }, 'High'),
-        React.createElement("span", { className: "mono" }, sym + max.toFixed(2)),
+        React.createElement("span", { className: "mono" }, vfmt(max)),
         React.createElement("span", { className: "chart-sum-label", style: { marginLeft: 10 } }, 'Low'),
-        React.createElement("span", { className: "mono" }, sym + min.toFixed(2))
+        React.createElement("span", { className: "mono" }, vfmt(min))
       )
     )
   );
@@ -8909,6 +9230,63 @@ function WatchlistControl(_refWL) {
         React.createElement("span", { className: "wl-list-name" }, "Remove from watchlist")) : null) : null
   );
 }
+// Friendly "as of" date for an indicator reading. FRED monthly series anchor to
+// the 1st of the month, so those read as "May 2026"; daily/weekly read in full.
+function fmtIndicatorAsOf(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return dateStr;
+  return d.getUTCDate() === 1
+    ? d.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+// The big value + change readout for an indicator card (unit-aware; no currency
+// symbol). Shows the previous reading and, for released data (FRED/liquidity),
+// the "as of" date so it's clear how fresh the number is.
+function IndicatorValueBlock(_refIVB) {
+  let { indicator, quote } = _refIVB;
+  if (!quote) return React.createElement("div", { className: "price-block-wrap" },
+    React.createElement("span", { className: "price price-xl mono text-dim" }, "—"));
+  const up = quote.change >= 0;
+  const flat = !quote.change;
+  const hasAsOf = !!quote.asOf;
+  const hasPrev = typeof quote.prevClose === 'number' && isFinite(quote.prevClose);
+  return React.createElement("div", { className: "price-block-wrap" },
+    React.createElement("div", { className: "flex items-baseline gap-2" },
+      React.createElement("span", { className: "price price-xl" }, fmtIndicator(indicator, quote.price)),
+      !flat && React.createElement("span", { className: `chg ${up ? 'up' : 'down'}` },
+        up ? "▲" : "▼", " ", fmtIndicator(indicator, quote.change, { signed: true }))
+    ),
+    (hasPrev || hasAsOf) && React.createElement("div", { className: "daily-block" },
+      React.createElement("div", { className: "daily-col" },
+        hasPrev && React.createElement("div", { className: "daily-row prevclose-row" },
+          React.createElement("span", { className: "daily-label" }, hasAsOf ? "Previous" : "Prev close"),
+          React.createElement("span", { className: "daily-val mono prevclose-val" }, fmtIndicator(indicator, quote.prevClose))),
+        hasAsOf && React.createElement("div", { className: "daily-row prevclose-row" },
+          React.createElement("span", { className: "daily-label" }, "As of"),
+          React.createElement("span", { className: "daily-val mono prevclose-val" }, fmtIndicatorAsOf(quote.asOf)))
+      ))
+  );
+}
+// The plain-English "deep dive" for an indicator: what it is, how to read it,
+// and a small quick-reference of typical levels.
+function IndicatorAbout(_refIA) {
+  let { indicator, info } = _refIA;
+  if (!info) return null;
+  return React.createElement("div", { className: "indicator-about" },
+    React.createElement("div", { className: "indicator-about-head" },
+      React.createElement(Icon, { name: "gauge", size: 14 }),
+      React.createElement("span", null, "What is ", indicator.label, "?")),
+    React.createElement("p", { className: "indicator-about-what" }, info.what),
+    React.createElement("div", { className: "indicator-about-sub" }, "How to read it"),
+    React.createElement("p", { className: "indicator-about-interpret" }, info.interpret),
+    info.levels && info.levels.length > 0 && React.createElement("div", { className: "indicator-levels" },
+      info.levels.map((lv, i) => React.createElement("div", { key: i, className: "indicator-level" },
+        React.createElement("span", { className: "indicator-level-label" }, lv.label),
+        React.createElement("span", { className: "indicator-level-range" }, lv.range)))),
+    React.createElement("div", { className: "indicator-about-note" },
+      "Educational only — not investment advice."));
+}
 function DetailModal(_ref10) {
   let {
     selected,
@@ -8950,29 +9328,45 @@ function DetailModal(_ref10) {
   }, [ticker, market]);
   const quote = liveQuote || fetchedQuote;
   const pos = positions ? positions.find(p => p.ticker === ticker && p.market === market) : null;
+  // Macro/market indicators (10Y yield, DXY, CPI, Fear & Greed, …) reuse this
+  // card but in "indicator mode": unit-aware value, a plain-English explanation,
+  // and price triggers — no position, watchlist, fundamentals or news.
+  const indicator = indicatorFor(market, ticker);
+  const isIndicator = !!indicator;
+  const info = isIndicator ? INDICATOR_INFO[indicator.key] : null;
+  // The number a fresh price-trigger pre-fills to (indicator unit precision for
+  // indicators, 2dp for ordinary prices).
+  const defaultTarget = (q) => q ? q.price.toFixed(isIndicator ? indicator.decimals : 2) : '';
   // Name resolution prefers the name saved on the holding, then the live quote /
   // curated lists. Null (never the bare ticker) so the subtitle doesn't echo the
   // ticker that's already the card's heading.
-  const displayName = (pos && pos.name) ? prettyName(pos.name) : (resolveTickerName(ticker, market, quote) || null);
+  const displayName = isIndicator ? indicator.label
+    : ((pos && pos.name) ? prettyName(pos.name) : (resolveTickerName(ticker, market, quote) || null));
+  const headTitle = isIndicator ? indicator.short : ticker;
   const ccy = marketCurrency(market);
+  // Price-trigger formatting: indicators show their own unit (e.g. "4.45%",
+  // "F&G 20", "$18.05T") instead of a currency symbol.
+  const alertPrefix = isIndicator ? (indicator.unit === 'usd_t' ? '$' : '') : (CURRENCY_SYMBOLS[ccy] || '$');
+  const fmtAlertTarget = (v) => isIndicator ? fmtIndicator(indicator, v) : ((CURRENCY_SYMBOLS[ccy] || '$') + v.toFixed(2));
   const [dir, setDir] = useState('above');
-  const [target, setTarget] = useState(quote ? quote.price.toFixed(2) : '');
+  const [target, setTarget] = useState(defaultTarget(quote));
   const [note, setNote] = useState('');
-  const [range, setRange] = useState('1y');
+  const [range, setRange] = useState(isIndicator ? (indicator.defaultRange || '1y') : '1y');
   const [showAlertForm, setShowAlertForm] = useState(!!selected.openAlerts);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
   const history = historyByTicker ? historyByTicker[priceKey(market, ticker) + ':' + range] : null;
   useEffect(() => {
-    if (quote && !target) setTarget(quote.price.toFixed(2));
+    if (quote && !target) setTarget(defaultTarget(quote));
   }, [quote]);
   useEffect(() => {
     if (onLoadHistory) onLoadHistory(range);
   }, [range]);
   const submitAlert = () => {
     const t = parseDecimal(target);
-    if (!isFinite(t) || t <= 0) return;
+    if (!isFinite(t)) return;
+    if (!isIndicator && t <= 0) return; // prices are positive; indicator targets can be 0+
     onAddAlert(ticker, market, dir, t, note);
     setNote('');
   };
@@ -8993,11 +9387,11 @@ function DetailModal(_ref10) {
     className: "modal-header"
   }, React.createElement("div", { style: { minWidth: 0 } }, React.createElement("div", {
     className: "modal-title"
-  }, ticker), React.createElement("div", {
+  }, headTitle), React.createElement("div", {
     className: "modal-subtitle"
   }, displayName ? React.createElement(React.Fragment, null, displayName, " \xB7 ") : null, React.createElement("span", {
     className: "market-badge"
-  }, market))), React.createElement("button", {
+  }, isIndicator ? "Indicator" : market))), React.createElement("button", {
     className: "modal-close",
     onClick: onClose,
     "aria-label": "Close"
@@ -9007,7 +9401,9 @@ function DetailModal(_ref10) {
     className: "modal-body"
   }, 
     React.createElement("div", { style: { position: 'relative' } },
-      React.createElement(PriceBlock, { quote: quote, size: "xl", showDailyRow: true, market: market }),
+      isIndicator
+        ? React.createElement(IndicatorValueBlock, { indicator: indicator, quote: quote })
+        : React.createElement(PriceBlock, { quote: quote, size: "xl", showDailyRow: true, market: market }),
       React.createElement("button", {
         className: "detail-alert-bell",
         onClick: () => {
@@ -9015,7 +9411,7 @@ function DetailModal(_ref10) {
           // watchlist bell (openAlertPopup): default to "above" and pre-fill
           // the current price so it's consistent across the app.
           setDir('above');
-          setTarget(quote ? quote.price.toFixed(2) : '');
+          setTarget(defaultTarget(quote));
           setNote('');
           setShowAlertForm(true);
         },
@@ -9024,14 +9420,18 @@ function DetailModal(_ref10) {
         alerts.length > 0 && React.createElement("span", { className: "detail-alert-count" }, alerts.length))
     ),
 
-    onAddWatch ? React.createElement(WatchlistControl, {
+    // Plain-English explanation — the "deep dive" that helps a retail investor
+    // understand what this indicator means and how to read it.
+    info && React.createElement(IndicatorAbout, { indicator: indicator, info: info }),
+
+    !isIndicator && onAddWatch ? React.createElement(WatchlistControl, {
       ticker: ticker, market: market, name: displayName,
       watchlist: watchlist, watchlistGroups: watchlistGroups,
       onAddWatch: onAddWatch, onRemoveWatch: onRemoveWatch,
       onMoveWatch: onMoveWatch, onAddWatchGroup: onAddWatchGroup
     }) : null,
 
-    pos && quote && (() => {
+    !isIndicator && pos && quote && (() => {
       // A plain top-to-bottom list reads far more clearly than a 3×2 grid:
       // label on the left, value on the right, one fact per line. The two
       // figures users care about most — what they paid vs. what it's worth now —
@@ -9062,21 +9462,23 @@ function DetailModal(_ref10) {
       );
     })(),
 
-    quote && quote.yearHigh ? React.createElement("div", {
+    !isIndicator && quote && quote.yearHigh ? React.createElement("div", {
       className: "ath-strip"
     }, React.createElement("span", { className: "eyebrow" }, "52W High"),
       React.createElement("span", { className: "mono" }, fmt(quote.yearHigh, market)),
       React.createElement("span", {
         className: `mono ${quote.price >= quote.yearHigh * 0.995 ? 'text-up' : 'text-muted'}`
       }, quote.price >= quote.yearHigh * 0.995 ? 'At high' : ((quote.price - quote.yearHigh) / quote.yearHigh * 100).toFixed(2) + '%')) : null,
-    React.createElement(EarningsBadge, { fundamentals: fundamentals }),
+    !isIndicator && React.createElement(EarningsBadge, { fundamentals: fundamentals }),
     React.createElement(PriceChart, {
       history: history, loading: history?.loading,
       range: range, onRangeChange: setRange,
       currency: quote?.currency || ccy,
-      quote: quote
+      quote: quote,
+      indicator: indicator,
+      rangeKeys: isIndicator ? indicator.chartRanges : null
     }),
-    React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market, fxRates: fxRates }),
+    !isIndicator && React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market, fxRates: fxRates }),
 
     // Price alerts open as a centered popup — the same dialog the watchlist
     // bell shows — for a consistent experience across the app. Rendered through
@@ -9088,8 +9490,8 @@ function DetailModal(_ref10) {
         React.createElement("div", { className: "alert-popup-panel" },
           React.createElement("div", { className: "alert-popup-header" },
             React.createElement("div", null,
-              React.createElement("div", { className: "modal-title" }, ticker),
-              React.createElement("div", { className: "modal-subtitle" }, "Price alerts \xB7 ", React.createElement("span", { className: "market-badge" }, market))),
+              React.createElement("div", { className: "modal-title" }, headTitle),
+              React.createElement("div", { className: "modal-subtitle" }, "Price alerts \xB7 ", React.createElement("span", { className: "market-badge" }, isIndicator ? "Indicator" : market))),
             React.createElement("button", { className: "modal-close", onClick: () => setShowAlertForm(false), "aria-label": "Close" },
               React.createElement(Icon, { name: "x" }))),
           alerts.length > 0 && React.createElement("div", {
@@ -9098,7 +9500,7 @@ function DetailModal(_ref10) {
             key: a.id, className: "alert-item"
           }, React.createElement("div", null,
             React.createElement("div", { className: "mono text-sm" },
-              a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, market)),
+              a.direction === 'above' ? '↑ above ' : '↓ below ', isIndicator ? fmtAlertTarget(a.targetPrice) : fmt(a.targetPrice, market)),
             a.note && React.createElement("div", { className: "text-xs text-dim mt-1" }, a.note)),
             React.createElement("button", {
               className: "btn btn-ghost btn-xs",
@@ -9121,11 +9523,11 @@ function DetailModal(_ref10) {
             ),
             React.createElement("div", { className: "alert-target-row" },
               React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
-                React.createElement("span", { className: "prefix" }, CURRENCY_SYMBOLS[ccy] || '$'),
+                React.createElement("span", { className: "prefix" }, alertPrefix),
                 React.createElement("input", {
                   type: "text", inputMode: "decimal",
                   autoComplete: "off", autoCorrect: "off", spellCheck: false,
-                  placeholder: "Target price", value: target,
+                  placeholder: isIndicator ? "Target value" : "Target price", value: target,
                   onChange: e => setTarget(sanitizeDecimalInput(e.target.value)),
                   className: "alert-target-input"
                 }))),
@@ -9139,11 +9541,11 @@ function DetailModal(_ref10) {
               onClick: submitAlert
             }, React.createElement(Icon, { name: "plus" }),
               " Alert when ", dir === 'above' ? 'above ' : 'below ',
-              target && isFinite(parseDecimal(target)) ? (CURRENCY_SYMBOLS[ccy] || '$') + parseDecimal(target).toFixed(2) : 'target')))),
+              target && isFinite(parseDecimal(target)) ? fmtAlertTarget(parseDecimal(target)) : 'target')))),
       document.body
     ),
 
-    React.createElement("div", null, React.createElement("div", {
+    !isIndicator && React.createElement("div", null, React.createElement("div", {
       className: "eyebrow",
       style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' }
     }, React.createElement("span", null, "News"), news?.loading && React.createElement("span", {
@@ -10938,23 +11340,33 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               React.createElement("option", { value: "marquee" }, "Scrolling ticker"))
           ),
           React.createElement("div", { className: "settings-section-title mb-2" }, "Select items"),
-          React.createElement("div", { className: "settings-row-desc mb-3" }, "Tap to toggle. Drag is not supported — items appear in catalog order."),
-          React.createElement("div", { className: "ribbon-catalog-grid" },
-            RIBBON_CATALOG.map(item => {
-              const active = ribbonItems.includes(item.key);
-              return React.createElement("button", {
-                key: item.key,
-                className: `ribbon-catalog-item ${active ? 'active' : ''}`,
-                onClick: () => {
-                  if (active) onSetRibbonItems(ribbonItems.filter(k => k !== item.key));
-                  else onSetRibbonItems([...ribbonItems, item.key]);
-                }
-              },
-                React.createElement("span", { className: "ribbon-catalog-short" }, item.short),
-                React.createElement("span", { className: "ribbon-catalog-name" }, item.label)
-              );
-            })
-          )
+          React.createElement("div", { className: "settings-row-desc mb-3" }, "Tap to toggle. Open any item from the ribbon for its chart, a plain-English explanation, and price alerts."),
+          [
+            { id: 'markets', label: 'Indices, commodities & crypto' },
+            { id: 'macro',   label: 'Macro & rates' }
+          ].map(grp => {
+            const items = RIBBON_CATALOG.filter(i => (i.group || 'markets') === grp.id);
+            if (!items.length) return null;
+            return React.createElement(React.Fragment, { key: grp.id },
+              React.createElement("div", { className: "ribbon-catalog-subhead" }, grp.label),
+              React.createElement("div", { className: "ribbon-catalog-grid" },
+                items.map(item => {
+                  const active = ribbonItems.includes(item.key);
+                  return React.createElement("button", {
+                    key: item.key,
+                    className: `ribbon-catalog-item ${active ? 'active' : ''}`,
+                    onClick: () => {
+                      if (active) onSetRibbonItems(ribbonItems.filter(k => k !== item.key));
+                      else onSetRibbonItems([...ribbonItems, item.key]);
+                    }
+                  },
+                    React.createElement("span", { className: "ribbon-catalog-short" }, item.short),
+                    React.createElement("span", { className: "ribbon-catalog-name" }, item.label)
+                  );
+                })
+              )
+            );
+          })
         ),
         activeSection === 'fx' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "flex justify-between items-center mb-3" },
