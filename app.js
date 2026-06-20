@@ -4423,6 +4423,15 @@ function DashboardView(_ref6) {
 //            avg cost as a small subheading, plus inline Buy more / Sell.
 //  • Middle — total gain/loss for the holding: the amount on top, the % below.
 //  • Right — current holding value on top, the day's movement underneath.
+// Subtle column header sitting above a holdings list, labelling the three
+// row zones: Holding (stock name) · P/L · Current value. Shared by the
+// Holdings (per-market) and TFSA lists so both read identically.
+function HoldingsListHead() {
+  return React.createElement("div", { className: "holding-list-head" },
+    React.createElement("span", { className: "hlh-name" }, "Holding"),
+    React.createElement("span", { className: "hlh-gl" }, "P/L"),
+    React.createElement("span", { className: "hlh-val" }, "Current value"));
+}
 function HoldingRow(_refHR) {
   let { position: p, market, quote: q, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
   // Heading is the company/instrument name. Resolve it from every source — the
@@ -4463,7 +4472,7 @@ function HoldingRow(_refHR) {
       React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmt(marketValue, market) : "—"),
       dayPct != null ? React.createElement("div", {
         className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
-      }, (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
+      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
     // ACTIONS — full-width strip beneath the three zones: the Buy/Sell/Edit cluster
     // on the left (identically sized on every card), with Avg cost on the right.
     React.createElement("div", { className: "row-actions" },
@@ -4518,7 +4527,7 @@ function CurrentView(_ref7) {
     }
     return React.createElement("div", null, React.createElement("div", {
       className: "eyebrow"
-    }, "Your ", tabLabel(market), " positions"), React.createElement("div", {
+    }, "Your ", tabLabel(market), " positions"), React.createElement(HoldingsListHead, null), React.createElement("div", {
       className: "row-list"
     }, rows.map(p => React.createElement(HoldingRow, {
       key: p.id,
@@ -6526,7 +6535,7 @@ function WatchlistView(_ref8) {
               hasDay
                 ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
                     React.createElement("div", { className: "watch-today-pct mono" },
-                      (dayUp ? '▲ ' : '▼ ') + (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
+                      (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
                 : React.createElement("div", { className: "watch-today" }))));
       })),
 
@@ -7982,7 +7991,9 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
           React.createElement(Icon, { name: "briefcase", size: 40 }),
           React.createElement("h3", null, "No TFSA holdings"),
           React.createElement("p", null, "Add JSE-listed ETFs and equities for your Tax-Free Savings Account (or use Import on the Holdings tab)."))
-      : React.createElement("div", { className: "row-list" },
+      : React.createElement(React.Fragment, null,
+          React.createElement(HoldingsListHead, null),
+          React.createElement("div", { className: "row-list" },
           positions.map(p => React.createElement(HoldingRow, {
             key: p.id,
             position: p,
@@ -7992,7 +8003,7 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
             onBuyPosition: onBuyPosition,
             onSellPosition: onSellPosition,
             onEditPosition: onEditPosition
-          }))),
+          })))),
     // ── 3. Contribution planner — collapsible dropdown ──
     hasPositions ? React.createElement("div", { style: { marginTop: 16 } },
       React.createElement(Collapsible, {
