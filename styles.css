@@ -372,7 +372,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .kv-val.up { color: var(--emerald); }
 .kv-val.down { color: var(--rose); }
 
-/* P&L rows */
+/* P/L rows */
 .pnl-row {
   display: flex; align-items: baseline; gap: 10px;
   padding-top: 10px; border-top: 1px solid var(--border); margin-top: 10px;
@@ -1339,7 +1339,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   letter-spacing: 0.02em;
 }
 .pos-line-val { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--text); }
-/* Divider before the value/P&L block carries a touch more weight. */
+/* Divider before the value/P/L block carries a touch more weight. */
 .pos-line-sep { border-top-color: var(--text-dim); margin-top: 2px; }
 .pos-line-strong .pos-line-label { color: var(--text); font-weight: 600; }
 .pos-line-strong .pos-line-val { font-size: 15px; }
@@ -3015,6 +3015,26 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   background-color: color-mix(in srgb, var(--amber, #f59e0b) 9%, var(--bg-raised));
 }
 
+/* ── Sector breakdown editor (ETF/fund look-through, in the position modal) ── */
+.sector-split-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.sector-split-row { display: flex; align-items: center; gap: 8px; }
+.sector-split-sector { flex: 1; min-width: 0; }
+.sector-split-weight { width: 92px; flex-shrink: 0; }
+.sector-split-weight input { width: 100%; }
+.sector-split-del { width: 34px; height: 34px; flex-shrink: 0; color: var(--text-dim); }
+.sector-split-del:hover { color: var(--rose); }
+.sector-split-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sector-split-sum {
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  color: var(--amber, #f59e0b);
+  padding: 3px 9px; border-radius: 6px;
+  background: color-mix(in srgb, var(--amber, #f59e0b) 12%, transparent);
+}
+.sector-split-sum.ok {
+  color: var(--emerald);
+  background: color-mix(in srgb, var(--emerald) 12%, transparent);
+}
+
 /* Discard-import confirmation overlaying the whole modal */
 .import-confirm {
   position: fixed; inset: 0; z-index: 60;
@@ -3325,8 +3345,18 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .collapse-chevron.open { transform: rotate(90deg); }
 .collapse-body { padding: 4px 16px 16px; border-top: 1px solid var(--border); }
 
-/* ── TFSA holdings: account value/cost/P&L beneath the chart ── */
+/* ── TFSA holdings: account value/cost/P/L beneath the chart ── */
 .tfsa-holdings-stats { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+/* P/L cell: big currency figure with a smaller % pill underneath (matches the
+   dashboard Growth Tracker return boxes). */
+.tfsa-pnl-val { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.tfsa-pnl-pct {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+  padding: 2px 7px; border-radius: 6px; align-self: flex-start;
+}
+.tfsa-pnl-pct.up { color: var(--emerald); background: color-mix(in srgb, var(--emerald) 12%, transparent); }
+.tfsa-pnl-pct.down { color: var(--rose); background: color-mix(in srgb, var(--rose) 12%, transparent); }
 
 /* ── TFSA contribution room (annual + lifetime limit bars) ── */
 .tfsa-room-card { padding: 16px; }
@@ -3398,6 +3428,50 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .tfsa-dep-edit-fields .tfsa-dep-amt { flex: 1; }
 .tfsa-dep-edit-fields > input { flex: 1; min-width: 0; }
 .tfsa-dep-edit-note { width: 100%; }
+
+/* ── Deposit log: multi-select / bulk delete ── */
+.tfsa-dep-log-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 0 6px; margin-bottom: 2px;
+}
+.tfsa-dep-log-title {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--mono);
+}
+.tfsa-dep-sel-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 600; color: var(--blue);
+  background: none; border: none; padding: 4px 2px; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.tfsa-dep-sel-link:active { opacity: 0.6; }
+.tfsa-dep-sel-info { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.tfsa-dep-sel-count { font-size: 13px; font-weight: 700; color: var(--text); }
+.tfsa-dep-sel-sum { font-family: var(--mono); font-size: 12px; color: var(--rose); font-weight: 600; }
+.tfsa-dep-sel-quick { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+/* Rows become tappable toggles in select mode, with a leading check box. */
+.tfsa-dep-row.selectable {
+  cursor: pointer; justify-content: flex-start;
+  padding-left: 4px; padding-right: 4px; border-radius: 8px;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s;
+}
+.tfsa-dep-row.selectable .tfsa-dep-main { flex: 1; }
+.tfsa-dep-row.selectable:active { background: var(--bg-elev); }
+.tfsa-dep-row.selectable.selected { background: color-mix(in srgb, var(--blue) 9%, transparent); }
+.tfsa-dep-check {
+  flex-shrink: 0; width: 20px; height: 20px; margin-right: 10px;
+  border: 1.5px solid var(--border-strong); border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; transition: background 0.12s, border-color 0.12s;
+}
+.tfsa-dep-check.on { background: var(--blue); border-color: var(--blue); }
+.tfsa-dep-sel-actions {
+  display: flex; gap: 8px; margin-top: 12px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.tfsa-dep-sel-actions .btn { flex: 1; }
+.tfsa-dep-sel-actions .btn:disabled { opacity: 0.45; pointer-events: none; }
 
 /* ── Planner toolbar + clearer preset buttons ── */
 .tfsa-bal-inner { padding-top: 4px; }

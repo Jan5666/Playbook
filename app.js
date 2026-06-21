@@ -676,7 +676,7 @@ function parseYahooQuote(result, market) {
     if (postMarketPrice) postMarketPrice = postMarketPrice / divisor;
   }
   // The market the user filed this symbol under is authoritative for the display
-  // currency. Normalise to it so every surface (price, fundamentals, P&L, chart)
+  // currency. Normalise to it so every surface (price, fundamentals, P/L, chart)
   // shows one consistent symbol instead of trusting whatever listing Yahoo
   // resolved a bare ticker to — that mismatch is what made US holdings
   // occasionally render in £/€. Falls back to Yahoo's value for unknown markets.
@@ -2806,6 +2806,21 @@ function usePortfolio(fxRates, toast) {
   // keyed "MARKET:TICKER" → { sector, industry, at }. Persisted so the dashboard
   // allocation stays accurate across reloads without re-fetching.
   const [sectorCache, setSectorCache] = usePersistedState('pb.sectorCache.v1', {});
+  // Per-instrument sector breakdowns for ETFs/funds, keyed "MARKET:TICKER" →
+  // [{ sector, weight }]. When present, the allocation charts split that holding's
+  // value across these sectors (normalised) instead of dumping it into one bucket
+  // — giving a true look-through sector mix. Shared across accounts that hold the
+  // same fund (e.g. a normal + TFSA position). Future AI auto-fills this from the
+  // fund's latest MDD / fact sheet.
+  const [sectorWeights, setSectorWeights] = usePersistedState('pb.sectorWeights.v1', {});
+  const setSectorWeightsFor = (key, weights) => {
+    setSectorWeights(prev => {
+      const next = { ...prev };
+      if (weights && weights.length) next[key] = weights;
+      else delete next[key];
+      return next;
+    });
+  };
   useEffect(() => {
     setPositions(prev => {
       const merged = [];
@@ -3038,6 +3053,15 @@ function usePortfolio(fxRates, toast) {
     setTfsaDeposits(prev => prev.filter(d => d.id !== id));
     toast('Deposit removed');
   };
+  // Bulk-remove several deposits at once (multi-select in the deposit log). The
+  // annual + lifetime counters are derived from the remaining list, so they
+  // recompute automatically once these are gone.
+  const removeTfsaDeposits = (ids) => {
+    const set = new Set(ids || []);
+    if (set.size === 0) return;
+    setTfsaDeposits(prev => prev.filter(d => !set.has(d.id)));
+    toast(set.size === 1 ? 'Deposit removed' : `${set.size} deposits removed`);
+  };
   const addWatch = (ticker, market, name, listId) => {
     ticker = ticker.toUpperCase();
     const list = listId || 'default';
@@ -3117,9 +3141,10 @@ function usePortfolio(fxRates, toast) {
     transactions, setTransactions,
     tfsaDeposits, setTfsaDeposits,
     sectorCache, setSectorCache,
+    sectorWeights, setSectorWeights, setSectorWeightsFor,
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
-    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit,
+    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit, removeTfsaDeposits,
     addWatch, removeWatch, moveWatch, addWatchGroup, renameWatchGroup, removeWatchGroup,
     addAlert, removeAlert
   };
@@ -3264,9 +3289,10 @@ function App() {
     transactions, setTransactions,
     tfsaDeposits, setTfsaDeposits,
     sectorCache, setSectorCache,
+    sectorWeights, setSectorWeights, setSectorWeightsFor,
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
-    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit,
+    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit, removeTfsaDeposits,
     addWatch, removeWatch, moveWatch, addWatchGroup, renameWatchGroup, removeWatchGroup,
     addAlert, removeAlert
   } = usePortfolio(fxRates, toast);
@@ -3599,7 +3625,8 @@ function App() {
       onSetDisplayCurrency: setDisplayCurrency,
       fxRates: fxRates,
       sectorCache: sectorCache,
-      fundamentals: fundamentalsByTicker
+      fundamentals: fundamentalsByTicker,
+      sectorWeights: sectorWeights
     }),
     current: React.createElement(CurrentView, {
       prices: prices,
@@ -3663,9 +3690,11 @@ function App() {
       onAddTfsaDeposit: addTfsaDeposit,
       onUpdateTfsaDeposit: updateTfsaDeposit,
       onRemoveTfsaDeposit: removeTfsaDeposit,
+      onRemoveTfsaDeposits: removeTfsaDeposits,
       fxRates: fxRates,
       sectorCache: sectorCache,
-      fundamentals: fundamentalsByTicker
+      fundamentals: fundamentalsByTicker,
+      sectorWeights: sectorWeights
     }),
     hot: React.createElement(HotTopicsView, {
       hot: hotTopicsCache['hot'],
@@ -3815,6 +3844,10 @@ function App() {
     editId: posModalEditId,
     existing: posModalEditId ? positions.find(p => p.id === posModalEditId) : null,
     defaultMarket: posModalDefaultMarket,
+    initialSectorWeights: (() => {
+      const ex = posModalEditId ? positions.find(p => p.id === posModalEditId) : null;
+      return ex ? (sectorWeights[priceKey(ex.market, ex.ticker)] || null) : null;
+    })(),
     onClose: () => setPosModalOpen(false),
     onSave: (data, quote) => {
       if (posModalEditId) {
@@ -3834,6 +3867,9 @@ function App() {
         const s = DATA.normalizeSector(data.sector);
         if (s && s !== 'Other') setSectorCache(prev => ({ ...prev, [priceKey(data.market, data.ticker)]: { sector: s, industry: data.sector, at: Date.now() } }));
       }
+      // Persist the fund's sector breakdown (keyed by instrument, shared across
+      // accounts holding the same fund). Empty clears it.
+      setSectorWeightsFor(priceKey(data.market, data.ticker), data.sectorWeights || null);
       setPosModalOpen(false);
     }
   }), showImport && React.createElement(ModalBoundary, {
@@ -4391,7 +4427,7 @@ function resolvePositionSector(ticker, market, sectorCache, fundamentals, name) 
 }
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
-function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, availableModes }) {
+function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, availableModes }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
@@ -4419,7 +4455,14 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
       // Pass the name so the resolver's last-resort classifier can place funds /
       // bonds / gold / foreign equities that the ticker maps don't cover.
       const sectorInfo = resolvePositionSector(p.ticker, p.market, sectorCache, fundamentals, nm) || {};
-      posVals.push({ ticker: p.ticker, market: p.market, value: val, name: nm, sector: sectorInfo.sector || 'Other' });
+      // A look-through sector mix for this instrument (ETF/fund), if the user has
+      // set one — used to split the holding across sectors below.
+      const rawW = sectorWeights && sectorWeights[priceKey(p.market, p.ticker)];
+      const splits = Array.isArray(rawW)
+        ? rawW.map(w => ({ sector: w.sector, weight: parseFloat(w.weight) }))
+              .filter(w => w.sector && isFinite(w.weight) && w.weight > 0)
+        : [];
+      posVals.push({ ticker: p.ticker, market: p.market, value: val, name: nm, sector: sectorInfo.sector || 'Other', sectorWeights: splits });
     }
   });
   // Group by mode, and (for the sector view) keep the member holdings per sector
@@ -4428,14 +4471,29 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
   // Members per group key, so a tap on a sector OR a market wedge can open a
   // breakdown of exactly which holdings (and their values) make up that slice.
   const groupMembers = {};
+  const addToGroup = (key, value, member) => {
+    if (!grouped[key]) grouped[key] = { label: key, value: 0, market: member.market, ticker: member.ticker, name: member.name };
+    grouped[key].value += value;
+    (groupMembers[key] = groupMembers[key] || []).push(member);
+  };
   posVals.forEach(pv => {
-    let key;
-    if (mode === 'sector') key = pv.sector;
-    else if (mode === 'market') key = MARKET_LABELS[pv.market] || pv.market;
-    else key = pv.ticker;
-    if (!grouped[key]) grouped[key] = { label: key, value: 0, market: pv.market, ticker: pv.ticker, name: pv.name };
-    grouped[key].value += pv.value;
-    (groupMembers[key] = groupMembers[key] || []).push(pv);
+    if (mode === 'sector') {
+      // ETF/fund with a defined sector mix: split its value across those sectors
+      // (weights normalised) so it shows up proportionally in every wedge it spans.
+      if (pv.sectorWeights && pv.sectorWeights.length) {
+        const totalW = pv.sectorWeights.reduce((s, x) => s + x.weight, 0) || 1;
+        pv.sectorWeights.forEach(sp => {
+          const portion = pv.value * (sp.weight / totalW);
+          if (portion > 0) addToGroup(sp.sector, portion, { ...pv, value: portion, sector: sp.sector });
+        });
+      } else {
+        addToGroup(pv.sector, pv.value, pv);
+      }
+    } else if (mode === 'market') {
+      addToGroup(MARKET_LABELS[pv.market] || pv.market, pv.value, pv);
+    } else {
+      addToGroup(pv.ticker, pv.value, pv);
+    }
   });
   Object.values(groupMembers).forEach(list => list.sort((a, b) => b.value - a.value));
   // Sort by weight, but always sink "Other" to the bottom so it reads as the
@@ -4658,7 +4716,8 @@ function DashboardView(_ref6) {
     onSetDisplayCurrency,
     fxRates,
     sectorCache,
-    fundamentals
+    fundamentals,
+    sectorWeights
   } = _ref6;
   const computeStats = list => {
     let cost = 0, value = 0, hasAllPrices = true;
@@ -4772,7 +4831,7 @@ function DashboardView(_ref6) {
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals })),
+        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
@@ -4806,14 +4865,14 @@ function DashboardView(_ref6) {
               React.createElement(Icon, { name: "chevron", size: 12 }))),
           React.createElement("div", { className: "growth-stat" },
             React.createElement("div", { className: "growth-stat-header" },
-              React.createElement("div", { className: "growth-stat-label" }, "Position P&L"),
+              React.createElement("div", { className: "growth-stat-label" }, "Position P/L"),
               React.createElement("div", { className: "growth-stat-sub" }, "vs. cost basis")),
             currencyGroups.length > 0
               ? currencyGroups.map(g => React.createElement("div", { key: g.code, className: "growth-currency-row" },
                   React.createElement("span", { className: "market-badge" }, g.label),
                   React.createElement("span", { className: `growth-val ${g.pnl >= 0 ? 'up' : 'down'}` }, g.pnl >= 0 ? '+' : '\u2212', fmt(Math.abs(g.pnl), g.fmtMarket)),
                   React.createElement("span", { className: `growth-pct ${g.pnlPct >= 0 ? 'up' : 'down'}` }, g.pnlPct >= 0 ? '+' : '', g.pnlPct.toFixed(1), "%")))
-              : React.createElement("div", { className: "text-dim text-sm", style: { padding: '10px 14px', background: 'var(--bg-elev)', borderRadius: 10 } }, "Add positions to see P&L."),
+              : React.createElement("div", { className: "text-dim text-sm", style: { padding: '10px 14px', background: 'var(--bg-elev)', borderRadius: 10 } }, "Add positions to see P/L."),
             (positions.length > 0 || transactions.length > 0) && React.createElement("button", {
               className: "growth-contrib-total",
               onClick: () => setShowTxHistory(true)
@@ -8207,12 +8266,17 @@ function Collapsible({ title, subtitle, icon, defaultOpen, badge, children, clas
 // The log mixes manual deposits (cash the user reports putting in) with purchase
 // entries auto-appended on every in-app TFSA buy; both count toward the limits and
 // both can be edited or removed to fix mistakes/double-counts.
-function TFSAContributions({ deposits, onAdd, onUpdate, onRemove }) {
+function TFSAContributions({ deposits, onAdd, onUpdate, onRemove, onRemoveMany }) {
   const [adding, setAdding] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(() => ({ amount: '', date: tfsaTodayStr(), note: '' }));
   const [editForm, setEditForm] = useState({ amount: '', date: '', note: '' });
+  // Multi-select mode for the deposit log: lets the user tick several entries
+  // (e.g. "everything from this tax year") and delete them in one go, which
+  // recomputes both the annual and lifetime counters.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
 
   const list = deposits || [];
   const curStart = currentTfsaTaxYearStart();
@@ -8241,6 +8305,26 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove }) {
     if (!isFinite(amt) || amt === 0 || !editForm.date) return;
     onUpdate(editId, { amount: amt, date: editForm.date, note: editForm.note });
     setEditId(null);
+  };
+
+  // ── Multi-select helpers ──
+  const sorted = list.slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const selectedSet = new Set(selectedIds);
+  const selectedTotal = list.reduce((s, d) => s + (selectedSet.has(d.id) ? (d.amount || 0) : 0), 0);
+  const toggleSel = (id) => setSelectedIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
+  const selectThisYear = () => setSelectedIds(list.filter(d => tfsaTaxYearStart(d.date) === curStart).map(d => d.id));
+  const selectAll = () => setSelectedIds(list.map(d => d.id));
+  const clearSel = () => setSelectedIds([]);
+  const enterSelect = () => { setSelectMode(true); setLogOpen(true); setAdding(false); setEditId(null); setSelectedIds([]); };
+  const exitSelect = () => { setSelectMode(false); setSelectedIds([]); };
+  const deleteSelected = () => {
+    if (selectedIds.length === 0) return;
+    const n = selectedIds.length;
+    if (window.confirm(`Remove ${n} deposit${n === 1 ? '' : 's'} (${fmtRand(selectedTotal, 2)}) from your tax-year and lifetime totals?`)) {
+      if (onRemoveMany) onRemoveMany(selectedIds);
+      else selectedIds.forEach(id => onRemove(id));
+      exitSelect();
+    }
   };
 
   const bar = (label, yr, used, limit, pct, leftEl) => React.createElement("div", { className: "tfsa-limit" },
@@ -8281,11 +8365,30 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove }) {
       React.createElement("button", { className: "btn btn-primary btn-sm", type: "button", onClick: submitAdd }, "Save deposit"))
   ) : null;
 
+  // Toolbar atop the open log: in normal mode a "Select" entry point; in select
+  // mode the running count/total plus quick selectors for this tax year / all.
+  const logToolbar = list.length === 0 ? null : React.createElement("div", { className: "tfsa-dep-log-bar" },
+    selectMode
+      ? React.createElement(React.Fragment, null,
+          React.createElement("div", { className: "tfsa-dep-sel-info" },
+            React.createElement("span", { className: "tfsa-dep-sel-count" }, selectedIds.length, " selected"),
+            selectedIds.length > 0 ? React.createElement("span", { className: "tfsa-dep-sel-sum" }, fmtRand(selectedTotal, 2)) : null),
+          React.createElement("div", { className: "tfsa-dep-sel-quick" },
+            React.createElement("button", { className: "tfsa-dep-sel-link", type: "button", onClick: selectThisYear }, "This tax year"),
+            React.createElement("button", { className: "tfsa-dep-sel-link", type: "button", onClick: selectAll }, "All"),
+            selectedIds.length > 0 ? React.createElement("button", { className: "tfsa-dep-sel-link", type: "button", onClick: clearSel }, "Clear") : null))
+      : React.createElement(React.Fragment, null,
+          React.createElement("span", { className: "tfsa-dep-log-title" }, "Logged deposits"),
+          React.createElement("button", { className: "tfsa-dep-sel-link", type: "button", onClick: enterSelect },
+            React.createElement(Icon, { name: "check", size: 12 }), " Select")));
+
   const logBody = logOpen ? React.createElement("div", { className: "tfsa-dep-log" },
     list.length === 0
       ? React.createElement("div", { className: "tfsa-dep-empty" }, "No deposits logged yet.")
-      : list.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(d => {
-          if (editId === d.id) {
+      : React.createElement(React.Fragment, null,
+        logToolbar,
+        sorted.map(d => {
+          if (!selectMode && editId === d.id) {
             return React.createElement("div", { className: "tfsa-dep-row editing", key: d.id },
               React.createElement("div", { className: "tfsa-dep-edit-fields" },
                 React.createElement("div", { className: "tfsa-dep-amt" },
@@ -8298,19 +8401,34 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove }) {
                 React.createElement("button", { className: "btn btn-primary btn-sm", type: "button", onClick: submitEdit }, "Save")));
           }
           const inYear = tfsaTaxYearStart(d.date) === curStart;
+          const checked = selectedSet.has(d.id);
+          const main = React.createElement("div", { className: "tfsa-dep-main" },
+            React.createElement("div", { className: "tfsa-dep-line1" },
+              React.createElement("span", { className: "tfsa-dep-amount" }, "+", fmtRand(d.amount, 2)),
+              React.createElement("span", { className: "tfsa-dep-tag " + (d.source === 'purchase' ? "buy" : "manual") }, d.source === 'purchase' ? "Buy" : "Deposit"),
+              inYear ? null : React.createElement("span", { className: "tfsa-dep-tag past" }, tfsaTaxYearLabel(tfsaTaxYearStart(d.date)))),
+            React.createElement("div", { className: "tfsa-dep-line2" },
+              React.createElement("span", null, d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
+              d.note ? React.createElement("span", { className: "tfsa-dep-note" }, " · ", d.note) : null));
+          if (selectMode) {
+            return React.createElement("div", {
+              className: "tfsa-dep-row selectable" + (checked ? " selected" : ""), key: d.id,
+              role: "button", "aria-pressed": checked, onClick: () => toggleSel(d.id)
+            },
+              React.createElement("span", { className: "tfsa-dep-check" + (checked ? " on" : "") },
+                checked ? React.createElement(Icon, { name: "check", size: 13 }) : null),
+              main);
+          }
           return React.createElement("div", { className: "tfsa-dep-row", key: d.id },
-            React.createElement("div", { className: "tfsa-dep-main" },
-              React.createElement("div", { className: "tfsa-dep-line1" },
-                React.createElement("span", { className: "tfsa-dep-amount" }, "+", fmtRand(d.amount, 2)),
-                React.createElement("span", { className: "tfsa-dep-tag " + (d.source === 'purchase' ? "buy" : "manual") }, d.source === 'purchase' ? "Buy" : "Deposit"),
-                inYear ? null : React.createElement("span", { className: "tfsa-dep-tag past" }, tfsaTaxYearLabel(tfsaTaxYearStart(d.date)))),
-              React.createElement("div", { className: "tfsa-dep-line2" },
-                React.createElement("span", null, d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
-                d.note ? React.createElement("span", { className: "tfsa-dep-note" }, " · ", d.note) : null)),
+            main,
             React.createElement("div", { className: "tfsa-dep-row-actions" },
               React.createElement("button", { className: "icon-btn", type: "button", "aria-label": "Edit", onClick: () => startEdit(d) }, React.createElement(Icon, { name: "edit", size: 13 })),
               React.createElement("button", { className: "icon-btn", type: "button", "aria-label": "Remove", onClick: () => { if (window.confirm('Remove this deposit from your contribution total?')) onRemove(d.id); } }, React.createElement(Icon, { name: "trash", size: 13 }))));
-        })
+        }),
+        selectMode ? React.createElement("div", { className: "tfsa-dep-sel-actions" },
+          React.createElement("button", { className: "btn btn-ghost btn-sm", type: "button", onClick: exitSelect }, "Cancel"),
+          React.createElement("button", { className: "btn btn-danger btn-sm", type: "button", disabled: selectedIds.length === 0, onClick: deleteSelected },
+            React.createElement(Icon, { name: "trash", size: 13 }), " Delete", selectedIds.length ? " (" + selectedIds.length + ")" : "")) : null)
   ) : null;
 
   return React.createElement("div", { className: "tfsa-room-inner" },
@@ -8493,8 +8611,8 @@ function TFSABalancer({ positions, prices, onBuyPosition }) {
   return React.createElement("div", { className: "tfsa-bal-inner" }, header, editor, contribInput, planBody);
 }
 function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
-                   tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit,
-                   fxRates, sectorCache, fundamentals }) {
+                   tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
+                   fxRates, sectorCache, fundamentals, sectorWeights }) {
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
     return s + (q ? p.shares * q.price : p.shares * p.costBasis);
@@ -8507,12 +8625,12 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
   const curStart = currentTfsaTaxYearStart();
   const annualUsed = deposits.reduce((s, d) => s + (tfsaTaxYearStart(d.date) === curStart ? (d.amount || 0) : 0), 0);
 
-  // ── 1. TFSA holdings — graph + account value/cost/P&L, first in the tab ──
+  // ── 1. TFSA holdings — graph + account value/cost/P/L, first in the tab ──
   const holdingsCard = hasPositions ? React.createElement("div", { className: "card mb-4" },
     React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "TFSA holdings"),
     React.createElement(PortfolioPieChart, {
       positions, prices, displayCurrency: 'ZAR', fxRates,
-      onOpenDetail, sectorCache, fundamentals, availableModes: ['ticker', 'sector']
+      onOpenDetail, sectorCache, fundamentals, sectorWeights, availableModes: ['ticker', 'sector']
     }),
     React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
@@ -8522,13 +8640,17 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
         React.createElement("div", { className: "kv-label" }, "Cost"),
         React.createElement("div", { className: "kv-val mono" }, fmtRand(totalCost, 2))),
       React.createElement("div", { className: "kv" },
-        React.createElement("div", { className: "kv-label" }, "P&L"),
-        React.createElement("div", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
-          (pnl >= 0 ? '+' : '−') + fmtRand(pnl, 2),
-          " (", pnlPct >= 0 ? '+' : '', pnlPct.toFixed(1), "%)")))
+        React.createElement("div", { className: "kv-label" }, "P/L"),
+        // Currency amount stays the prominent figure; the % rides below it as a
+        // smaller tinted pill, mirroring the dashboard's green return boxes.
+        React.createElement("div", { className: "tfsa-pnl-val" },
+          React.createElement("span", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
+            (pnl >= 0 ? '+' : '−') + fmtRand(pnl, 2)),
+          React.createElement("span", { className: `tfsa-pnl-pct ${pnlPct >= 0 ? 'up' : 'down'}` },
+            (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(1) + "%"))))
   ) : null;
 
-  // ── TFSA information — collapsible, the rules only (value/cost/P&L now live in
+  // ── TFSA information — collapsible, the rules only (value/cost/P/L now live in
   //    the holdings card) ──
   const infoPanel = React.createElement(Collapsible, {
     title: "TFSA information", subtitle: "How the tax-free account works", icon: "list"
@@ -8544,17 +8666,23 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
 
   return React.createElement("div", null,
     holdingsCard,
-    // ── 2. Holdings list ──
-    React.createElement("div", { className: "flex justify-between items-center mb-3" },
-      React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Your holdings"),
-      React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
-        React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
+    // ── 2. Holdings list — collapsed into a dropdown so the tab stays compact ──
     !hasPositions
-      ? React.createElement("div", { className: "empty empty-tfsa mb-4" },
-          React.createElement(Icon, { name: "briefcase", size: 40 }),
-          React.createElement("h3", null, "No TFSA holdings"),
-          React.createElement("p", null, "Add JSE-listed ETFs and equities for your Tax-Free Savings Account (or use Import on the Holdings tab)."))
-      : React.createElement(React.Fragment, null,
+      ? React.createElement(React.Fragment, null,
+          React.createElement("div", { className: "flex justify-between items-center mb-3" },
+            React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Your holdings"),
+            React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
+              React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
+          React.createElement("div", { className: "empty empty-tfsa mb-4" },
+            React.createElement(Icon, { name: "briefcase", size: 40 }),
+            React.createElement("h3", null, "No TFSA holdings"),
+            React.createElement("p", null, "Add JSE-listed ETFs and equities for your Tax-Free Savings Account (or use Import on the Holdings tab).")))
+      : React.createElement(Collapsible, {
+          title: "Your holdings", icon: "briefcase", defaultOpen: true, badge: positions.length
+        },
+          React.createElement("div", { style: { display: 'flex', justifyContent: 'flex-end', marginBottom: 10 } },
+            React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
+              React.createElement(Icon, { name: "plus", size: 13 }), " Add holding")),
           React.createElement(HoldingsListHead, null),
           React.createElement("div", { className: "row-list" },
           positions.map(p => React.createElement(HoldingRow, {
@@ -8580,7 +8708,8 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
       subtitle: fmtRand(annualUsed) + " of " + fmtRand(TFSA_ANNUAL_LIMIT) + " used this tax year"
     }, React.createElement(TFSAContributions, {
       deposits: deposits,
-      onAdd: onAddTfsaDeposit, onUpdate: onUpdateTfsaDeposit, onRemove: onRemoveTfsaDeposit
+      onAdd: onAddTfsaDeposit, onUpdate: onUpdateTfsaDeposit, onRemove: onRemoveTfsaDeposit,
+      onRemoveMany: onRemoveTfsaDeposits
     })),
     // ── 5. TFSA information — collapsible at the bottom ──
     infoPanel
@@ -10864,6 +10993,7 @@ function PositionModal(_ref12) {
     editId,
     existing,
     defaultMarket,
+    initialSectorWeights,
     onClose,
     onSave
   } = _ref12;
@@ -10880,6 +11010,20 @@ function PositionModal(_ref12) {
   // Sector this holding will be allocated to — auto-detected from the ticker,
   // overridable, and learned so the allocation chart reflects it.
   const [sectorOverride, setSectorOverride] = useState(existing?.sector || '');
+  // Optional look-through sector breakdown for ETFs / funds: rows of
+  // { sector, weight } (weight as a % string). When set, the allocation chart
+  // splits this holding across these sectors instead of one bucket.
+  const [sectorRows, setSectorRows] = useState(() =>
+    Array.isArray(initialSectorWeights)
+      ? initialSectorWeights.map(w => ({ sector: w.sector || '', weight: w.weight != null ? String(w.weight) : '' }))
+      : []);
+  const addSectorRow = () => setSectorRows(rows => [...rows, { sector: '', weight: '' }]);
+  const updateSectorRow = (i, patch) => setSectorRows(rows => rows.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  const removeSectorRow = (i) => setSectorRows(rows => rows.filter((_, idx) => idx !== i));
+  const cleanSectorRows = sectorRows
+    .map(r => ({ sector: r.sector, weight: parseFloat(r.weight) }))
+    .filter(r => r.sector && isFinite(r.weight) && r.weight > 0);
+  const sectorWeightSum = cleanSectorRows.reduce((s, r) => s + r.weight, 0);
   // Holds the pending edit while the user confirms it: { changes, payload,
   // verifiedQuote }. null when no confirmation is in flight.
   const [confirmEdit, setConfirmEdit] = useState(null);
@@ -10904,6 +11048,11 @@ function PositionModal(_ref12) {
     if (Number(payload.costBasis) !== Number(ex.costBasis)) out.push({ label: 'Avg price', from: ccy + Number(ex.costBasis || 0).toFixed(2), to: ccy + Number(payload.costBasis).toFixed(2) });
     if ((payload.purchaseDate || '') !== (ex.purchaseDate || '')) out.push({ label: 'Purchase date', from: ex.purchaseDate || '—', to: payload.purchaseDate || '—' });
     if ((payload.sector || '') !== (ex.sector || '')) out.push({ label: 'Sector', from: ex.sector || 'Other', to: payload.sector || 'Other' });
+    const wStr = (ws) => Array.isArray(ws) && ws.length ? ws.map(w => `${w.sector} ${w.weight}%`).join(', ') : '—';
+    const initW = Array.isArray(initialSectorWeights)
+      ? initialSectorWeights.map(w => ({ sector: w.sector, weight: parseFloat(w.weight) })).filter(w => w.sector && isFinite(w.weight) && w.weight > 0)
+      : [];
+    if (wStr(initW) !== wStr(payload.sectorWeights)) out.push({ label: 'Sector split', from: wStr(initW), to: wStr(payload.sectorWeights) });
     if ((payload.notes || '') !== (ex.notes || '')) out.push({ label: 'Notes', from: ex.notes || '—', to: payload.notes || '—' });
     return out;
   };
@@ -10939,7 +11088,8 @@ function PositionModal(_ref12) {
       ticker: ticker.trim().toUpperCase(),
       market, shares: s, costBasis: c, notes,
       purchaseDate: purchaseDate || null,
-      sector: sectorValue || null
+      sector: sectorValue || null,
+      sectorWeights: cleanSectorRows.length ? cleanSectorRows : null
     };
     // Editing an existing holding: confirm the change first and show exactly
     // what's changing (field: old → new) so an accidental edit can't slip
@@ -11012,6 +11162,41 @@ function PositionModal(_ref12) {
       !ticker.trim() ? "Pick a ticker first — we'll auto-detect the sector."
         : sectorUnknown ? "Couldn't auto-detect this one — choose where it lands in your allocation chart."
         : "Where this lands in your allocation chart (auto-detected — change if needed).")
+  ), React.createElement("div", {
+    className: "form-group"
+  }, React.createElement("label", {
+    className: "form-label"
+  }, "Sector breakdown (ETFs & funds)"),
+    sectorRows.length === 0
+      ? React.createElement("div", { className: "form-help", style: { marginTop: 0, marginBottom: 8 } },
+          "Optional. Split a fund or ETF across the sectors it actually holds, so your allocation chart looks through to its real sector mix instead of a single bucket.")
+      : React.createElement("div", { className: "sector-split-list" },
+          sectorRows.map((r, i) => React.createElement("div", { className: "sector-split-row", key: i },
+            React.createElement("select", {
+              className: "import-field-select sector-split-sector",
+              value: r.sector,
+              onChange: e => updateSectorRow(i, { sector: e.target.value })
+            }, React.createElement("option", { value: "" }, "Select sector…"),
+               (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s))),
+            React.createElement("div", { className: "input-suffix-wrap sector-split-weight" },
+              React.createElement("input", {
+                type: "number", inputMode: "decimal", min: "0", max: "100", step: "1",
+                placeholder: "0", value: r.weight,
+                onChange: e => updateSectorRow(i, { weight: e.target.value })
+              }),
+              React.createElement("span", { className: "suffix" }, "%")),
+            React.createElement("button", {
+              className: "icon-btn sector-split-del", type: "button", "aria-label": "Remove sector",
+              onClick: () => removeSectorRow(i)
+            }, React.createElement(Icon, { name: "x", size: 14 }))))),
+    React.createElement("div", { className: "sector-split-foot" },
+      React.createElement("button", { className: "btn btn-secondary btn-sm", type: "button", onClick: addSectorRow },
+        React.createElement(Icon, { name: "plus", size: 13 }), " Add sector"),
+      cleanSectorRows.length ? React.createElement("span", {
+        className: "sector-split-sum" + (Math.abs(sectorWeightSum - 100) < 0.1 ? " ok" : "")
+      }, "Total ", sectorWeightSum.toFixed(sectorWeightSum % 1 === 0 ? 0 : 1), "%") : null),
+    cleanSectorRows.length && Math.abs(sectorWeightSum - 100) >= 0.1 ? React.createElement("div", { className: "form-help" },
+      "Weights are applied relative to one another, so they needn't add up to exactly 100%.") : null
   ), React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {
@@ -11225,7 +11410,7 @@ function SellModal({ position, prices, onClose, onSell }) {
           className: `card ${pnl >= 0 ? 'sell-pnl-up' : 'sell-pnl-down'}`,
           style: { padding: '10px 14px', textAlign: 'center' }
         },
-          React.createElement("div", { className: "text-xs text-dim" }, "Estimated P&L"),
+          React.createElement("div", { className: "text-xs text-dim" }, "Estimated P/L"),
           React.createElement("div", { className: `mono font-semibold ${pnl >= 0 ? 'text-up' : 'text-down'}`, style: { fontSize: 18 } },
             (pnl >= 0 ? '+' : '') + ccy + Math.abs(pnl).toFixed(2))),
         React.createElement("div", { className: "form-actions" },
@@ -11409,7 +11594,7 @@ function FxSummary({ positions, contributions, prices, fxRates, displayCurrency,
         )
       ),
       React.createElement("div", { className: "fx-breakdown-row" },
-        React.createElement("span", { className: "lbl" }, "Price P&L (native moves)"),
+        React.createElement("span", { className: "lbl" }, "Price P/L (native moves)"),
         React.createElement("span", { className: `val ${snap.priceGain >= 0 ? 'text-up' : 'text-down'}` },
           fmtCcySigned(snap.priceGain, displayCurrency))
       ),
@@ -11683,7 +11868,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             React.createElement("div", { className: "settings-info-title" },
               React.createElement(Icon, { name: "globe", size: 12 }), " How FX gain/loss is calculated"),
             React.createElement("div", { className: "settings-info-body" },
-              "When you add a position, the live exchange rate is stored. Price P&L tracks native-currency changes. FX impact shows how much your ", displayCurrency, " value has shifted purely from currency moves.")
+              "When you add a position, the live exchange rate is stored. Price P/L tracks native-currency changes. FX impact shows how much your ", displayCurrency, " value has shifted purely from currency moves.")
           )
         ),
         activeSection === 'tabs' && React.createElement("div", { className: "settings-section" },

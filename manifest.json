@@ -1,7 +1,7 @@
 {
   "name": "Playbook",
   "short_name": "Playbook",
-  "description": "Jan's investment playbook — live prices, P&L, price alerts",
+  "description": "Jan's investment playbook — live prices, P/L, price alerts",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
