@@ -5046,9 +5046,15 @@ const ALL_TICKERS = (() => {
   return result;
 })();
 
+// Yahoo exchange-suffix → one of the app's 8 supported markets. Only suffixes the
+// app can actually price (build a correct symbol for, in `yahooSymbol`) belong
+// here. Anything Yahoo emits for a *secondary* foreign listing the app can't
+// price — Vienna (.VI), Milan (.MI), Swiss (.SW), Mexico (.MX), Singapore (.SG),
+// and the many German regional venues (.MU/.BE/.DU/.HM/.HA/.ST/.SG…) — is
+// deliberately absent so those listings get dropped, not mis-booked as US.
 const YAHOO_EXCHANGE_MAP = {
   'JO': 'JSE', 'JNB': 'JSE',
-  'L': 'LSE', 'LSE': 'LSE',
+  'L': 'LSE', 'IL': 'LSE', 'LSE': 'LSE',
   'AX': 'ASX', 'ASX': 'ASX',
   'F': 'FRA', 'DE': 'FRA', 'GER': 'FRA', 'FRA': 'FRA',
   'PA': 'PAR', 'PAR': 'PAR',
@@ -5060,7 +5066,12 @@ function parseYahooSymbol(sym) {
   if (dot > 0) {
     const suffix = sym.slice(dot + 1).toUpperCase();
     const market = YAHOO_EXCHANGE_MAP[suffix];
-    if (market) return { ticker: sym.slice(0, dot), market };
+    // A dot suffix always denotes an exchange (Yahoo uses '-' for US share
+    // classes, e.g. BRK-B). If it isn't one of our supported markets the listing
+    // can't be priced correctly, so drop it rather than tagging it as US — that
+    // mislabelling is exactly what booked Google/ASML/Berkshire onto obscure
+    // foreign venues at the wrong-currency "live rate".
+    return market ? { ticker: sym.slice(0, dot), market } : null;
   }
   return { ticker: sym, market: 'US' };
 }
@@ -5177,10 +5188,17 @@ function rankImportCandidates(query, tickerHint, chosenMarket, remote) {
       add({ ticker: t.ticker, market: t.market, name: t.name, exchange: '' });
     }
   });
+  const chosenCcy = (MARKET_CURRENCY[chosenMarket] || {}).code;
   return pool.map(c => {
     const ns = companyNameScore(query, c.name);
     let score = ns * 100;
     if (c.market === chosenMarket) score += 45;                 // market guides the pick
+    // Prefer the listing in the account's own currency, then break ties toward the
+    // primary listing: a candidate still carrying an exchange suffix in its ticker
+    // (e.g. a foreign cross-listing) is the less-likely retail pick.
+    const candCcy = (MARKET_CURRENCY[c.market] || {}).code;
+    if (chosenCcy && candCcy === chosenCcy) score += 8;
+    if (/[.:]/.test(c.ticker)) score -= 6;
     if (tickerHint && c.ticker.toUpperCase() === String(tickerHint).toUpperCase()) score += 35;
     if (c.ticker.toUpperCase() === qUpper) score += 25;          // query itself was a symbol
     return { ...c, score, nameScore: ns };
@@ -10285,13 +10303,19 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     // resort, so a US ticker is never booked as its European cross-listing (EUR).
     const symHint = (r.tickerHint && looksLikeTickerToken(r.tickerHint)) ? String(r.tickerHint).toUpperCase()
                   : (looksLikeTickerToken(r.query) ? String(r.query).toUpperCase() : null);
-    const onMarket = ranked.filter(c => c.market === market);
+    // A candidate whose ticker still carries an exchange suffix (".VI", ":MI") is a
+    // foreign listing that slipped through — never let it pass as an on-market pick,
+    // even if its market field happens to equal the chosen one.
+    const onMarket = ranked.filter(c => c.market === market && !/[.:]/.test(c.ticker));
     let offMarketRanked = ranked.filter(c => c.market !== market);
-    // Never auto-book a US-designated holding onto its EUR cross-listing — European
-    // brokers quote US shares in EUR, which used to silently land them on Frankfurt
-    // (priced in euros) under the user's US import. The EUR listings stay in
-    // `candidates` so they can still be chosen by hand if that's genuinely meant.
-    if (market === 'US') offMarketRanked = offMarketRanked.filter(c => !['FRA', 'PAR', 'AMS'].includes(c.market));
+    // Never auto-book a holding onto a different-currency cross-listing — European
+    // brokers quote US shares in EUR, and dual-listed names (iShares ETFs, etc.)
+    // surface London/pence listings, which used to silently land under the user's
+    // import at the wrong-currency "live rate". Restrict the off-market fallback to
+    // markets that settle in the same currency as the chosen one; everything else
+    // stays in `candidates` so it can still be chosen by hand if genuinely meant.
+    const chosenCcy = (MARKET_CURRENCY[market] || {}).code;
+    if (chosenCcy) offMarketRanked = offMarketRanked.filter(c => (MARKET_CURRENCY[c.market] || {}).code === chosenCcy);
     // When the row explicitly named its market, don't drift off it at all — a miss
     // becomes "not matched" (overridable) rather than a wrong foreign listing.
     if (r.marketExplicit) offMarketRanked = [];
