@@ -2885,6 +2885,26 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .import-card.excluded { opacity: 0.45; }
 .import-card.is-bad { border-color: color-mix(in srgb, var(--rose) 45%, var(--border)); }
 .import-card.is-low { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.import-card.is-dup {
+  border-color: color-mix(in srgb, var(--rose) 55%, var(--border));
+  background: color-mix(in srgb, var(--rose) 6%, var(--bg));
+}
+.import-dup-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 11px; line-height: 1.4; color: var(--rose);
+  background: color-mix(in srgb, var(--rose) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rose) 30%, transparent);
+  border-radius: 8px; padding: 6px 8px;
+}
+.import-dup-warn svg { flex: 0 0 auto; margin-top: 1px; }
+.import-dup-warn b { color: var(--text); font-weight: 600; }
+.import-dup-note {
+  display: flex; align-items: flex-start; gap: 7px;
+  background: color-mix(in srgb, var(--rose) 12%, var(--bg));
+  border-color: color-mix(in srgb, var(--rose) 38%, var(--border));
+  color: var(--text);
+}
+.import-dup-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--rose); }
 .import-conf-low {
   flex: 0 0 auto; font-family: var(--mono); font-size: 9px; font-weight: 700;
   letter-spacing: 0.04em; text-transform: uppercase;
@@ -3458,10 +3478,19 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .hm-row-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
 .hm-row-val { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .hm-row-qty { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+/* When the holdings delete list is shown, the scroll container drops its bottom
+   padding so the sticky action bar can sit flush against the very bottom instead
+   of floating above it (the container's bottom padding was the gap). */
+.settings-content.has-sticky-bar { padding-bottom: 0; }
 .hm-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
-  position: sticky; bottom: -1px; background: var(--bg); padding-bottom: 2px;
+  position: sticky; bottom: 0; z-index: 2; background: var(--bg);
+  /* Stays within the content box (no negative margins) so it never triggers a
+     horizontal scrollbar — which would otherwise leave the sticky bar floating a
+     scrollbar's height above the bottom. Carries the safe-area inset itself so it
+     clears the home indicator while sitting flush against the scroll bottom. */
+  margin-top: 18px; padding: 14px 0 calc(14px + var(--safe-bottom, 0px));
+  border-top: 1px solid var(--border);
 }
 .hm-bar-count { font-size: 12px; font-weight: 500; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .hm-bar-actions { display: flex; gap: 8px; }
