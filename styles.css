@@ -1316,6 +1316,16 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .wl-new-row { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); align-items: center; }
 .wl-new-input { flex: 1 1 auto; min-width: 0; padding: 9px 11px; font-size: 14px; }
 
+/* Holding notes dropdown (stock detail) — sits right under the watchlist box and
+   reuses the .wl-toggle / .wl-panel chrome so it reads as a sibling control. */
+.hn-control { margin: 6px 0; }
+.hn-toggle > svg { color: var(--blue); }
+.hn-panel { padding: 12px 14px; }
+.hn-note-text {
+  font-family: var(--mono); font-size: 13px; line-height: 1.55;
+  color: var(--text); white-space: pre-wrap; word-break: break-word;
+}
+
 /* Your-position list (stock detail) — one fact per line, label left / value
    right, so purchase vs. current value are easy to read off and compare. */
 .pos-list { display: flex; flex-direction: column; }
@@ -3012,6 +3022,9 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   background: color-mix(in srgb, #000 55%, transparent);
   animation: fade 0.14s ease;
 }
+/* Edit-confirm reuses this card but portals to <body>, so it must clear the
+   stock/position modal (z-index 95) the way the elevated alert popup does. */
+.import-confirm.import-confirm-elevated { z-index: 120; }
 .import-confirm-card {
   width: 100%; max-width: 350px; background: var(--bg-raised);
   border: 1px solid var(--border); border-radius: 16px; padding: 20px;
@@ -3022,6 +3035,20 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .import-confirm-body { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 18px; }
 .import-confirm-actions { display: flex; gap: 9px; }
 .import-confirm-actions .btn { flex: 1; }
+/* Field-by-field diff shown when confirming a holding edit (old → new). */
+.edit-confirm-diff { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.edit-diff-row {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg);
+}
+.edit-diff-label {
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--mono);
+}
+.edit-diff-vals { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-family: var(--mono); font-size: 13px; }
+.edit-diff-from { color: var(--text-muted); text-decoration: line-through; opacity: 0.85; word-break: break-word; }
+.edit-diff-to { color: var(--emerald); font-weight: 600; word-break: break-word; }
+.edit-diff-arrow { color: var(--text-dim); flex-shrink: 0; }
 @keyframes pop-in { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: scale(1); } }
 .import-gate-note {
   margin-top: 12px; padding: 9px 12px; border-radius: 9px;

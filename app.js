@@ -6189,6 +6189,11 @@ function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnt
   const wrapRef = useRef(null);
   const remoteReqId = useRef(0);
   const justSelected = useRef(false);
+  // Only search/open the dropdown once the user actually types. Opening the edit
+  // modal seeds this field with the holding's existing ticker, and that initial
+  // value must NOT be treated as a search — otherwise the live-ticker list pops
+  // open and looks like the app assumes you want to re-point the holding.
+  const userTyped = useRef(false);
 
   useEffect(() => { setQuery(value || ''); }, [value]);
 
@@ -6213,6 +6218,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnt
 
   useEffect(() => {
     if (justSelected.current) { justSelected.current = false; setRemoteLoading(false); return; }
+    if (!userTyped.current) { setRemoteLoading(false); return; }
     if (!query || query.length < 2) { setRemoteLoading(false); return; }
     const reqId = ++remoteReqId.current;
     setRemoteLoading(true);
@@ -6234,6 +6240,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnt
 
   const handleInput = (e) => {
     const v = e.target.value.toUpperCase();
+    userTyped.current = true;
     setQuery(v);
     onChange(v);
     search(v);
@@ -9473,6 +9480,26 @@ function WatchlistControl(_refWL) {
         React.createElement("span", { className: "wl-list-name" }, "Remove from watchlist")) : null) : null
   );
 }
+// The notes you saved on a holding, shown in the stock card as a collapsible
+// dropdown directly beneath the watchlist control — so the context you wrote
+// when you bought (thesis, account, "held since…") is one tap away on the card,
+// not buried in the edit form.
+function HoldingNotesControl(_refHN) {
+  let { notes } = _refHN;
+  const [open, setOpen] = useState(false);
+  const text = (notes || '').trim();
+  if (!text) return null;
+  return React.createElement("div", { className: "hn-control" },
+    React.createElement("button", {
+      className: "wl-toggle hn-toggle", onClick: () => setOpen(o => !o), "aria-expanded": open
+    },
+      React.createElement(Icon, { name: "edit", size: 15 }),
+      React.createElement("span", { className: "wl-toggle-label" }, "Your notes"),
+      React.createElement(Icon, { name: "chevron", size: 14, className: "wl-toggle-caret" + (open ? " open" : "") })),
+    open ? React.createElement("div", { className: "wl-panel hn-panel" },
+      React.createElement("div", { className: "hn-note-text" }, text)) : null
+  );
+}
 // Friendly "as of" date for an indicator reading. FRED monthly series anchor to
 // the 1st of the month, so those read as "May 2026"; daily/weekly read in full.
 function fmtIndicatorAsOf(dateStr) {
@@ -9678,6 +9705,9 @@ function DetailModal(_ref10) {
       onAddWatch: onAddWatch, onRemoveWatch: onRemoveWatch,
       onMoveWatch: onMoveWatch, onAddWatchGroup: onAddWatchGroup
     }) : null,
+
+    // Notes you left on this holding — collapsible, just below the watchlist box.
+    !isIndicator && pos && pos.notes ? React.createElement(HoldingNotesControl, { notes: pos.notes }) : null,
 
     !isIndicator && pos && quote && (() => {
       // A plain top-to-bottom list reads far more clearly than a 3×2 grid:
@@ -10850,12 +10880,33 @@ function PositionModal(_ref12) {
   // Sector this holding will be allocated to — auto-detected from the ticker,
   // overridable, and learned so the allocation chart reflects it.
   const [sectorOverride, setSectorOverride] = useState(existing?.sector || '');
+  // Holds the pending edit while the user confirms it: { changes, payload,
+  // verifiedQuote }. null when no confirmation is in flight.
+  const [confirmEdit, setConfirmEdit] = useState(null);
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
   const detectedSector = ticker.trim() ? DATA.findSector(ticker.trim().toUpperCase(), market).sector : 'Other';
   const sectorValue = sectorOverride || (detectedSector !== 'Other' ? detectedSector : '');
   const sectorUnknown = !!ticker.trim() && detectedSector === 'Other' && !sectorOverride;
+  // Trim float noise off a share count so "10" doesn't read back as "10.0000".
+  const fmtShares = v => String(parseFloat(Number(v || 0).toFixed(6)));
+  // For an edit, list exactly which fields changed (old → new) so the user can
+  // see and confirm what they're about to save.
+  const diffChanges = (payload) => {
+    if (!existing) return [];
+    const ex = existing;
+    const out = [];
+    const exTicker = String(ex.ticker || '').toUpperCase();
+    if (payload.ticker !== exTicker) out.push({ label: 'Ticker', from: exTicker || '—', to: payload.ticker });
+    if (payload.market !== ex.market) out.push({ label: 'Market', from: ex.market || '—', to: payload.market });
+    if (Number(payload.shares) !== Number(ex.shares)) out.push({ label: 'Shares', from: fmtShares(ex.shares), to: fmtShares(payload.shares) });
+    if (Number(payload.costBasis) !== Number(ex.costBasis)) out.push({ label: 'Avg price', from: ccy + Number(ex.costBasis || 0).toFixed(2), to: ccy + Number(payload.costBasis).toFixed(2) });
+    if ((payload.purchaseDate || '') !== (ex.purchaseDate || '')) out.push({ label: 'Purchase date', from: ex.purchaseDate || '—', to: payload.purchaseDate || '—' });
+    if ((payload.sector || '') !== (ex.sector || '')) out.push({ label: 'Sector', from: ex.sector || 'Other', to: payload.sector || 'Other' });
+    if ((payload.notes || '') !== (ex.notes || '')) out.push({ label: 'Notes', from: ex.notes || '—', to: payload.notes || '—' });
+    return out;
+  };
   const submit = async () => {
     if (!ticker.trim()) return;
     const s = parseDecimal(shares);
@@ -10884,15 +10935,25 @@ function PositionModal(_ref12) {
     }
     // Pass the quote we just fetched up so the feed can seed it instantly — the
     // dashboard pie/line then update the moment the position is added.
-    onSave({
+    const payload = {
       ticker: ticker.trim().toUpperCase(),
       market, shares: s, costBasis: c, notes,
       purchaseDate: purchaseDate || null,
       sector: sectorValue || null
-    }, verifiedQuote);
+    };
+    // Editing an existing holding: confirm the change first and show exactly
+    // what's changing (field: old → new) so an accidental edit can't slip
+    // through. A brand-new position saves straight away.
+    if (isEdit) {
+      const changes = diffChanges(payload);
+      if (changes.length === 0) { onClose(); return; }
+      setConfirmEdit({ changes, payload, verifiedQuote });
+      return;
+    }
+    onSave(payload, verifiedQuote);
   };
   const ccy = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).sym;
-  return React.createElement("div", {
+  return React.createElement(React.Fragment, null, React.createElement("div", {
     className: "modal"
   }, React.createElement("div", {
     className: "modal-backdrop",
@@ -11012,7 +11073,29 @@ function PositionModal(_ref12) {
     className: "btn btn-primary",
     onClick: submit,
     disabled: verifying
-  }, verifying ? 'Verifying…' : isEdit ? 'Save changes' : 'Add position')))));
+  }, verifying ? 'Verifying…' : isEdit ? 'Save changes' : 'Add position'))))),
+    confirmEdit ? ReactDOM.createPortal(
+      React.createElement("div", { className: "import-confirm import-confirm-elevated" },
+        React.createElement("div", { className: "import-confirm-card", style: { maxWidth: 400 } },
+          React.createElement("div", { className: "import-confirm-title" }, "Save these changes?"),
+          React.createElement("div", { className: "import-confirm-body" },
+            "You're editing ",
+            React.createElement("strong", null, existing && existing.ticker ? String(existing.ticker).toUpperCase() : "this holding"),
+            ". Confirm what's changing:"),
+          React.createElement("div", { className: "edit-confirm-diff" },
+            confirmEdit.changes.map((ch, i) => React.createElement("div", { key: i, className: "edit-diff-row" },
+              React.createElement("div", { className: "edit-diff-label" }, ch.label),
+              React.createElement("div", { className: "edit-diff-vals" },
+                React.createElement("span", { className: "edit-diff-from" }, ch.from),
+                React.createElement(Icon, { name: "chevron", size: 13, className: "edit-diff-arrow" }),
+                React.createElement("span", { className: "edit-diff-to" }, ch.to))))),
+          React.createElement("div", { className: "import-confirm-actions" },
+            React.createElement("button", { className: "btn btn-secondary", onClick: () => setConfirmEdit(null) }, "Keep editing"),
+            React.createElement("button", {
+              className: "btn btn-primary",
+              onClick: () => { const ce = confirmEdit; setConfirmEdit(null); onSave(ce.payload, ce.verifiedQuote); }
+            }, "Save changes")))),
+      document.body) : null);
 }
 function SellModal({ position, prices, onClose, onSell }) {
   const [shares, setShares] = useState('');
