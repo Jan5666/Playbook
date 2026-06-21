@@ -736,6 +736,119 @@ function parseStooqCsv(text, market) {
   };
 }
 // ─────────────────────────────────────────────────────────────────────────
+// South African unit trusts (collective investment schemes). These aren't
+// exchange-listed, so Yahoo and Stooq carry no data for them — every SA fund
+// (Coronation, Allan Gray, Ninety One, …) used to fail import matching with "no
+// live match". We price them off Morningstar's public fund feed (the same data
+// behind SA fund fact sheets) using a fund's Morningstar SecId as its ticker.
+// The SecId shape (F + 9 alphanumerics, e.g. F000002CRJ) is unmistakable, so
+// fetchQuote / fetchHistory route these to Morningstar instead of Yahoo and the
+// rest of the app treats a unit trust like any other JSE/TFSA (ZAR) holding —
+// quoted in rand, no cents divisor (Morningstar NAVs are already in rand).
+// ─────────────────────────────────────────────────────────────────────────
+const MORNINGSTAR_KEY = 'klr5zyak8x';                 // public Morningstar tools API key
+const MORNINGSTAR_UNIVERSE = 'FOZAF$$ALL';            // open-ended funds domiciled in South Africa
+function isUnitTrustId(t) { return /^F[0-9A-Z]{9}$/.test(String(t || '').toUpperCase()); }
+// Morningstar's term search returns nothing for "… Unit Trust" and mis-ranks
+// "… Fund", so strip the generic words SA investors append and let the import's
+// companyNameScore re-rank the share classes it returns.
+function unitTrustSearchTerm(q) {
+  return String(q || '')
+    .replace(/\(.*?\)/g, ' ')
+    .replace(/\b(unit\s+trusts?|collective\s+investment(\s+schemes?)?|fund\s+of\s+funds|feeder\s+funds?|funds?)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+async function fetchMorningstarRows(term, pageSize) {
+  const t = String(term || '').trim();
+  if (!t) return [];
+  const dp = 'SecId|Name|ClosePrice|PriceCurrency|ReturnD1|ClosePriceDate';
+  const url = `https://lt.morningstar.com/api/rest.svc/${MORNINGSTAR_KEY}/security/screener`
+    + `?page=1&pageSize=${pageSize || 12}&outputType=json&version=1&languageId=en&currencyId=ZAR`
+    + `&universeIds=${encodeURIComponent(MORNINGSTAR_UNIVERSE)}`
+    + `&securityDataPoints=${encodeURIComponent(dp)}`
+    + `&term=${encodeURIComponent(t)}`;
+  const text = await fetchViaProxies(url, { timeoutMs: 9000 });
+  if (!text) return [];
+  try { const d = JSON.parse(text); return Array.isArray(d.rows) ? d.rows : []; } catch (_e) { return []; }
+}
+// Name-search SA unit trusts for the import matcher. Returns candidate listings
+// in the same shape Yahoo search yields, tagged to the chosen ZAR account so the
+// ranker keeps them on-market.
+async function searchUnitTrusts(query, market) {
+  const rows = await fetchMorningstarRows(unitTrustSearchTerm(query), 12);
+  const mkt = (market === 'TFSA') ? 'TFSA' : 'JSE';
+  return rows
+    .filter(r => r && r.SecId && r.Name && Number(r.ClosePrice) > 0)
+    .map(r => { cacheName(mkt, r.SecId, r.Name); return { ticker: r.SecId, market: mkt, name: r.Name, exchange: 'Unit trust' }; });
+}
+function morningstarRowToQuote(r) {
+  const price = Number(r.ClosePrice);
+  if (!isFinite(price) || price <= 0) return null;
+  // ReturnD1 is the 1-day NAV move (%) — back out yesterday's NAV for change.
+  const ret = Number(r.ReturnD1);
+  const prevClose = (isFinite(ret) && ret > -100) ? price / (1 + ret / 100) : price;
+  const change = price - prevClose;
+  return {
+    price, prevClose, change,
+    changePct: prevClose > 0 ? (change / prevClose) * 100 : 0,
+    yearHigh: null, yearLow: null, dayHigh: null, dayLow: null, volume: null,
+    preMarketPrice: null, postMarketPrice: null,
+    extPrice: null, extChange: null, extChangePct: null, extKind: null,
+    currency: 'ZAR',
+    marketState: 'CLOSED',     // a unit trust strikes one NAV per day, not live
+    shortName: r.Name, longName: r.Name,
+    regularMarketTime: r.ClosePriceDate ? Date.parse(r.ClosePriceDate) : Date.now(),
+    fetchedAt: Date.now(),
+    source: 'morningstar'
+  };
+}
+async function fetchUnitTrustQuote(secId) {
+  const id = String(secId || '').toUpperCase();
+  const rows = await fetchMorningstarRows(id, 3);
+  const row = rows.find(r => String(r.SecId).toUpperCase() === id) || (rows.length === 1 ? rows[0] : null);
+  if (!row) return null;
+  cacheName('JSE', id, row.Name); cacheName('TFSA', id, row.Name);
+  return morningstarRowToQuote(row);
+}
+function unitTrustRangeStart(range) {
+  const d = new Date();
+  switch (range) {
+    case '1d': case '5d': d.setDate(d.getDate() - 12); break;
+    case '1mo': d.setMonth(d.getMonth() - 1); break;
+    case '3mo': d.setMonth(d.getMonth() - 3); break;
+    case '6mo': d.setMonth(d.getMonth() - 6); break;
+    case '1y': d.setFullYear(d.getFullYear() - 1); break;
+    case '5y': d.setFullYear(d.getFullYear() - 5); break;
+    case 'max': d.setFullYear(d.getFullYear() - 25); break;
+    default: d.setFullYear(d.getFullYear() - 1);
+  }
+  return d;
+}
+async function fetchUnitTrustHistory(secId, range) {
+  const id = String(secId || '').toUpperCase();
+  const r = range || '1y';
+  const isoDay = (dt) => dt.toISOString().slice(0, 10);
+  const url = `https://lt.morningstar.com/api/rest.svc/timeseries_price/${MORNINGSTAR_KEY}`
+    + `?currencyId=ZAR&idtype=Morningstar&frequency=daily&outputType=COMPACTJSON&applyTrackRecordExtension=true`
+    + `&startDate=${isoDay(unitTrustRangeStart(r))}&endDate=${isoDay(new Date())}`
+    + `&id=${encodeURIComponent(id + ']2]1]')}`;
+  const text = await fetchViaProxies(url, { timeoutMs: 9000 });
+  if (!text) return null;
+  let arr;
+  try { arr = JSON.parse(text); } catch (_e) { return null; }
+  if (!Array.isArray(arr)) return null;
+  const points = [];
+  for (const row of arr) {
+    if (!Array.isArray(row) || row.length < 2) continue;
+    const t = Number(row[0]), p = Number(row[1]);
+    if (!isFinite(t) || !isFinite(p) || p <= 0) continue;
+    points.push({ t, p, session: 'regular' });
+  }
+  if (points.length < 2) return null;
+  return { points, range: r, fetchedAt: Date.now(), regularStart: null, regularEnd: null };
+}
+// ─────────────────────────────────────────────────────────────────────────
 // Macro / market indicators (the ribbon "stock cards"). These aren't ordinary
 // Yahoo tickers — they're sourced from FRED (the public fredgraph.csv endpoint,
 // no API key), a transparent central-bank balance-sheet proxy for global
@@ -929,6 +1042,8 @@ async function fetchQuote(ticker, market) {
   // carry no `source` and fall through to the normal fetch below.
   const _indCat = RIBBON_CATALOG_MAP[priceKey(market, ticker)];
   if (_indCat && _indCat.source) return fetchIndicatorQuote(_indCat);
+  // SA unit trusts are priced off Morningstar's NAV feed, not Yahoo.
+  if (isUnitTrustId(ticker)) return fetchUnitTrustQuote(ticker);
   // Two ranges in parallel-of-attempts: 5d for daily prevClose context, 1d/1m
   // for intraday freshness on actively-traded sessions. We try 5d first because
   // its daily bars feed derivePrevClose; if Yahoo's regularMarketTime on that
@@ -1041,6 +1156,10 @@ async function fetchQuoteBatch(items) {
   return results;
 }
 async function fetchQuoteLight(ticker, market) {
+  if (isUnitTrustId(ticker)) {
+    const q = await fetchUnitTrustQuote(ticker);
+    return q ? { price: q.price, changePct: q.changePct, fetchedAt: q.fetchedAt } : null;
+  }
   const sym = yahooSymbol(ticker, market);
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d&includePrePost=true`;
   const text = await fetchViaProxies(url, { timeoutMs: 6000 });
@@ -1129,6 +1248,7 @@ function parseHistoryResult(result, ticker, market, r) {
 async function fetchHistory(ticker, market, range) {
   const _indCat = RIBBON_CATALOG_MAP[priceKey(market, ticker)];
   if (_indCat && _indCat.source) return fetchIndicatorHistory(_indCat, range || '1y');
+  if (isUnitTrustId(ticker)) return fetchUnitTrustHistory(ticker, range);
   const sym = yahooSymbol(ticker, market);
   const r = range || '1y';
   const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === '1y') ? '1d' : '1wk');
@@ -3007,6 +3127,23 @@ function ToastProvider(_ref2) {
   }, toast));
 }
 const useToast = () => React.useContext(ToastContext);
+// A recoverable error boundary scoped to a single modal/overlay. If a modal
+// throws while rendering, committing, or unmounting, the *whole app* must not be
+// replaced by the global error screen (which, on the near-black theme, reads as
+// "the screen went black" and only a reload escapes). Instead this catches the
+// error, renders nothing (so the modal disappears), and hands control back to
+// the parent's onError — which closes the modal and toasts. The app behind it
+// stays alive and the user's data is untouched. Remounting the modal later
+// creates a fresh boundary with cleared error state.
+class ModalBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) {
+    console.error('Modal crash (recovered):', error, info && info.componentStack);
+    try { this.props.onError && this.props.onError(error); } catch (_e) {}
+  }
+  render() { return this.state.error ? null : this.props.children; }
+}
 // Canonical tab registry. Order here is the default layout (TFSA sits between
 // Heatmap and New picks); the user can reorder/hide via Settings → Tabs, which
 // persists as a key list. reconcileTabOrder() keeps a stored order valid as the
@@ -3680,7 +3817,9 @@ function App() {
       }
       setPosModalOpen(false);
     }
-  }), showImport && React.createElement(ImportModal, {
+  }), showImport && React.createElement(ModalBoundary, {
+    onError: () => { setShowImport(false); toast('Import hit a snag and was closed safely — your portfolio is unchanged. Please try again.'); }
+  }, React.createElement(ImportModal, {
     defaultMarket: importMarket,
     onClose: () => setShowImport(false),
     onImport: async (holdings) => {
@@ -3688,7 +3827,7 @@ function App() {
       // Seed the imported symbols so the dashboard reflects them immediately.
       holdings.forEach(h => seedQuote(h.ticker, h.market));
     }
-  }), sellModalPos && React.createElement(SellModal, {
+  })), sellModalPos && React.createElement(SellModal, {
     position: sellModalPos,
     prices: prices,
     onClose: () => setSellModalPos(null),
@@ -4762,6 +4901,11 @@ function HoldingRow(_refHR) {
   // nothing else knows it.
   const name = positionDisplayName(p, market, q);
   const hasName = name !== p.ticker;
+  // A unit trust has no ticker symbol, so its name takes the primary slot (where
+  // a ticker normally sits) and the sub-line is dropped — the opaque Morningstar
+  // id is never shown.
+  const isUT = isUnitTrustId(p.ticker);
+  const mainLabel = isUT && hasName ? name : p.ticker;
   const marketValue = q ? p.shares * q.price : null;
   const cost = p.shares * p.costBasis;
   const gain = marketValue != null ? marketValue - cost : null;
@@ -4776,10 +4920,10 @@ function HoldingRow(_refHR) {
     // the bottom action strip beside Edit (see ACTIONS below).
     React.createElement("div", { className: "row-main" },
       React.createElement("div", { className: "hold-id" },
-        React.createElement("span", { className: "hold-tkr-main" }, p.ticker),
-        React.createElement("span", { className: "mkt-badge" }, market)),
+        React.createElement("span", { className: "hold-tkr-main" }, mainLabel),
+        React.createElement("span", { className: "mkt-badge" }, isUT ? "fund" : market)),
       React.createElement("div", { className: "row-meta" },
-        hasName ? React.createElement("span", { className: "hold-co-name" }, name) : null)),
+        (hasName && !isUT) ? React.createElement("span", { className: "hold-co-name" }, name) : null)),
     // MIDDLE — total gain/loss: amount on top, % below
     React.createElement("div", { className: "holding-gl" },
       gain != null
@@ -5058,6 +5202,12 @@ async function searchListingsMulti(query, tickerHint, chosenMarket) {
   };
   const hasStrong = () => rankImportCandidates(q, tickerHint, chosenMarket, merged)
     .some(c => c.market === chosenMarket && c.nameScore >= 0.82);
+  // SA unit trusts (Coronation, Allan Gray, …) live only on Morningstar's fund
+  // feed, never on Yahoo — fold them in when importing into a ZAR account so a
+  // fund name resolves to its NAV alongside JSE-listed equities/ETFs.
+  if (chosenMarket === 'JSE' || chosenMarket === 'TFSA') {
+    try { merged.push(...await searchUnitTrusts(q, chosenMarket)); } catch (_e) {}
+  }
   await runSearch(q);
   if (!hasStrong()) {
     const norm = normaliseCompanyName(q);
@@ -9351,7 +9501,12 @@ function DetailModal(_ref10) {
   // ticker that's already the card's heading.
   const displayName = isIndicator ? indicator.label
     : ((pos && pos.name) ? prettyName(pos.name) : (resolveTickerName(ticker, market, quote) || null));
-  const headTitle = isIndicator ? indicator.short : ticker;
+  // A unit trust has no ticker symbol — its "ticker" is an opaque Morningstar id,
+  // so the fund name (not the id) is the card's heading and the subtitle drops
+  // the duplicate name, leaving just the market badge.
+  const isUnitTrust = !isIndicator && isUnitTrustId(ticker);
+  const headTitle = isIndicator ? indicator.short : (isUnitTrust && displayName ? displayName : ticker);
+  const subName = isUnitTrust ? null : displayName;
   const ccy = marketCurrency(market);
   // Price-trigger formatting: indicators show their own unit (e.g. "4.45%",
   // "F&G 20", "$18.05T") instead of a currency symbol.
@@ -9398,9 +9553,9 @@ function DetailModal(_ref10) {
     className: "modal-title"
   }, headTitle), React.createElement("div", {
     className: "modal-subtitle"
-  }, displayName ? React.createElement(React.Fragment, null, displayName, " \xB7 ") : null, React.createElement("span", {
+  }, subName ? React.createElement(React.Fragment, null, subName, " \xB7 ") : null, React.createElement("span", {
     className: "market-badge"
-  }, isIndicator ? "Indicator" : market))), React.createElement("button", {
+  }, isIndicator ? "Indicator" : (isUnitTrust ? "Unit trust" : market)))), React.createElement("button", {
     className: "modal-close",
     onClick: onClose,
     "aria-label": "Close"
@@ -10398,7 +10553,9 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
         statusDot(r),
         r.ticker
           ? React.createElement(React.Fragment, null,
-              React.createElement("span", { className: "import-match-tkr" }, r.ticker),
+              isUnitTrustId(r.ticker)
+                ? React.createElement("span", { className: "market-badge" }, "Unit trust")
+                : React.createElement("span", { className: "import-match-tkr" }, r.ticker),
               React.createElement("span", { className: "import-match-name" }, r.resolvedName || ''),
               lowConf ? React.createElement("span", { className: "import-conf-low", title: "Loose match — please confirm or pick an alternative" }, "check?") : null)
           : React.createElement("span", { className: "import-match-name text-dim" },
@@ -10422,8 +10579,8 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
           key: priceKey(c.market, c.ticker), className: "import-alt",
           onClick: () => chooseCandidate(r.id, c)
         },
-          React.createElement("span", { className: "import-alt-tkr" }, c.ticker),
-          React.createElement("span", { className: "market-badge" }, c.market),
+          isUnitTrustId(c.ticker) ? null : React.createElement("span", { className: "import-alt-tkr" }, c.ticker),
+          React.createElement("span", { className: "market-badge" }, isUnitTrustId(c.ticker) ? "Unit trust" : c.market),
           React.createElement("span", { className: "import-alt-name" }, c.name)))
       ) : null,
       // Manual matcher: search every live exchange by name or symbol and pick the
@@ -11651,9 +11808,22 @@ class ErrorBoundary extends React.Component {
   static getDerivedStateFromError(error) { return { error }; }
   componentDidCatch(error, info) { console.error('React crash:', error, info.componentStack); }
   render() {
-    if (this.state.error) return React.createElement("div", { style: { padding: 32, color: '#f43f5e', fontFamily: 'monospace', whiteSpace: 'pre-wrap' } },
-      React.createElement("h2", null, "Something went wrong"),
-      React.createElement("pre", null, String(this.state.error?.stack || this.state.error)));
+    if (this.state.error) return React.createElement("div", {
+      style: { position: 'fixed', inset: 0, overflow: 'auto', padding: 24, background: '#09090b',
+               color: '#fafafa', fontFamily: '-apple-system, BlinkMacSystemFont, Inter, sans-serif',
+               display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center' } },
+      React.createElement("div", { style: { fontSize: 40 } }, "⚠️"),
+      React.createElement("h2", { style: { margin: 0, fontWeight: 700 } }, "Something went wrong"),
+      React.createElement("p", { style: { margin: 0, color: '#a1a1aa', maxWidth: 360, lineHeight: 1.5 } },
+        "The app hit an unexpected error. Your saved holdings are safe on this device — reloading usually fixes it."),
+      React.createElement("button", {
+        onClick: () => window.location.reload(),
+        style: { padding: '11px 22px', borderRadius: 10, border: 'none', cursor: 'pointer',
+                 background: 'linear-gradient(135deg, #3b82f6, #a855f7)', color: '#fff', fontWeight: 600, fontSize: 15 }
+      }, "Reload app"),
+      React.createElement("pre", { style: { marginTop: 8, color: '#52525b', fontFamily: 'monospace', fontSize: 11,
+               whiteSpace: 'pre-wrap', maxWidth: '90vw', maxHeight: '30vh', overflow: 'auto', textAlign: 'left' } },
+        String(this.state.error?.stack || this.state.error)));
     return this.props.children;
   }
 }
