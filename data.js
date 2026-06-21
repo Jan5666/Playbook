@@ -231,6 +231,34 @@ window.PB_DATA = {
     {ticker:'MBG',name:'Mercedes-Benz',exchange:'FRA'},{ticker:'DBK',name:'Deutsche Bank',exchange:'FRA'},
     {ticker:'BAS',name:'BASF',exchange:'FRA'},{ticker:'BAYN',name:'Bayer',exchange:'FRA'}
   ],
+  // Widely-held US-listed ETFs so they're searchable / matchable on import even
+  // when Yahoo's name search is rate-limited or down. The playbook's own iShares
+  // names (IAU/IEF/USMV/ITA/XLV) live in HOLDINGS/HEDGES and are intentionally not
+  // repeated here. Emerging-markets funds are included because there's no JSE
+  // iShares EM listing — the US EEM/IEMG/VWO are how SA investors hold it.
+  US_SUGGESTIONS: [
+    {ticker:'EEM',name:'iShares MSCI Emerging Markets ETF'},{ticker:'IEMG',name:'iShares Core MSCI Emerging Markets ETF'},
+    {ticker:'VWO',name:'Vanguard FTSE Emerging Markets ETF'},{ticker:'EEMV',name:'iShares MSCI Emerging Markets Min Vol ETF'},
+    {ticker:'EFA',name:'iShares MSCI EAFE ETF'},{ticker:'VEA',name:'Vanguard FTSE Developed Markets ETF'},
+    {ticker:'IEFA',name:'iShares Core MSCI EAFE ETF'},{ticker:'ACWI',name:'iShares MSCI ACWI ETF'},
+    {ticker:'URTH',name:'iShares MSCI World ETF'},{ticker:'VT',name:'Vanguard Total World Stock ETF'},
+    {ticker:'SPY',name:'SPDR S&P 500 ETF Trust'},{ticker:'VOO',name:'Vanguard S&P 500 ETF'},
+    {ticker:'IVV',name:'iShares Core S&P 500 ETF'},{ticker:'VTI',name:'Vanguard Total Stock Market ETF'},
+    {ticker:'QQQ',name:'Invesco QQQ Trust'},{ticker:'DIA',name:'SPDR Dow Jones Industrial Average ETF'},
+    {ticker:'IWM',name:'iShares Russell 2000 ETF'},{ticker:'SCHD',name:'Schwab US Dividend Equity ETF'},
+    {ticker:'VIG',name:'Vanguard Dividend Appreciation ETF'},{ticker:'VYM',name:'Vanguard High Dividend Yield ETF'},
+    {ticker:'SMH',name:'VanEck Semiconductor ETF'},{ticker:'SOXX',name:'iShares Semiconductor ETF'},
+    {ticker:'XLK',name:'Technology Select Sector SPDR'},{ticker:'XLF',name:'Financial Select Sector SPDR'},
+    {ticker:'XLE',name:'Energy Select Sector SPDR'},{ticker:'XLY',name:'Consumer Discretionary Select Sector SPDR'},
+    {ticker:'XLP',name:'Consumer Staples Select Sector SPDR'},{ticker:'XLI',name:'Industrial Select Sector SPDR'},
+    {ticker:'XLU',name:'Utilities Select Sector SPDR'},{ticker:'XLB',name:'Materials Select Sector SPDR'},
+    {ticker:'XLRE',name:'Real Estate Select Sector SPDR'},{ticker:'XLC',name:'Communication Services Select Sector SPDR'},
+    {ticker:'AGG',name:'iShares Core US Aggregate Bond ETF'},{ticker:'BND',name:'Vanguard Total Bond Market ETF'},
+    {ticker:'TLT',name:'iShares 20+ Year Treasury Bond ETF'},{ticker:'GLD',name:'SPDR Gold Shares'},
+    {ticker:'SLV',name:'iShares Silver Trust'},{ticker:'IBIT',name:'iShares Bitcoin Trust'},
+    {ticker:'ARKK',name:'ARK Innovation ETF'},{ticker:'JEPI',name:'JPMorgan Equity Premium Income ETF'},
+    {ticker:'JEPQ',name:'JPMorgan Nasdaq Equity Premium Income ETF'},{ticker:'VGT',name:'Vanguard Information Technology ETF'}
+  ],
   DEPLOYMENT_PHASES: [
     { order:1, phase:'Phase 1', title:'Immediate (within 10 days)',
       actions:['Sell ASPI full','Sell MSTR 50%','Trim NBIS 33%','Trim Citi 20%','Trim NVDA 15%','Trim ASML 25%','Trim OXY 25-30%','Deploy ~$150 CEG, ~$150 TSM, ~$130 UNH, ~$120 VRTX','Add $100 to hedges','Hold ~$150 as opportunity cash'] },
@@ -739,6 +767,7 @@ window.PB_DATA.findInfo = function(ticker, market) {
   return window.PB_DATA.HOLDINGS.find(h => h.ticker === ticker)
     || window.PB_DATA.NEW_PICKS.find(p => p.ticker === ticker)
     || window.PB_DATA.HEDGES.find(h => h.ticker === ticker)
+    || (window.PB_DATA.US_SUGGESTIONS || []).find(s => s.ticker === ticker)
     || { ticker, name: ticker };
 };
 
