@@ -170,9 +170,18 @@ function useSwipeDownToClose(panelRef, onClose, enabled = true) {
     let velocity = 0;
     let lastT = 0;
     let panelH = 0;
+    // A close-drag may only begin from the fixed top chrome — the grab handle or
+    // the header. The scrolling body never dismisses the sheet, so scrolling its
+    // content up/down can no longer close the card (the previous guard checked
+    // `panel.scrollTop`, but the panel itself is `overflow:hidden` and never
+    // scrolls — the `.modal-body` does — so that guard was always 0 and ANY
+    // downward finger anywhere started a close: the "scrolling closes it" bug).
+    let grabZone = false;
     const DRAG_THRESHOLD = 6;
     const onTouchStart = (e) => {
       if (!isMobileLayout() || e.touches.length !== 1) return;
+      const t = e.target;
+      grabZone = !!(t && t.closest && t.closest('.modal-handle, .modal-header'));
       originY = prevY = e.touches[0].clientY;
       dragging = false;
       velocity = 0;
@@ -183,8 +192,8 @@ function useSwipeDownToClose(panelRef, onClose, enabled = true) {
       if (!isMobileLayout()) return;
       const y = e.touches[0].clientY;
       if (!dragging) {
-        // Only start a close-drag from the top of the panel pulling down.
-        if (panel.scrollTop > 0 || y - originY <= 0) { originY = y; prevY = y; return; }
+        // Only the handle/header grab zone can start a close-drag, pulling down.
+        if (!grabZone || y - originY <= 0) { originY = y; prevY = y; return; }
         if (y - originY < DRAG_THRESHOLD) return;
         dragging = true;
         // Anchor the drag here so the panel tracks the finger 1:1 with no jump.
