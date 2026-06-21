@@ -1,10 +1,10 @@
 # Playbook PWA
 
-Single-page React PWA for tracking your investment playbook with live prices, P&L, price alerts, phone notifications, and a Hot Topics earnings/macro radar.
+Single-page React PWA for tracking your investment playbook with live prices, P/L, price alerts, phone notifications, and a Hot Topics earnings/macro radar.
 
 ## Highlights
 
-- **Live prices & P&L** across US, JSE, TFSA and more, with market-hours-aware polling (slows to 5-min cadence when every tracked market is closed to save battery).
+- **Live prices & P/L** across US, JSE, TFSA and more, with market-hours-aware polling (slows to 5-min cadence when every tracked market is closed to save battery).
 - **Price alerts** that fire in-app, in the background on Android (Periodic Background Sync), and — with the optional backend below — as true server push on **both iPhone and Android even when the app is fully closed**.
 - **Hot Topics** tab: a 30-day earnings countdown across global mega-caps, your own holdings/watchlist and JSE names; a scheduled central-bank calendar (Fed/ECB/BoJ/BoE/SARB) plus data/energy events; and AI-surfaced market-moving headlines.
 
