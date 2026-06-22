@@ -5954,8 +5954,9 @@ async function parseImportFile(file) {
 }
 
 // ── Easy Equities screenshot import (on-device OCR) ─────────────────────────
-// The user screenshots their holdings inside the Easy Equities app (either a
-// single holding page or the portfolio list) and drops the images in. We OCR
+// The user screenshots their holdings inside the Easy Equities app (a single
+// holding page, the portfolio list, an emailed trade confirmation, or a
+// transaction-history row) and drops the images in. We OCR
 // them entirely in-browser with Tesseract.js — loaded lazily from a CDN only
 // when an image is actually scanned, so nothing is uploaded and the feature
 // adds no weight to first paint. The extracted name / JSE code / share count /
@@ -6090,6 +6091,27 @@ function isEEDetailScreenshot(text) {
     || (/#?\s*shares\b/.test(t) && /f\s?s\s?r/.test(t))
     || (/profit\s*\/?\s*loss/.test(t) && /previous\s*close/.test(t));
 }
+// The Easy Equities broker note (emailed trade confirmation) carries a costs
+// table — broker commission / STT / VAT — plus the trade value and total cost,
+// none of which a holding page shows. Two of these markers is a confident match.
+// NB: this must be tested *before* isEEDetailScreenshot, because the note's own
+// "SHARES … FSRs" line would otherwise misread it as a holding page.
+function isEEEmailScreenshot(text) {
+  const t = String(text || '').toLowerCase();
+  const hits = [
+    /trade\s*value/, /broker\s*commission/, /trade\s*price/,
+    /invoice\s*number/, /securities\s*transfer\s*tax/, /investor\s*protection\s*levy/,
+    /total\s*transaction\s*cost/, /settlement\s*date/,
+  ].reduce((n, re) => n + (re.test(t) ? 1 : 0), 0);
+  return hits >= 2;
+}
+// A transaction-history row: "Bought <name> <qty> @ <price>" with a DEBIT/CREDIT
+// cash line. Only buys are imported (a "Sold" row would reduce a holding, which
+// the add-to-position flow doesn't model).
+function isEEHistoryScreenshot(text) {
+  const t = String(text || '').toLowerCase();
+  return /\bbought\b/.test(t) && /debit\s*\/?\s*credit/.test(t) && /@/.test(text || '');
+}
 // Chrome / label text that must never be mistaken for an instrument name.
 const EE_CHROME_RE = /(profit\s*\/?\s*loss|exchange|^open$|^closed$|^sell$|buy more|my holding|current value|purchase value|purchase price|previous close|dividend rewards|tap here|^pricing$|last updated|selling at|buying at|last price|delayed|biz news|own the market|asset management|portfolio|watchlist|notify|my funds|\btotal\b|my investments|available|net value|account value|view all|all holdings|^(?:jse|jnb|nasdaq|nsdq|nyse|nyq|nms|arca|amex|bats|lse|lon|asx|fra|fwb|etr|par|epa|ams|xetra)$)/i;
 // Words that mark a line as a fund / instrument name even when it's short.
@@ -6148,6 +6170,11 @@ function eeDetectMarket(lines, fallback) {
   for (const zone of zones) {
     for (const [re, mk] of EE_EXCHANGE_MAP) if (re.test(zone)) return mk;
   }
+  // Broker notes / history rows carry no exchange label, but an EasyEquities ZAR
+  // account trades the JSE — so a ZAR-denominated note resolves to JSE (still
+  // subject to the TFSA override in eeResolveMarket). Lowest-priority signal, so
+  // any explicit exchange above always wins.
+  if (/\bzar\b/i.test(String(lines.join(' '))) && !/\b(usd|gbp|eur|aud)\b/i.test(String(lines.join(' ')))) return 'JSE';
   return fallback || null;
 }
 // Resolve a holding's final market: trust the exchange detected on the screenshot,
@@ -6280,6 +6307,158 @@ function parseEEListScreenshot(lines, market) {
   }
   return out;
 }
+// Words that mark a top-of-note line as the instrument's company name, and the
+// brokerage chrome (its own name, the account holder, the address, the costs
+// table labels) that must never be mistaken for it.
+const EE_COMPANY_SUFFIX_RE = /\b(limited|ltd|plc|inc|incorporated|corp|corporation|group|holdings?|company|reit|properties|investments?|capital|resources|industries|international|bank|n\.?v|s\.?a|s\.?e|a\.?g)\b/i;
+const EE_EMAIL_CHROME_RE = /(easyequities|first world trader|wework|coworking|oxford|rosebank|johannesburg|south africa|reg\.?\s*no|vat\s*no|account|acc\.?\s*num|trader\s*:|invoice|submission|settlement|broker\s*commission|securities\s*transfer|investor\s*protection|value-?added|easymoney|trade\s*value|trade\s*price|total\s*cost|total\s*transaction|transaction\s*cost|^detail\b|^zar\b|^shares\b|^fsrs?\b|^traded\b|jan\s*stander|biz news)/i;
+// Pull a yyyy-mm-dd date from the value of a labelled row (label and value may
+// share a line or wrap to the next couple). Tolerates -, / or . separators and
+// any trailing time. Returns '' when none is found.
+const _eeDateInLine = (l) => {
+  const m = String(l).match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/);
+  return (m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31)
+    ? `${m[1]}-${String(+m[2]).padStart(2, '0')}-${String(+m[3]).padStart(2, '0')}` : '';
+};
+function eeFindDate(lines, labelRe) {
+  for (let i = 0; i < lines.length; i++) {
+    if (!labelRe.test(lines[i])) continue;
+    for (let j = i; j < Math.min(i + 3, lines.length); j++) {
+      const d = _eeDateInLine(lines[j]);
+      if (d) return d;
+    }
+  }
+  return '';
+}
+// First yyyy-mm-dd anywhere, skipping lines that match excludeRe. Used as the
+// trade-date fallback on a broker note so a missed "SUBMISSION DATE" label never
+// falls through to the (later) SETTLEMENT DATE — which would mis-date the buy and
+// break de-dup against the matching history row.
+function eeFirstDate(lines, excludeRe) {
+  for (const l of lines) {
+    if (excludeRe && excludeRe.test(l)) continue;
+    const d = _eeDateInLine(l);
+    if (d) return d;
+  }
+  return '';
+}
+// The instrument name on a broker note is the prominent line above the "TRADED"
+// block. Company-suffix lines (Limited / PLC / Group) win; the brokerage's own
+// name, the account holder and the address are filtered out as chrome.
+function eeEmailName(lines) {
+  let cut = lines.findIndex(l => /\btraded\b|invoice\s*number|submission\s*date/i.test(l));
+  if (cut < 0) cut = Math.min(lines.length, 12);
+  const top = lines.slice(0, cut);
+  let best = '', bestScore = -1;
+  for (const raw of top) {
+    const l = eeCleanName(raw.replace(/\s{2,}/g, ' '));
+    if (l.length < 3 || EE_EMAIL_CHROME_RE.test(l) || !eeLooksLikeName(l)) continue;
+    const letters = (l.match(/[A-Za-z]/g) || []).length;
+    if (letters < 3) continue;
+    const score = letters + (EE_COMPANY_SUFFIX_RE.test(l) ? 1000 : 0)
+                + (l.split(/\s+/).filter(Boolean).length >= 2 ? 30 : 0);
+    if (score > bestScore) { bestScore = score; best = l; }
+  }
+  return best;
+}
+// Parse one emailed broker note into a holding. The split "SHARES | FSRs" cell
+// reads poorly, so the share count comes from trade value ÷ trade price (e.g.
+// 993.75 / 28.80 = 34.5052). Cost basis is the trade price — the per-share price
+// excluding fees, matching the "Avg Purchase Price" the app imports elsewhere.
+function parseEEEmailScreenshot(lines, market) {
+  const tradePrice = eeFieldValue(lines, /trade\s*price/i);
+  let value = eeFieldValue(lines, /trade\s*value/i);
+  if (value == null) {
+    const total = eeFieldValue(lines, /total\s*cost/i);
+    const costs = eeFieldValue(lines, /total\s*transaction\s*cost/i);
+    if (total != null && costs != null) value = total - costs;
+  }
+  const shares = (value != null && tradePrice != null && tradePrice > 0) ? value / tradePrice : null;
+  const cost = (tradePrice != null && tradePrice > 0) ? tradePrice : null;
+  const name = eeEmailName(lines);
+  const date = eeFindDate(lines, /submission\s*date/i) || eeFirstDate(lines, /settlement/i);
+  if (!name && shares == null && cost == null) return null;
+  return {
+    query: name || '', nameHint: name || '', tickerHint: null, marketHint: market,
+    shares: (shares != null && isFinite(shares) && shares > 0) ? shares : null,
+    costBasis: (cost != null && isFinite(cost) && cost > 0) ? cost : null,
+    purchaseDate: date || '',
+  };
+}
+// Parse one transaction-history row ("Bought <name> <qty> @ <price>" + a
+// DEBIT/CREDIT cash line). The COMMENT wraps over several OCR lines, so it's
+// rejoined before matching. Quantity always carries a decimal, which separates
+// it cleanly from any number inside the name.
+function parseEEHistoryScreenshot(lines, market) {
+  const joined = lines.join(' ').replace(/\s{2,}/g, ' ');
+  const m = joined.match(/bought\s+(.+?)\s+(\d[\d,\s]*\.\d+)\s*@\s*R?\s*([\d,\s]*\.?\d+)/i);
+  if (!m) return null;
+  const name = eeCleanName(m[1]);
+  const shares = parseDecimal(m[2]);
+  const atPrice = parseDecimal(m[3]);
+  const debitRaw = eeFieldValue(lines, /debit\s*\/?\s*credit/i);
+  const debit = debitRaw != null ? Math.abs(debitRaw) : null;
+  const derived = (debit != null && shares > 0) ? debit / shares : null;
+  // The JSE quotes share prices in cents in the history ("@ 2,880.00" = R28.80),
+  // but US prices appear in dollars. Rather than hard-code that, pick whichever
+  // reading of the "@" price reproduces the cash debit (= shares × price) — which
+  // self-corrects the cents convention for any market. The "@" price is exact
+  // (the cash debit is only 2-dp), so it's preferred over debit ÷ shares.
+  let cost = null;
+  if (atPrice != null && atPrice > 0 && derived != null) {
+    const asIs = Math.abs(atPrice - derived) / derived;
+    const asCents = Math.abs(atPrice / 100 - derived) / derived;
+    cost = asCents < asIs ? atPrice / 100 : atPrice;
+  } else if (atPrice != null && atPrice > 0) {
+    cost = market === 'JSE' ? atPrice / 100 : atPrice;
+  } else {
+    cost = derived;
+  }
+  const date = eeFindDate(lines, /\bdate\b/i);
+  if (!name && !(isFinite(shares) && shares > 0)) return null;
+  return {
+    query: name || '', nameHint: name || '', tickerHint: null, marketHint: market,
+    shares: (isFinite(shares) && shares > 0) ? shares : null,
+    costBasis: (cost != null && isFinite(cost) && cost > 0) ? cost : null,
+    purchaseDate: date || '',
+  };
+}
+// Two views of the *same* trade — an emailed broker note and its transaction-
+// history row — read as two holdings. Left alone they'd double the position when
+// imported (the commit path sums shares per ticker). Collapse rows that share a
+// market, date and (to tolerance) share count into one, since EE never books two
+// distinct fills at the identical fractional quantity on the same day. Distinct
+// buys of the same stock have different quantities, so they survive and merge
+// correctly downstream.
+const _eeNorm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function _eeFirstWord(s) { const m = String(s || '').toLowerCase().match(/[a-z]{3,}/); return m ? m[0] : ''; }
+function _eeSameTrade(a, b) {
+  if (a.marketHint !== b.marketHint) return false;
+  if (a.purchaseDate && b.purchaseDate && a.purchaseDate !== b.purchaseDate) return false;
+  const sa = a.shares, sb = b.shares;
+  if (sa == null || sb == null) return false;
+  if (Math.abs(sa - sb) > Math.max(0.001, 0.005 * Math.max(sa, sb))) return false;
+  const na = _eeNorm(a.query), nb = _eeNorm(b.query);
+  // Same market + same fractional quantity + same day is already conclusive; the
+  // name only has to not flatly contradict (OCR may spell it differently across
+  // the two views), so a shared leading word is enough.
+  if (na && nb && na !== nb && _eeFirstWord(a.query) !== _eeFirstWord(b.query)) return false;
+  return true;
+}
+function dedupeEeHoldings(list) {
+  const out = [];
+  for (const row of list || []) {
+    const hit = out.find(r => _eeSameTrade(r, row));
+    if (!hit) { out.push({ ...row }); continue; }
+    // Fill any field the kept row is missing, and keep the longer/cleaner name.
+    if (hit.costBasis == null && row.costBasis != null) hit.costBasis = row.costBasis;
+    if (hit.shares == null && row.shares != null) hit.shares = row.shares;
+    if (!hit.purchaseDate && row.purchaseDate) hit.purchaseDate = row.purchaseDate;
+    if (!hit.tickerHint && row.tickerHint) hit.tickerHint = row.tickerHint;
+    if ((row.query || '').length > (hit.query || '').length) { hit.query = row.query; hit.nameHint = row.nameHint || row.query; }
+  }
+  return out;
+}
 // defaultMarket = the market the user started from (the Holdings tab they were on
 // when they tapped Import). It's the fallback when a screenshot's own exchange
 // can't be read, and it disambiguates JSE vs TFSA (which share listings).
@@ -6288,6 +6467,16 @@ function parseEasyEquitiesScreenshot(text, defaultMarket, opts) {
     .map(s => s.replace(/ /g, ' ').trim()).filter(Boolean);
   if (lines.length === 0) return [];
   const market = eeResolveMarket(eeDetectMarket(lines, defaultMarket), defaultMarket);
+  // Broker note and transaction-history rows are checked first: the note's own
+  // "SHARES … FSRs" line would otherwise be mistaken for a holding page.
+  if (isEEEmailScreenshot(text)) {
+    const h = parseEEEmailScreenshot(lines, market);
+    return h ? [h] : [];
+  }
+  if (isEEHistoryScreenshot(text)) {
+    const h = parseEEHistoryScreenshot(lines, market);
+    return h ? [h] : [];
+  }
   if (isEEDetailScreenshot(text)) {
     const h = parseEEDetailScreenshot(lines, market, opts && opts.headerText);
     return h ? [h] : [];
@@ -10819,14 +11008,18 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
         all.push(...parseEasyEquitiesScreenshot(text, defaultMarket, { headerText }));
       }
       if (!all.length) {
-        setOcrError("Couldn't read any holdings from those images. Use a full Easy Equities holding page (showing “# Shares” and “Avg. Purchase Price”) or your portfolio list — and crop out anything else.");
+        setOcrError("Couldn't read any holdings from those images. Use an Easy Equities holding page (“# Shares” + “Avg. Purchase Price”), a trade confirmation, a transaction-history row, or your portfolio list — and crop out anything else.");
         return;
       }
+      // The same trade can arrive twice — its emailed broker note and its
+      // transaction-history row — so collapse duplicates before review, otherwise
+      // the per-ticker merge on commit would double the position.
+      const deduped = dedupeEeHoldings(all);
       // Highlight the market most rows landed on (their detected exchange, else
       // the tab the user started from) so the review chips match.
-      const mk = all.find(h => h.marketHint)?.marketHint;
+      const mk = deduped.find(h => h.marketHint)?.marketHint;
       if (mk) setChosenMarket(mk);
-      handleParsed(all);
+      handleParsed(deduped);
     } catch (e) {
       setOcrError(e?.message || 'Could not read those screenshots. Try again, or paste your holdings instead.');
     } finally {
@@ -11062,7 +11255,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
           : React.createElement(React.Fragment, null,
               React.createElement(Icon, { name: "image", size: 24 }),
               React.createElement("div", { className: "ee-scan-cta" }, "Tap to choose screenshots"),
-              React.createElement("div", { className: "ee-scan-hint" }, "One holding page each, or your portfolio list — add several at once.")),
+              React.createElement("div", { className: "ee-scan-hint" }, "Holding pages, trade confirmations, transaction-history rows, or your portfolio list — add several at once.")),
         React.createElement("input", {
           ref: imgRef, type: "file", accept: "image/*", multiple: true,
           style: { display: 'none' },

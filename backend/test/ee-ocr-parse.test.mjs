@@ -22,8 +22,9 @@ const eeSrc = slice('const TESSERACT_CDN =', '// ── Deposit / withdrawal');
 
 const ctx = { window: {} };
 vm.createContext(ctx);
-vm.runInContext(parseDecimalSrc + '\n' + eeSrc + '\nthis.parse = parseEasyEquitiesScreenshot;', ctx);
+vm.runInContext(parseDecimalSrc + '\n' + eeSrc + '\nthis.parse = parseEasyEquitiesScreenshot; this.dedupe = dedupeEeHoldings;', ctx);
 const parse = ctx.parse;
+const dedupe = ctx.dedupe;
 
 let failures = 0;
 function approx(a, b, tol = 0.001) { return a != null && Math.abs(a - b) <= tol; }
@@ -292,6 +293,158 @@ check('list yields ≥3 name rows', list.length >= 3, `got ${list.length}`);
 check('list rows are name-only', list.every(h => h.shares == null && h.costBasis == null && h.marketHint === 'JSE'));
 check('list excludes Total', !list.some(h => /total/i.test(h.query)));
 check('list names carry no amounts', list.every(h => !moneyInName(h.query)), JSON.stringify(list.map(h => h.query)));
+
+// ── Emailed broker note (trade confirmation) ─────────────────────────────────
+// Realistic full-page OCR of an Easy Equities ZAR trade confirmation: the logo
+// text, the split "SHARES | FSRs" cell, the brokerage's own name/address, and
+// the costs table. The parser must read the company name, derive shares from
+// trade value ÷ trade price, take the trade price (excl. fees) as cost basis,
+// the submission date, and resolve the market to JSE off the ZAR account.
+const EMAIL_AFRIMAT = `AFRIMAT
+LIMITED
+Afrimat Limited
+TRADED 1:
+SHARES FSRs TRADE PRICE:
+34 .5052 R 28.8000
+Jan Stander
+Account: EasyEquities ZAR
+Acc. number: EE683862-2544267
+Trader: System
+First World Trader t/a EasyEquities
+WeWork - Coworking Space, 173 Oxford Road,
+Rosebank, Johannesburg, South Africa, 2196
+Reg No. 1999/021265/07
+VAT No. 445 0255 759
+INVOICE NUMBER: #102962720
+SUBMISSION DATE: 2026-06-22 12:11:41
+SETTLEMENT DATE: 2026-07-02
+DETAIL ZAR
+BROKER COMMISSION 2.48
+SETTLEMENT AND ADMINISTRATION 0.79
+INVESTOR PROTECTION LEVY AND ADMINISTRATION (IPL) 0.01
+SECURITIES TRANSFER TAX AND ADMINISTRATION 2.48
+VALUE-ADDED TAX ON COSTS (VAT) 0.49
+EASYMONEY CREDIT ( How do I earn credit?) (EM 0.00)
+TOTAL TRANSACTION COST 6.25
+TRADE VALUE 993.75
+TOTAL COST 1,000.00`;
+const EMAIL_JUBILEE = `Jubilee
+Metals Group
+Jubilee Metals Group PLC
+TRADED 1:
+SHARES FSRs TRADE PRICE:
+1684 .3220 R 0.5900
+Account: EasyEquities ZAR
+INVOICE NUMBER: #102962794
+SUBMISSION DATE: 2026-06-22 12:13:21
+SETTLEMENT DATE: 2026-07-02
+DETAIL ZAR
+BROKER COMMISSION 2.48
+SECURITIES TRANSFER TAX AND ADMINISTRATION 2.48
+TOTAL TRANSACTION COST 6.25
+TRADE VALUE 993.75
+TOTAL COST 1,000.00`;
+const EMAIL_HOSKEN = `HCI
+Hosken Consolidated Investments Limited
+TRADED 1:
+SHARES FSRs TRADE PRICE:
+0 .2105 R 170.5000
+Account: EasyEquities ZAR
+INVOICE NUMBER: #102962764
+SUBMISSION DATE: 2026-06-22 12:12:39
+SETTLEMENT DATE: 2026-07-02
+DETAIL ZAR
+BROKER COMMISSION 0.09
+SECURITIES TRANSFER TAX AND ADMINISTRATION 0.09
+TOTAL TRANSACTION COST 0.24
+TRADE VALUE 35.89
+TOTAL COST 36.13`;
+
+console.log('\nEmail broker note (Afrimat)');
+const ea = parse(EMAIL_AFRIMAT, 'JSE')[0] || {};
+check('one holding parsed', !!ea.query, `got ${JSON.stringify(ea)}`);
+check('name = Afrimat Limited', ea.query === 'Afrimat Limited', `got "${ea.query}"`);
+check('shares = trade value ÷ price ≈ 34.5052', approx(ea.shares, 34.5052, 0.01), `got ${ea.shares}`);
+check('cost = trade price 28.80 (excl. fees)', approx(ea.costBasis, 28.80, 0.005), `got ${ea.costBasis}`);
+check('market resolves to JSE (ZAR account)', ea.marketHint === 'JSE', `got ${ea.marketHint}`);
+check('purchase date = submission date', ea.purchaseDate === '2026-06-22', `got ${ea.purchaseDate}`);
+check('no ticker hint (resolved by name)', ea.tickerHint == null, `got ${ea.tickerHint}`);
+check('name carries no amount', !moneyInName(ea.query), `got "${ea.query}"`);
+
+console.log('\nEmail broker note (Jubilee / Hosken names)');
+const ej = parse(EMAIL_JUBILEE, 'JSE')[0] || {};
+check('Jubilee name', ej.query === 'Jubilee Metals Group PLC', `got "${ej.query}"`);
+check('Jubilee cost = R0.59', approx(ej.costBasis, 0.59, 0.005), `got ${ej.costBasis}`);
+check('Jubilee shares ≈ 1684.322', approx(ej.shares, 1684.322, 0.5), `got ${ej.shares}`);
+const eh = parse(EMAIL_HOSKEN, 'JSE')[0] || {};
+check('Hosken name', eh.query === 'Hosken Consolidated Investments Limited', `got "${eh.query}"`);
+check('Hosken cost = R170.50', approx(eh.costBasis, 170.50, 0.005), `got ${eh.costBasis}`);
+
+// If OCR mangles the "SUBMISSION DATE" label, the trade date must still be read
+// from that line — never fall through to the (10-days-later) SETTLEMENT DATE.
+const mangledDate = parse(EMAIL_AFRIMAT.replace('SUBMISSION DATE:', 'SUBMISSON OATE'), 'JSE')[0] || {};
+check('mangled label → trade date, not settlement', mangledDate.purchaseDate === '2026-06-22', `got ${mangledDate.purchaseDate}`);
+
+// ── Transaction-history rows (price quoted in cents on the JSE) ───────────────
+// The COMMENT wraps over several OCR lines; cost basis comes from the cash debit
+// and the "@" price, with the cents convention ("@ 2,880.00" = R28.80) detected
+// automatically by which reading reproduces the debit.
+const HIST_AFRIMAT = `DATE 2026-06-22
+COMMENT Bought Afrimat
+Limited 34.5052 @
+2,880.00
+DEBIT/CREDIT -R993.75`;
+const HIST_JUBILEE = `DATE 2026-06-22
+COMMENT Bought Jubilee Metals
+Group PLC 1,684.3220
+@ 59.00
+DEBIT/CREDIT -R993.75`;
+const HIST_HOSKEN = `DATE 2026-06-22
+COMMENT Bought Hosken
+Consolidated
+Investments Limited
+0.2105 @ 17,050.00
+DEBIT/CREDIT -R35.89`;
+
+console.log('\nTransaction-history row (cents price)');
+const ha = parse(HIST_AFRIMAT, 'JSE')[0] || {};
+check('name = Afrimat Limited', ha.query === 'Afrimat Limited', `got "${ha.query}"`);
+check('shares = 34.5052', approx(ha.shares, 34.5052), `got ${ha.shares}`);
+check('@2,880.00 cents → R28.80', approx(ha.costBasis, 28.80, 0.01), `got ${ha.costBasis}`);
+check('purchase date = 2026-06-22', ha.purchaseDate === '2026-06-22', `got ${ha.purchaseDate}`);
+const hh = parse(HIST_HOSKEN, 'JSE')[0] || {};
+check('Hosken name (wrapped comment)', hh.query === 'Hosken Consolidated Investments Limited', `got "${hh.query}"`);
+check('Hosken shares = 0.2105', approx(hh.shares, 0.2105), `got ${hh.shares}`);
+check('@17,050.00 cents → R170.50', approx(hh.costBasis, 170.50, 0.05), `got ${hh.costBasis}`);
+
+// A US-dollar history row must NOT have its price divided by 100 — the cents
+// convention is JSE-only, and the debit cross-check keeps dollars as dollars.
+const usHist = parse(`DATE 2026-06-20
+COMMENT Bought Apple Inc 2.0000 @ 150.00
+DEBIT/CREDIT -$300.00`, 'US')[0] || {};
+check('US row keeps $150 (no cents ÷100)', approx(usHist.costBasis, 150, 0.01), `got ${usHist.costBasis}`);
+check('US row market = US', usHist.marketHint === 'US', `got ${usHist.marketHint}`);
+
+// ── De-dup: the same trade arriving as both a note and a history row ──────────
+// The user dropped 6 screenshots for 3 trades; they must collapse to 3 holdings,
+// and the share counts must NOT double (the commit path sums shares per ticker).
+console.log('\nDe-dup (note + history of the same trade)');
+const allSix = [
+  ...parse(EMAIL_AFRIMAT, 'JSE'), ...parse(EMAIL_JUBILEE, 'JSE'), ...parse(EMAIL_HOSKEN, 'JSE'),
+  ...parse(HIST_AFRIMAT, 'JSE'), ...parse(HIST_JUBILEE, 'JSE'), ...parse(HIST_HOSKEN, 'JSE'),
+];
+check('6 rows parsed before de-dup', allSix.length === 6, `got ${allSix.length}`);
+const merged = dedupe(allSix);
+check('6 screenshots → 3 holdings', merged.length === 3, `got ${merged.length}`);
+const mAfr = merged.find(h => /afrimat/i.test(h.query)) || {};
+check('Afrimat shares NOT doubled', approx(mAfr.shares, 34.5052, 0.01), `got ${mAfr.shares}`);
+check('Afrimat cost intact', approx(mAfr.costBasis, 28.80, 0.01), `got ${mAfr.costBasis}`);
+check('every merged holding has shares + cost', merged.every(h => h.shares > 0 && h.costBasis > 0), JSON.stringify(merged.map(h => [h.query, h.shares, h.costBasis])));
+// De-dup must not collapse two genuinely different buys of the same stock.
+const twoBuys = dedupe([...parse(HIST_AFRIMAT, 'JSE'), ...parse(`DATE 2026-06-25
+COMMENT Bought Afrimat Limited 10.0000 @ 2,900.00
+DEBIT/CREDIT -R290.00`, 'JSE')]);
+check('distinct same-stock buys kept separate', twoBuys.length === 2, `got ${twoBuys.length}`);
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' CHECK(S) FAILED'}`);
 process.exit(failures === 0 ? 0 : 1);
