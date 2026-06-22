@@ -801,6 +801,25 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   pointer-events: none; z-index: 1;
 }
 .input-prefix-wrap input { padding-left: 28px; }
+/* Crypto cost entry: currency picker + total/per-coin segmented toggle */
+.crypto-cost-controls {
+  display: flex; gap: 8px; align-items: stretch; margin-bottom: 8px; flex-wrap: wrap;
+}
+.crypto-cost-ccy { flex: 0 0 auto; width: auto; min-width: 104px; }
+.seg-toggle {
+  display: inline-flex; flex: 1 1 auto; min-width: 180px;
+  background: var(--surface-2, rgba(255,255,255,0.04));
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 8px; padding: 2px; gap: 2px;
+}
+.seg-toggle .seg-opt {
+  flex: 1 1 0; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-dim); font-size: 13px; font-weight: 600;
+  padding: 6px 8px; border-radius: 6px; transition: background .12s, color .12s;
+}
+.seg-toggle .seg-opt.active {
+  background: var(--accent, #6366f1); color: #fff;
+}
 .form-actions {
   display: flex; gap: 8px; justify-content: flex-end;
   padding-top: 4px; flex-wrap: wrap;
