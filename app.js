@@ -297,6 +297,9 @@ const MARKET_CURRENCY = {
   FRA:  { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
   PAR:  { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
   AMS:  { sym: '\u20ac',  code: 'EUR', label: 'EUR' },
+  // Crypto is quoted against USD (Yahoo's BTC-USD pairs), so it shares the
+  // dollar for display and FX conversion just like the US market.
+  CRYPTO: { sym: '$', code: 'USD', label: 'USD' },
 };
 const MARKETS = [
   { value: 'US',   label: 'US',   country: 'USA',          exchange: 'NYSE / NASDAQ' },
@@ -307,6 +310,7 @@ const MARKETS = [
   { value: 'FRA', label: 'FRA', country: 'Germany',     exchange: 'XETRA Frankfurt' },
   { value: 'PAR', label: 'PAR', country: 'France',      exchange: 'Euronext Paris' },
   { value: 'AMS', label: 'AMS', country: 'Netherlands', exchange: 'Euronext Amsterdam' },
+  { value: 'CRYPTO', label: 'Crypto', country: 'Crypto', exchange: 'Spot \u00b7 24/7' },
 ];
 // JSE and TFSA are the same underlying exchange — a TFSA account just tracks
 // JSE-listed shares (.JO) tax-free — so a JSE-listed search result is valid for
@@ -571,6 +575,9 @@ function yahooSymbol(ticker, market) {
   if (market === 'FRA') return ticker + '.F';
   if (market === 'PAR') return ticker + '.PA';
   if (market === 'AMS') return ticker + '.AS';
+  // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
+  // Guard against a symbol that already carries the pair so we never double it.
+  if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
   if (ticker === '^SPX') return '%5EGSPC';
   if (ticker === '^VIX') return '%5EVIX';
   if (ticker === '^GSPC') return '%5EGSPC';
@@ -578,6 +585,8 @@ function yahooSymbol(ticker, market) {
 }
 function stooqSymbol(ticker, market) {
   if (market === 'JSE' || market === 'TFSA') return ticker.toLowerCase() + '.jo';
+  // Stooq quotes crypto as e.g. "btcusd" (no exchange suffix).
+  if (market === 'CRYPTO') return ticker.toLowerCase().replace(/-usd$/, '') + 'usd';
   if (ticker === '^SPX' || ticker === '^GSPC') return '%5Espx';
   if (ticker === '^VIX') return '%5Evix';
   return ticker.toLowerCase().replace('-', '.') + '.us';
@@ -1396,7 +1405,8 @@ async function fetchFundamentalsPerplexity(ticker, market, companyName, apiKey) 
   const exchangeLabel = {
     JSE: 'Johannesburg Stock Exchange', LSE: 'London Stock Exchange',
     ASX: 'Australian Securities Exchange', FRA: 'Frankfurt (XETRA)',
-    PAR: 'Euronext Paris', AMS: 'Euronext Amsterdam', US: 'US markets'
+    PAR: 'Euronext Paris', AMS: 'Euronext Amsterdam', US: 'US markets',
+    CRYPTO: 'cryptocurrency (USD spot market)'
   }[market] || market;
   const prompt = `Return current fundamentals for ${name} (ticker ${ticker}, ${exchangeLabel}) as compact JSON only, no prose, no markdown.
 
@@ -1639,7 +1649,8 @@ async function fetchPerplexityNews(ticker, market, companyName, apiKey) {
   const exchangeLabel = {
     JSE: 'Johannesburg Stock Exchange', LSE: 'London Stock Exchange',
     ASX: 'Australian Securities Exchange', FRA: 'Frankfurt (XETRA)',
-    PAR: 'Euronext Paris', AMS: 'Euronext Amsterdam', US: 'US markets'
+    PAR: 'Euronext Paris', AMS: 'Euronext Amsterdam', US: 'US markets',
+    CRYPTO: 'cryptocurrency (USD spot market)'
   }[market] || market;
   const prompt = `Find the 6 most recent and relevant news items from the past 14 days about ${name} (ticker ${ticker}, listed on ${exchangeLabel}). Prioritise earnings, guidance, analyst actions, M&A, regulatory, product launches, and share-price moving events.
 
@@ -2454,9 +2465,12 @@ const MARKET_SESSIONS = {
   ASX:  { tz: 'Australia/Sydney',    open: 10 * 60, close: 16 * 60 + 10 },
   FRA:  { tz: 'Europe/Berlin',       open: 9 * 60,  close: 17 * 60 + 35 },
   PAR:  { tz: 'Europe/Paris',        open: 9 * 60,  close: 17 * 60 + 35 },
-  AMS:  { tz: 'Europe/Amsterdam',    open: 9 * 60,  close: 17 * 60 + 35 }
+  AMS:  { tz: 'Europe/Amsterdam',    open: 9 * 60,  close: 17 * 60 + 35 },
+  CRYPTO: { tz: 'UTC',               open: 0,       close: 24 * 60, alwaysOpen: true }
 };
 function marketOpen(market, now = new Date()) {
+  // Crypto never closes — trades 24/7 including weekends — so always poll it.
+  if (market === 'CRYPTO') return true;
   const s = MARKET_SESSIONS[market] || MARKET_SESSIONS.US;
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -4547,7 +4561,7 @@ function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, 
           React.createElement("button", { className: "btn btn-primary", onClick: save }, "Save allocation")))));
 }
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
-const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
+const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR', CRYPTO: 'Crypto' };
 function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
@@ -5302,6 +5316,7 @@ const ALL_TICKERS = (() => {
   (DATA.LSE_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, 'LSE'));
   (DATA.ASX_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, 'ASX'));
   (DATA.EU_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, s.exchange || 'FRA'));
+  (DATA.CRYPTO_SUGGESTIONS || []).forEach(s => add(s.ticker, s.name, 'CRYPTO'));
   return result;
 })();
 
@@ -5354,6 +5369,18 @@ async function fetchYahooSearch(query) {
     for (const item of data.quotes) {
       if (!item.symbol) continue;
       const qt = (item.quoteType || '').toUpperCase();
+      // Crypto pairs arrive as "BTC-USD"; book them on the CRYPTO market under the
+      // bare base symbol (BTC) so they price via yahooSymbol's -USD re-append. Only
+      // surface USD pairs — that's the unit the app holds and converts from.
+      if (qt === 'CRYPTOCURRENCY') {
+        const m = String(item.symbol).match(/^([A-Za-z0-9]+)-USD$/);
+        if (!m) continue;
+        const tk = m[1].toUpperCase();
+        const nm = item.shortname || item.longname || tk;
+        cacheName('CRYPTO', tk, nm);
+        out.push({ ticker: tk, market: 'CRYPTO', name: nm, exchange: 'Crypto' });
+        continue;
+      }
       if (qt && qt !== 'EQUITY' && qt !== 'ETF' && qt !== 'MUTUALFUND') continue;
       const parsed = parseYahooSymbol(item.symbol);
       if (!parsed) continue;
