@@ -231,6 +231,27 @@ window.PB_DATA = {
     {ticker:'MBG',name:'Mercedes-Benz',exchange:'FRA'},{ticker:'DBK',name:'Deutsche Bank',exchange:'FRA'},
     {ticker:'BAS',name:'BASF',exchange:'FRA'},{ticker:'BAYN',name:'Bayer',exchange:'FRA'}
   ],
+  // Major cryptocurrencies, held as their own "market". Tickers are the bare
+  // base symbol (BTC, ETH); the app appends "-USD" when pricing via Yahoo, so a
+  // holding of 0.5 BTC books as CRYPTO:BTC and prices off BTC-USD in dollars.
+  CRYPTO_SUGGESTIONS: [
+    {ticker:'BTC',name:'Bitcoin'},{ticker:'ETH',name:'Ethereum'},{ticker:'USDT',name:'Tether'},
+    {ticker:'BNB',name:'BNB'},{ticker:'SOL',name:'Solana'},{ticker:'XRP',name:'XRP'},
+    {ticker:'USDC',name:'USD Coin'},{ticker:'ADA',name:'Cardano'},{ticker:'DOGE',name:'Dogecoin'},
+    {ticker:'TRX',name:'TRON'},{ticker:'AVAX',name:'Avalanche'},{ticker:'SHIB',name:'Shiba Inu'},
+    {ticker:'DOT',name:'Polkadot'},{ticker:'LINK',name:'Chainlink'},{ticker:'BCH',name:'Bitcoin Cash'},
+    {ticker:'LTC',name:'Litecoin'},{ticker:'MATIC',name:'Polygon'},{ticker:'UNI',name:'Uniswap'},
+    {ticker:'XLM',name:'Stellar'},{ticker:'ATOM',name:'Cosmos'},{ticker:'XMR',name:'Monero'},
+    {ticker:'ETC',name:'Ethereum Classic'},{ticker:'FIL',name:'Filecoin'},{ticker:'APT',name:'Aptos'},
+    {ticker:'ARB',name:'Arbitrum'},{ticker:'OP',name:'Optimism'},{ticker:'NEAR',name:'NEAR Protocol'},
+    {ticker:'ICP',name:'Internet Computer'},{ticker:'ALGO',name:'Algorand'},{ticker:'HBAR',name:'Hedera'},
+    {ticker:'SUI',name:'Sui'},{ticker:'AAVE',name:'Aave'},{ticker:'MKR',name:'Maker'},
+    {ticker:'GRT',name:'The Graph'},{ticker:'SAND',name:'The Sandbox'},{ticker:'MANA',name:'Decentraland'},
+    {ticker:'AXS',name:'Axie Infinity'},{ticker:'PEPE',name:'Pepe'},{ticker:'INJ',name:'Injective'},
+    {ticker:'RNDR',name:'Render'},{ticker:'TIA',name:'Celestia'},{ticker:'SEI',name:'Sei'},
+    {ticker:'STX',name:'Stacks'},{ticker:'IMX',name:'Immutable'},{ticker:'QNT',name:'Quant'},
+    {ticker:'XTZ',name:'Tezos'},{ticker:'TON',name:'Toncoin'},{ticker:'CRO',name:'Cronos'}
+  ],
   // Widely-held US-listed ETFs so they're searchable / matchable on import even
   // when Yahoo's name search is rate-limited or down. The playbook's own iShares
   // names (IAU/IEF/USMV/ITA/XLV) live in HOLDINGS/HEDGES and are intentionally not
@@ -755,6 +776,7 @@ window.PB_DATA = {
 
 // Known tickers for sector/name lookups (all exchanges)
 window.PB_DATA.findInfo = function(ticker, market) {
+  if (market === 'CRYPTO') return (window.PB_DATA.CRYPTO_SUGGESTIONS || []).find(s => s.ticker === ticker) || { ticker, name: ticker };
   if (market === 'TFSA') return window.PB_DATA.TFSA_SUGGESTIONS.find(s => s.ticker === ticker) || window.PB_DATA.JSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
   if (market === 'JSE') return window.PB_DATA.JSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
   if (market === 'LSE') return window.PB_DATA.LSE_SUGGESTIONS.find(s => s.ticker === ticker) || { ticker, name: ticker };
@@ -1065,6 +1087,8 @@ window.PB_DATA.findSector = function (ticker, market, hint) {
   if (!ticker) return { sector: 'Other', industry: 'Other' };
   const t = String(ticker).toUpperCase().trim();
   const mkt = market || 'US';
+  // Everything on the crypto market is, by definition, the Crypto bucket.
+  if (mkt === 'CRYPTO') return { sector: 'Crypto', industry: 'Cryptocurrency' };
   // 1. Curated master map.
   if (mkt === 'US') {
     const s = window.PB_DATA._US_SECTORS[t];
