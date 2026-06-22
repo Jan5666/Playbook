@@ -2413,6 +2413,15 @@ const Icon = _ref => {
       d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
     }), React.createElement("path", {
       d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+    })),
+    sort: React.createElement("g", null, React.createElement("path", {
+      d: "m3 8 4-4 4 4"
+    }), React.createElement("path", {
+      d: "M7 4v16"
+    }), React.createElement("path", {
+      d: "m21 16-4 4-4-4"
+    }), React.createElement("path", {
+      d: "M17 20V4"
     }))
   };
   return React.createElement("svg", {
@@ -2788,9 +2797,10 @@ function usePortfolio(fxRates, toast) {
   const [positions, setPositions] = usePersistedState('pb.positions.v2', []);
   const [watchlist, setWatchlist] = usePersistedState('pb.watchlist.v2', []);
   // User-defined watchlists. The built-in "Watchlist" list (id 'default') is
-  // always present and implicit — items with listId 'default' or no listId (legacy
-  // entries from before multi-list) belong to it — so this array holds only the
-  // extra lists the user creates. Each watchlist item carries a single listId.
+  // always present and implicit, so this array holds only the extra lists the
+  // user creates. Each watchlist item carries a `listIds` array — a stock can
+  // belong to several lists at once. Legacy entries with a single `listId` (or
+  // none) are normalised by watchListIds().
   const [watchlistGroups, setWatchlistGroups] = usePersistedState('pb.watchlistGroups.v1', []);
   const [alerts, setAlerts] = usePersistedState('pb.alerts.v2', []);
   const [contributions, setContributions] = usePersistedState('pb.contributions.v1', []);
@@ -3069,16 +3079,14 @@ function usePortfolio(fxRates, toast) {
   const addWatch = (ticker, market, name, listId) => {
     ticker = ticker.toUpperCase();
     const list = listId || 'default';
-    if (watchlist.some(w => w.ticker === ticker && w.market === market)) {
-      // Already tracked somewhere — make the add still feel responsive by moving
-      // it into the list the user is adding to (e.g. from the stock card), rather
-      // than silently doing nothing.
-      let moved = false;
-      setWatchlist(prev => prev.map(w => {
-        if (w.ticker === ticker && w.market === market && (w.listId || 'default') !== list) { moved = true; return { ...w, listId: list }; }
-        return w;
-      }));
-      toast(moved ? ('Moved ' + ticker) : 'Already on watchlist');
+    const existing = watchlist.find(w => w.ticker === ticker && w.market === market);
+    if (existing) {
+      // Already tracked — a stock can live in several lists, so just add it to
+      // this one too (rather than moving it out of the others).
+      if (watchListIds(existing).includes(list)) { toast('Already on ' + (list === 'default' ? 'watchlist' : 'that list')); return; }
+      setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market)
+        ? { ...w, listIds: [...watchListIds(w), list], listId: undefined } : w));
+      toast('Added ' + ticker);
       return;
     }
     let resolvedName = name;
@@ -3091,14 +3099,37 @@ function usePortfolio(fxRates, toast) {
       ticker,
       market,
       name: resolvedName || null,
-      listId: list,
+      listIds: [list],
       addedAt: new Date().toISOString()
     }]);
     toast('Added ' + ticker);
   };
   const removeWatch = id => setWatchlist(prev => prev.filter(w => w.id !== id));
-  // Move a single watch entry into a different list.
-  const moveWatch = (id, listId) => setWatchlist(prev => prev.map(w => w.id === id ? { ...w, listId: listId || 'default' } : w));
+  // Move a single watch entry into a different list (legacy single-list helper,
+  // kept for import/sync compatibility).
+  const moveWatch = (id, listId) => setWatchlist(prev => prev.map(w => w.id === id ? { ...w, listIds: [listId || 'default'], listId: undefined } : w));
+  // Toggle a stock's membership in one list. Adding when untracked creates the
+  // entry; removing its last remaining list drops it from the watchlist entirely.
+  const toggleWatchList = (ticker, market, name, listId) => {
+    ticker = (ticker || '').toUpperCase();
+    const list = listId || 'default';
+    const existing = watchlist.find(w => w.ticker === ticker && w.market === market);
+    if (!existing) { addWatch(ticker, market, name, list); return; }
+    const ids = watchListIds(existing);
+    if (ids.includes(list)) {
+      const next = ids.filter(x => x !== list);
+      if (next.length === 0) {
+        setWatchlist(prev => prev.filter(w => !(w.ticker === ticker && w.market === market)));
+        toast('Removed ' + ticker);
+      } else {
+        setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market) ? { ...w, listIds: next, listId: undefined } : w));
+        toast('Removed from list');
+      }
+    } else {
+      setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market) ? { ...w, listIds: [...ids, list], listId: undefined } : w));
+      toast('Added to list');
+    }
+  };
   const addWatchGroup = (name) => {
     const nm = (name || '').trim();
     if (!nm) return null;
@@ -3114,8 +3145,14 @@ function usePortfolio(fxRates, toast) {
   };
   const removeWatchGroup = (id) => {
     if (id === 'default') return;
-    // Keep the stocks — just send them back to the built-in list.
-    setWatchlist(prev => prev.map(w => (w.listId || 'default') === id ? { ...w, listId: 'default' } : w));
+    // Keep the stocks — just drop this list from their membership, falling back
+    // to the built-in list if it was the only one they were filed under.
+    setWatchlist(prev => prev.map(w => {
+      const ids = watchListIds(w);
+      if (!ids.includes(id)) return w;
+      const next = ids.filter(x => x !== id);
+      return { ...w, listIds: next.length ? next : ['default'], listId: undefined };
+    }));
     setWatchlistGroups(prev => prev.filter(g => g.id !== id));
     toast('List deleted');
   };
@@ -3149,7 +3186,7 @@ function usePortfolio(fxRates, toast) {
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
     addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit, removeTfsaDeposits,
-    addWatch, removeWatch, moveWatch, addWatchGroup, renameWatchGroup, removeWatchGroup,
+    addWatch, removeWatch, moveWatch, toggleWatchList, addWatchGroup, renameWatchGroup, removeWatchGroup,
     addAlert, removeAlert
   };
 }
@@ -3297,7 +3334,7 @@ function App() {
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions,
     addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit, removeTfsaDeposits,
-    addWatch, removeWatch, moveWatch, addWatchGroup, renameWatchGroup, removeWatchGroup,
+    addWatch, removeWatch, moveWatch, toggleWatchList, addWatchGroup, renameWatchGroup, removeWatchGroup,
     addAlert, removeAlert
   } = usePortfolio(fxRates, toast);
   useEffect(() => {
@@ -3805,6 +3842,7 @@ function App() {
     onAddWatch: addWatch,
     onRemoveWatch: removeWatch,
     onMoveWatch: moveWatch,
+    onToggleWatchList: toggleWatchList,
     onAddWatchGroup: addWatchGroup,
     onAddAlert: addAlert,
     onRemoveAlert: removeAlert,
@@ -6625,6 +6663,14 @@ function resolveTickerName(ticker, market, q) {
   return pretty;
 }
 
+// A watch entry can belong to several lists at once. Legacy entries stored a
+// single `listId`; current entries store a `listIds` array. This normalises both
+// to an array, defaulting to the built-in "Watchlist" list.
+function watchListIds(w) {
+  if (w && Array.isArray(w.listIds) && w.listIds.length) return w.listIds;
+  return [(w && w.listId) || 'default'];
+}
+
 function buildSuggestions(watchlist) {
   const taken = new Set(watchlist.map(w => priceKey(w.market, w.ticker)));
   const marketCount = {};
@@ -6692,6 +6738,12 @@ function WatchlistView(_ref8) {
   const [search, setSearch] = useState('');
   const [filterMarket, setFilterMarket] = useState('all');
   const [sortMode, setSortMode] = useState('manual');
+  // Search/sort live as collapsed icon buttons in the action row; these drive
+  // the iOS-style expand of the search field and the sort popover respectively.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const searchInputRef = useRef(null);
   const [creatingList, setCreatingList] = useState(false);
   const [newListName, setNewListName] = useState('');
   const [managingList, setManagingList] = useState(false);
@@ -6700,7 +6752,10 @@ function WatchlistView(_ref8) {
   useEffect(() => {
     if (activeList !== 'all' && activeList !== 'default' && !groups.some(g => g.id === activeList)) setActiveList('all');
   }, [activeList, groups]);
-  const listOf = (w) => w.listId || 'default';
+  // A stock can sit in several lists at once, so membership is a set test rather
+  // than a single id compare. customListsOf drives the per-card list badges.
+  const inList = (w, id) => watchListIds(w).includes(id);
+  const customListsOf = (w) => watchListIds(w).filter(id => id !== 'default');
   const reorderEnabled = activeList === 'all' && !search.trim() && filterMarket === 'all' && sortMode === 'manual';
   const targetListId = activeList === 'all' ? 'default' : activeList;
   // Suggestion chips leave the list the instant they're added (the list is
@@ -7072,15 +7127,15 @@ function WatchlistView(_ref8) {
   const tabLists = [{ id: 'all', name: 'All' }, { id: 'default', name: 'Watchlist' }, ...groups];
   const isCustomActive = activeList !== 'all' && activeList !== 'default';
   const listNameById = (id) => (id === 'default' ? 'Watchlist' : ((groups.find(g => g.id === id) || {}).name || 'Watchlist'));
-  const countFor = (id) => id === 'all' ? watchlist.length : watchlist.filter(w => listOf(w) === id).length;
+  const countFor = (id) => id === 'all' ? watchlist.length : watchlist.filter(w => inList(w, id)).length;
   const activeCount = activeList === 'all' ? watchlist.length : countFor(activeList);
   const marketsPresent = useMemo(() => {
     const set = new Set();
-    watchlist.forEach(w => { if (activeList === 'all' || listOf(w) === activeList) set.add(w.market); });
+    watchlist.forEach(w => { if (activeList === 'all' || inList(w, activeList)) set.add(w.market); });
     return Array.from(set).sort();
   }, [watchlist, activeList]);
   const visible = useMemo(() => {
-    let arr = watchlist.filter(w => activeList === 'all' ? true : listOf(w) === activeList);
+    let arr = watchlist.filter(w => activeList === 'all' ? true : inList(w, activeList));
     const s = search.trim().toLowerCase();
     if (s) arr = arr.filter(w => w.ticker.toLowerCase().includes(s) || (w.name || '').toLowerCase().includes(s));
     if (filterMarket !== 'all') arr = arr.filter(w => w.market === filterMarket);
@@ -7096,7 +7151,13 @@ function WatchlistView(_ref8) {
   }, [watchlist, activeList, search, filterMarket, sortMode, prices]);
   // Switching lists clears the in-list filters so you never land on a list that
   // looks empty because of a stale search / market filter.
-  useEffect(() => { setSearch(''); setFilterMarket('all'); setManagingList(false); }, [activeList]);
+  useEffect(() => { setSearch(''); setFilterMarket('all'); setManagingList(false); setSearchOpen(false); setSortOpen(false); setManageOpen(false); }, [activeList]);
+  const sortOptions = [
+    { id: 'manual', label: reorderEnabled ? 'Manual order' : 'Default order' },
+    { id: 'today', label: "Today's move" },
+    { id: 'name', label: 'Name A–Z' },
+    { id: 'recent', label: 'Recently added' }
+  ];
   const createList = () => {
     const id = onAddWatchGroup && onAddWatchGroup(newListName);
     if (id) setActiveList(id);
@@ -7104,13 +7165,14 @@ function WatchlistView(_ref8) {
   };
   const saveRename = () => {
     if (onRenameWatchGroup && renameValue.trim()) onRenameWatchGroup(activeList, renameValue);
-    setManagingList(false);
+    setManagingList(false); setManageOpen(false);
   };
   const deleteList = () => {
     if (onRemoveWatchGroup) onRemoveWatchGroup(activeList);
-    setManagingList(false); setActiveList('all');
+    setManagingList(false); setManageOpen(false); setActiveList('all');
   };
   return React.createElement("div", null,
+    // Topline — the watchlists only. Search, sort and Add live on the row below.
     React.createElement("div", { className: "wl-tabbar" },
       React.createElement("div", { className: "wl-tabs" },
         tabLists.map(l => React.createElement("button", {
@@ -7122,7 +7184,78 @@ function WatchlistView(_ref8) {
           key: '__new', className: "wl-tab wl-tab-new",
           onClick: () => { setCreatingList(true); setManagingList(false); }, "aria-label": "New list"
         }, React.createElement(Icon, { name: "plus", size: 13 }), " List") : null
-      ),
+      )
+    ),
+    // Action row — interactive search/sort icons (iOS-style expand) + Add. Search
+    // and sort only appear when there's something to act on; Add is always here.
+    React.createElement("div", { className: "wl-toolbar" + (searchOpen ? " searching" : "") },
+      activeCount > 0 ? React.createElement("div", { className: "wl-search2" + (searchOpen ? " open" : "") },
+        React.createElement("button", {
+          className: "wl-iconbtn wl-search2-btn" + (searchOpen ? " active" : ""),
+          "aria-label": searchOpen ? "Close search" : "Search",
+          onClick: () => {
+            if (searchOpen) { setSearch(''); setSearchOpen(false); }
+            else { setSortOpen(false); setManageOpen(false); setSearchOpen(true); requestAnimationFrame(() => { try { searchInputRef.current && searchInputRef.current.focus(); } catch (_) {} }); }
+          }
+        }, React.createElement(Icon, { name: searchOpen ? "x" : "search", size: 16 })),
+        React.createElement("input", {
+          ref: searchInputRef,
+          className: "wl-search2-input", type: "text", placeholder: "Filter by ticker or name",
+          value: search, onChange: e => setSearch(e.target.value), tabIndex: searchOpen ? 0 : -1,
+          autoComplete: "off", autoCorrect: "off", spellCheck: false,
+          onKeyDown: e => { if (e.key === 'Escape') { setSearch(''); setSearchOpen(false); } }
+        })
+      ) : null,
+      activeCount > 0 ? React.createElement("div", { className: "wl-sortwrap" },
+        React.createElement("button", {
+          className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
+          "aria-label": "Sort", "aria-expanded": sortOpen,
+          onClick: () => { setSearchOpen(false); setManageOpen(false); setSortOpen(o => !o); }
+        }, React.createElement(Icon, { name: "sort", size: 16 }),
+           sortMode !== 'manual' ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null),
+        sortOpen ? React.createElement(React.Fragment, null,
+          React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setSortOpen(false) }),
+          React.createElement("div", { className: "wl-sortmenu" },
+            React.createElement("div", { className: "wl-sortmenu-head" }, "Sort by"),
+            sortOptions.map(o => React.createElement("button", {
+              key: o.id, className: "wl-sortmenu-row" + (sortMode === o.id ? " active" : ""),
+              onClick: () => { setSortMode(o.id); setSortOpen(false); }
+            }, React.createElement("span", { className: "wl-sortmenu-label" }, o.label),
+               sortMode === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)))
+        ) : null
+      ) : null,
+      // Manage the active custom list — an edit icon that opens the same animated
+      // popover as sort, holding the rename/delete actions for this list.
+      isCustomActive ? React.createElement("div", { className: "wl-sortwrap" },
+        React.createElement("button", {
+          className: "wl-iconbtn" + (manageOpen ? " active" : ""),
+          "aria-label": "Edit list", "aria-expanded": manageOpen,
+          onClick: () => { setSearchOpen(false); setSortOpen(false); setManagingList(false); setManageOpen(o => !o); }
+        }, React.createElement(Icon, { name: "edit", size: 15 })),
+        manageOpen ? React.createElement(React.Fragment, null,
+          React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => { setManageOpen(false); setManagingList(false); } }),
+          React.createElement("div", { className: "wl-sortmenu" },
+            React.createElement("div", { className: "wl-sortmenu-head" }, listNameById(activeList), " \xB7 ", activeCount, activeCount === 1 ? " stock" : " stocks"),
+            managingList
+              ? React.createElement("div", { className: "wl-rename-row" },
+                  React.createElement("input", {
+                    className: "wl-inline-input", type: "text", value: renameValue, maxLength: 28, autoFocus: true, placeholder: "List name",
+                    onChange: e => setRenameValue(e.target.value),
+                    onKeyDown: e => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setManagingList(false); }
+                  }),
+                  React.createElement("div", { className: "wl-rename-actions" },
+                    React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => setManagingList(false), style: { flex: '1 1 auto' } }, "Cancel"),
+                    React.createElement("button", { className: "btn btn-primary btn-sm", onClick: saveRename, disabled: !renameValue.trim(), style: { flex: '1 1 auto' } }, "Save")))
+              : React.createElement(React.Fragment, null,
+                  React.createElement("button", {
+                    className: "wl-sortmenu-row",
+                    onClick: () => { setRenameValue(listNameById(activeList)); setManagingList(true); }
+                  }, React.createElement(Icon, { name: "edit", size: 14 }), React.createElement("span", { className: "wl-sortmenu-label" }, "Rename list")),
+                  React.createElement("button", {
+                    className: "wl-sortmenu-row wl-danger", onClick: deleteList
+                  }, React.createElement(Icon, { name: "trash", size: 14 }), React.createElement("span", { className: "wl-sortmenu-label" }, "Delete list"))))
+        ) : null
+      ) : null,
       React.createElement("button", { className: "btn btn-primary btn-sm wl-add-btn", onClick: () => setShowAddForm(true) },
         React.createElement(Icon, { name: "plus", size: 13 }), " Add")
     ),
@@ -7135,39 +7268,6 @@ function WatchlistView(_ref8) {
       }),
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: createList, disabled: !newListName.trim(), style: { flex: '0 0 auto' } }, "Create"),
       React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => { setCreatingList(false); setNewListName(''); }, style: { flex: '0 0 auto' } }, "Cancel")
-    ) : null,
-    isCustomActive ? React.createElement("div", { className: "wl-manage mb-4" },
-      managingList
-        ? React.createElement(React.Fragment, null,
-            React.createElement("input", {
-              className: "wl-inline-input", type: "text", value: renameValue, maxLength: 28, autoFocus: true, placeholder: "List name",
-              onChange: e => setRenameValue(e.target.value),
-              onKeyDown: e => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setManagingList(false); }
-            }),
-            React.createElement("button", { className: "btn btn-primary btn-sm", onClick: saveRename, disabled: !renameValue.trim(), style: { flex: '0 0 auto' } }, "Save"),
-            React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => setManagingList(false), style: { flex: '0 0 auto' } }, "Cancel"))
-        : React.createElement(React.Fragment, null,
-            React.createElement("span", { className: "wl-manage-label" }, React.createElement(Icon, { name: "list", size: 12 }), " ", listNameById(activeList), " \xB7 ", activeCount, activeCount === 1 ? " stock" : " stocks"),
-            React.createElement("div", { className: "wl-manage-actions" },
-              React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: () => { setRenameValue(listNameById(activeList)); setManagingList(true); } }, React.createElement(Icon, { name: "edit", size: 12 }), " Rename"),
-              React.createElement("button", { className: "btn btn-ghost btn-xs wl-danger", onClick: deleteList }, React.createElement(Icon, { name: "trash", size: 12 }), " Delete")))
-    ) : null,
-    activeCount > 0 ? React.createElement("div", { className: "wl-filterbar mb-3" },
-      React.createElement("div", { className: "wl-search" },
-        React.createElement(Icon, { name: "search", size: 14, className: "wl-search-icon" }),
-        React.createElement("input", {
-          className: "wl-search-input", type: "text", placeholder: "Filter by ticker or name",
-          value: search, onChange: e => setSearch(e.target.value),
-          autoComplete: "off", autoCorrect: "off", spellCheck: false
-        }),
-        search ? React.createElement("button", { className: "wl-search-clear", onClick: () => setSearch(''), "aria-label": "Clear filter" }, React.createElement(Icon, { name: "x", size: 13 })) : null),
-      React.createElement("select", {
-        className: "wl-sort", value: sortMode, onChange: e => setSortMode(e.target.value), "aria-label": "Sort watchlist"
-      },
-        React.createElement("option", { value: "manual" }, reorderEnabled ? "Manual order" : "Default order"),
-        React.createElement("option", { value: "today" }, "Today's move"),
-        React.createElement("option", { value: "name" }, "Name A–Z"),
-        React.createElement("option", { value: "recent" }, "Recently added"))
     ) : null,
     activeCount > 0 && marketsPresent.length > 1 ? React.createElement("div", { className: "wl-market-chips mb-4" },
       ['all', ...marketsPresent].map(m => React.createElement("button", {
@@ -7252,8 +7352,8 @@ function WatchlistView(_ref8) {
                 React.createElement("div", { className: "flex items-center gap-2" },
                   React.createElement("span", { className: "tkr" }, w.ticker),
                   React.createElement("span", { className: "market-badge" }, w.market),
-                  activeList === 'all' && listOf(w) !== 'default'
-                    ? React.createElement("span", { className: "wl-card-list" }, listNameById(listOf(w))) : null),
+                  activeList === 'all'
+                    ? customListsOf(w).map(id => React.createElement("span", { key: id, className: "wl-card-list" }, listNameById(id))) : null),
                 displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null),
               // Stock price now sits top-right (swapped with the 52W high below).
               React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, market: w.market })),
@@ -9653,42 +9753,49 @@ function FundamentalsBlock(_refFB) {
     )
   );
 }
-// Inline "add to / move within watchlist" control shown inside the stock card.
-// Keeps the common case one tap (no custom lists → tapping just adds to the
-// built-in list) while letting power users file a stock into a specific list or
-// move it, all from the card the user already has open.
+// Inline "add to watchlist(s)" control shown inside the stock card. A stock can
+// live in several lists at once, so the panel is multi-select: each list row is a
+// toggle (checkbox) the user can tick on/off independently. The common case stays
+// one tap — no custom lists and not yet tracked → tapping just adds to the
+// built-in list — while power users file a stock into any combination of lists
+// from the card they already have open.
 function WatchlistControl(_refWL) {
-  let { ticker, market, name, watchlist, watchlistGroups, onAddWatch, onRemoveWatch, onMoveWatch, onAddWatchGroup } = _refWL;
+  let { ticker, market, name, watchlist, watchlistGroups, onAddWatch, onRemoveWatch, onMoveWatch, onToggleWatchList, onAddWatchGroup } = _refWL;
   const item = (watchlist || []).find(w => w.ticker === ticker && w.market === market) || null;
   const watching = !!item;
-  const currentListId = item ? (item.listId || 'default') : null;
+  const memberIds = item ? watchListIds(item) : [];
   const groups = watchlistGroups || [];
   const lists = [{ id: 'default', name: 'Watchlist' }, ...groups];
   const hasCustom = groups.length > 0;
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
-  const currentName = watching ? ((lists.find(l => l.id === currentListId) || {}).name || 'Watchlist') : null;
+  // Custom lists this stock sits in — drives the subtitle on the toggle so the
+  // user can see at a glance where it's filed without opening the panel.
+  const customMemberNames = memberIds
+    .filter(id => id !== 'default')
+    .map(id => (lists.find(l => l.id === id) || {}).name)
+    .filter(Boolean);
   const closePanel = () => { setOpen(false); setCreating(false); setNewName(''); };
-  const handleMainClick = () => {
-    // No custom lists and not yet watching → there's nothing to choose, so add
-    // straight to the built-in list in a single tap.
-    if (!watching && !hasCustom) { onAddWatch(ticker, market, name || null, 'default'); return; }
-    setOpen(o => !o); setCreating(false);
+  // Toggle membership in one list. onToggleWatchList handles create-on-first-add
+  // and drop-when-last-removed; the panel stays open so several can be ticked.
+  const toggle = (listId) => {
+    if (onToggleWatchList) onToggleWatchList(ticker, market, name || null, listId);
+    else if (!memberIds.includes(listId)) onAddWatch(ticker, market, name || null, listId);
   };
-  const pickList = (listId) => {
-    if (watching) { if (listId !== currentListId) onMoveWatch(item.id, listId); }
-    else onAddWatch(ticker, market, name || null, listId);
-    closePanel();
+  const handleMainClick = () => {
+    // Nothing to choose between (no custom lists, not yet tracked) → one-tap add.
+    if (!watching && !hasCustom) { toggle('default'); return; }
+    setOpen(o => !o); setCreating(false);
   };
   const submitNew = () => {
     const nm = newName.trim();
     if (!nm) return;
     const id = onAddWatchGroup(nm);
-    if (id) { if (watching) onMoveWatch(item.id, id); else onAddWatch(ticker, market, name || null, id); }
-    closePanel();
+    if (id) toggle(id);
+    setCreating(false); setNewName('');
   };
-  const remove = () => { if (item) onRemoveWatch(item.id); closePanel(); };
+  const removeAll = () => { if (item) onRemoveWatch(item.id); closePanel(); };
   return React.createElement("div", { className: "wl-control" },
     React.createElement("button", {
       className: "wl-toggle" + (watching ? " watching" : ""),
@@ -9697,17 +9804,21 @@ function WatchlistControl(_refWL) {
       React.createElement(Icon, { name: watching ? "checkCircle" : "plus", size: 15 }),
       React.createElement("span", { className: "wl-toggle-label" },
         watching ? "On watchlist" : "Add to watchlist",
-        watching && hasCustom && currentName ? React.createElement("span", { className: "wl-toggle-list" }, " \xB7 " + currentName) : null),
+        watching && customMemberNames.length ? React.createElement("span", { className: "wl-toggle-list" }, " \xB7 " + customMemberNames.join(', ')) : null),
       (hasCustom || watching) ? React.createElement(Icon, { name: "chevron", size: 14, className: "wl-toggle-caret" + (open ? " open" : "") }) : null),
     open ? React.createElement("div", { className: "wl-panel" },
-      React.createElement("div", { className: "wl-panel-head" }, watching ? "Move to list" : "Add to list"),
-      lists.map(l => React.createElement("button", {
-        key: l.id, className: "wl-list-row" + (watching && l.id === currentListId ? " current" : ""),
-        onClick: () => pickList(l.id)
-      },
-        React.createElement(Icon, { name: watching && l.id === currentListId ? "checkCircle" : "list", size: 14 }),
-        React.createElement("span", { className: "wl-list-name" }, l.name),
-        watching && l.id === currentListId ? React.createElement("span", { className: "wl-list-tag" }, "Current") : null)),
+      React.createElement("div", { className: "wl-panel-head" }, "In which lists"),
+      lists.map(l => {
+        const inList = memberIds.includes(l.id);
+        return React.createElement("button", {
+          key: l.id, className: "wl-list-row" + (inList ? " current" : ""),
+          onClick: () => toggle(l.id)
+        },
+          React.createElement("span", { className: "wl-check" + (inList ? " on" : "") },
+            inList ? React.createElement(Icon, { name: "check", size: 12 }) : null),
+          React.createElement("span", { className: "wl-list-name" }, l.name),
+          inList ? React.createElement("span", { className: "wl-list-tag" }, "Added") : null);
+      }),
       creating
         ? React.createElement("div", { className: "wl-new-row" },
             React.createElement("input", {
@@ -9719,9 +9830,9 @@ function WatchlistControl(_refWL) {
         : React.createElement("button", { className: "wl-list-row wl-new-trigger", onClick: () => setCreating(true) },
             React.createElement(Icon, { name: "plus", size: 14 }),
             React.createElement("span", { className: "wl-list-name" }, "New list…")),
-      watching ? React.createElement("button", { className: "wl-list-row wl-remove", onClick: remove },
+      watching ? React.createElement("button", { className: "wl-list-row wl-remove", onClick: removeAll },
         React.createElement(Icon, { name: "trash", size: 14 }),
-        React.createElement("span", { className: "wl-list-name" }, "Remove from watchlist")) : null) : null
+        React.createElement("span", { className: "wl-list-name" }, "Remove from all")) : null) : null
   );
 }
 // The notes you saved on a holding, shown in the stock card as a collapsible
@@ -9817,6 +9928,7 @@ function DetailModal(_ref10) {
     onAddWatch,
     onRemoveWatch,
     onMoveWatch,
+    onToggleWatchList,
     onAddWatchGroup,
     onAddAlert,
     onRemoveAlert,
@@ -9947,7 +10059,7 @@ function DetailModal(_ref10) {
       ticker: ticker, market: market, name: displayName,
       watchlist: watchlist, watchlistGroups: watchlistGroups,
       onAddWatch: onAddWatch, onRemoveWatch: onRemoveWatch,
-      onMoveWatch: onMoveWatch, onAddWatchGroup: onAddWatchGroup
+      onMoveWatch: onMoveWatch, onToggleWatchList: onToggleWatchList, onAddWatchGroup: onAddWatchGroup
     }) : null,
 
     // Notes you left on this holding — collapsible, just below the watchlist box.
