@@ -2856,6 +2856,10 @@ function usePortfolio(fxRates, toast) {
     setPositions(prev => {
       const existing = prev.find(p => p.ticker === tickerUp && p.market === market);
       if (existing) {
+        // Buying more of a holding only updates shares/cost. The instrument's
+        // sector breakdown lives in the separate pb.sectorWeights map keyed by
+        // MARKET:TICKER, so it is untouched here and the allocation structure the
+        // user set for this fund stays in place through every top-up.
         const totalShares = existing.shares + newShares;
         const avgCost = (existing.shares * existing.costBasis + newShares * newCost) / totalShares;
         return prev.map(p => p.id === existing.id ? {
@@ -3626,7 +3630,8 @@ function App() {
       fxRates: fxRates,
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
-      sectorWeights: sectorWeights
+      sectorWeights: sectorWeights,
+      onSetSectorWeights: setSectorWeightsFor
     }),
     current: React.createElement(CurrentView, {
       prices: prices,
@@ -3694,7 +3699,8 @@ function App() {
       fxRates: fxRates,
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
-      sectorWeights: sectorWeights
+      sectorWeights: sectorWeights,
+      onSetSectorWeights: setSectorWeightsFor
     }),
     hot: React.createElement(HotTopicsView, {
       hot: hotTopicsCache['hot'],
@@ -4425,12 +4431,92 @@ function resolvePositionSector(ticker, market, sectorCache, fundamentals, name) 
   }
   return found;
 }
+// Shared editor for an instrument's sector breakdown — a controlled list of
+// { sector, weight } rows with an add button and a running total. Reused by the
+// position modal and the dedicated allocation modal so both entry points behave
+// identically. `rows`/`setRows` hold weights as strings (raw input).
+function SectorWeightRows({ rows, setRows }) {
+  const addRow = () => setRows(rs => [...rs, { sector: '', weight: '' }]);
+  const updateRow = (i, patch) => setRows(rs => rs.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  const removeRow = (i) => setRows(rs => rs.filter((_, idx) => idx !== i));
+  const clean = rows.map(r => ({ sector: r.sector, weight: parseFloat(r.weight) })).filter(r => r.sector && isFinite(r.weight) && r.weight > 0);
+  const sum = clean.reduce((s, r) => s + r.weight, 0);
+  return React.createElement(React.Fragment, null,
+    rows.length === 0
+      ? React.createElement("div", { className: "form-help", style: { marginTop: 0, marginBottom: 8 } },
+          "Optional. Split a fund or ETF across the sectors it actually holds, so your allocation chart looks through to its real sector mix instead of a single bucket.")
+      : React.createElement("div", { className: "sector-split-list" },
+          rows.map((r, i) => React.createElement("div", { className: "sector-split-row", key: i },
+            React.createElement("select", {
+              className: "import-field-select sector-split-sector",
+              value: r.sector,
+              onChange: e => updateRow(i, { sector: e.target.value })
+            }, React.createElement("option", { value: "" }, "Select sector…"),
+               (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s))),
+            React.createElement("div", { className: "input-suffix-wrap sector-split-weight" },
+              React.createElement("input", {
+                type: "number", inputMode: "decimal", min: "0", max: "100", step: "1",
+                placeholder: "0", value: r.weight,
+                onChange: e => updateRow(i, { weight: e.target.value })
+              }),
+              React.createElement("span", { className: "suffix" }, "%")),
+            React.createElement("button", {
+              className: "icon-btn sector-split-del", type: "button", "aria-label": "Remove sector",
+              onClick: () => removeRow(i)
+            }, React.createElement(Icon, { name: "x", size: 14 }))))),
+    React.createElement("div", { className: "sector-split-foot" },
+      React.createElement("button", { className: "btn btn-secondary btn-sm", type: "button", onClick: addRow },
+        React.createElement(Icon, { name: "plus", size: 13 }), " Add sector"),
+      clean.length ? React.createElement("span", {
+        className: "sector-split-sum" + (Math.abs(sum - 100) < 0.1 ? " ok" : "")
+      }, "Total ", sum.toFixed(sum % 1 === 0 ? 0 : 1), "%") : null),
+    clean.length && Math.abs(sum - 100) >= 0.1 ? React.createElement("div", { className: "form-help" },
+      "Weights are applied relative to one another, so they needn't add up to exactly 100%.") : null
+  );
+}
+// Dedicated "edit just the sector allocation" modal for one instrument, opened
+// from the sector-breakdown popup. Edits the shared pb.sectorWeights map (keyed
+// by MARKET:TICKER) so the change applies to that fund everywhere it's held.
+function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, onSave }) {
+  const [rows, setRows] = useState(() =>
+    Array.isArray(initialWeights) && initialWeights.length
+      ? initialWeights.map(w => ({ sector: w.sector || '', weight: w.weight != null ? String(w.weight) : '' }))
+      : [{ sector: '', weight: '' }]);
+  const panelRef = useRef(null);
+  useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
+  const save = () => {
+    const clean = rows.map(r => ({ sector: r.sector, weight: parseFloat(r.weight) })).filter(r => r.sector && isFinite(r.weight) && r.weight > 0);
+    onSave(clean.length ? clean : null);
+    onClose();
+  };
+  return React.createElement("div", { className: "modal" },
+    React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 480 } },
+      React.createElement("div", { className: "modal-handle" }),
+      React.createElement("div", { className: "modal-header" },
+        React.createElement("div", null,
+          React.createElement("div", { className: "modal-title" }, "Sector allocation"),
+          React.createElement("div", { className: "modal-subtitle" }, ticker, name && name !== ticker ? " · " + name : "")),
+        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
+          React.createElement(Icon, { name: "x" }))),
+      React.createElement("div", { className: "modal-body" },
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Sector breakdown (ETFs & funds)"),
+          React.createElement(SectorWeightRows, { rows: rows, setRows: setRows })),
+        React.createElement("div", { className: "form-actions" },
+          React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
+          React.createElement("button", { className: "btn btn-primary", onClick: save }, "Save allocation")))));
+}
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR' };
-function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, availableModes }) {
+function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
+  // When set ({ ticker, market, name }), the dedicated sector-allocation editor
+  // is open for that instrument — launched from the sector-breakdown popup.
+  const [editWeightsFor, setEditWeightsFor] = useState(null);
   const allModes = [
     { key: 'ticker', label: 'Holdings' },
     { key: 'sector', label: 'Sector' },
@@ -4632,7 +4718,22 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
       portfolioTotal: total,
       displayCurrency: displayCurrency,
       onOpenDetail: onOpenDetail,
+      // Only the sector view offers per-holding allocation editing (a market
+      // wedge isn't an instrument). Needs a setter from the parent to persist.
+      onEditWeights: (onSetSectorWeights && mode === 'sector')
+        ? (m => setEditWeightsFor({ ticker: m.ticker, market: m.market, name: m.name }))
+        : null,
       onClose: () => setOpenSector(null)
+    }) : null,
+    // Dedicated allocation editor for the holding tapped in the popup. Stacks
+    // above it (.modal z-index 95 > .sector-modal 90).
+    editWeightsFor ? React.createElement(SectorAllocationModal, {
+      ticker: editWeightsFor.ticker,
+      market: editWeightsFor.market,
+      name: editWeightsFor.name,
+      initialWeights: (sectorWeights && sectorWeights[priceKey(editWeightsFor.market, editWeightsFor.ticker)]) || null,
+      onClose: () => setEditWeightsFor(null),
+      onSave: (weights) => onSetSectorWeights(priceKey(editWeightsFor.market, editWeightsFor.ticker), weights)
     }) : null
   );
 }
@@ -4640,7 +4741,7 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
 // by tapping a sector in the allocation chart. Lists each position with its
 // value, share of the sector, and a proportional bar; tapping a row dives into
 // that stock. Mirrors the heatmap's SectorDetailModal pop-in animation.
-function SectorHoldingsPopup({ sectorName, members, sectorValue, portfolioTotal, displayCurrency, onOpenDetail, onClose, kind }) {
+function SectorHoldingsPopup({ sectorName, members, sectorValue, portfolioTotal, displayCurrency, onOpenDetail, onEditWeights, onClose, kind }) {
   const isMarket = kind === 'market';
   const [closing, setClosing] = useState(false);
   const close = useCallback(() => { setClosing(true); setTimeout(onClose, 200); }, [onClose]);
@@ -4682,8 +4783,8 @@ function SectorHoldingsPopup({ sectorName, members, sectorValue, portfolioTotal,
             : members.map((m, i) => {
                 const wSector = sectorValue > 0 ? (m.value / sectorValue * 100) : 0;
                 const hasName = m.name && m.name !== m.ticker;
-                return React.createElement("button", {
-                  key: m.market + ':' + m.ticker + ':' + i, className: "sh-row",
+                const main = React.createElement("button", {
+                  className: "sh-row-main",
                   onClick: () => { if (onOpenDetail) onOpenDetail(m.ticker, m.market); close(); }
                 },
                   React.createElement("div", { className: "sh-row-top" },
@@ -4697,6 +4798,19 @@ function SectorHoldingsPopup({ sectorName, members, sectorValue, portfolioTotal,
                       React.createElement("span", { className: "sh-row-wt" }, wSector.toFixed(1), "%"))),
                   React.createElement("div", { className: "sh-bar" },
                     React.createElement("div", { className: "sh-bar-fill", style: { width: Math.max(2, Math.min(100, wSector)) + '%' } })));
+                return React.createElement("div", {
+                  key: m.market + ':' + m.ticker + ':' + i,
+                  className: "sh-row" + (onEditWeights ? " has-edit" : "")
+                },
+                  main,
+                  // Dedicated "edit this fund's sector allocation" entry point —
+                  // opens the allocation editor for the instrument. Funds are the
+                  // intended use, but it's offered on every holding in the sector.
+                  onEditWeights ? React.createElement("button", {
+                    className: "sh-row-edit", type: "button",
+                    title: "Edit sector allocation", "aria-label": "Edit sector allocation",
+                    onClick: (e) => { e.stopPropagation(); onEditWeights(m); close(); }
+                  }, React.createElement(Icon, { name: "edit", size: 15 })) : null);
               }))
       )
     )
@@ -4717,7 +4831,8 @@ function DashboardView(_ref6) {
     fxRates,
     sectorCache,
     fundamentals,
-    sectorWeights
+    sectorWeights,
+    onSetSectorWeights
   } = _ref6;
   const computeStats = list => {
     let cost = 0, value = 0, hasAllPrices = true;
@@ -4831,7 +4946,7 @@ function DashboardView(_ref6) {
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights })),
+        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
@@ -8612,7 +8727,7 @@ function TFSABalancer({ positions, prices, onBuyPosition }) {
 }
 function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
-                   fxRates, sectorCache, fundamentals, sectorWeights }) {
+                   fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights }) {
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
     return s + (q ? p.shares * q.price : p.shares * p.costBasis);
@@ -8630,7 +8745,7 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
     React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "TFSA holdings"),
     React.createElement(PortfolioPieChart, {
       positions, prices, displayCurrency: 'ZAR', fxRates,
-      onOpenDetail, sectorCache, fundamentals, sectorWeights, availableModes: ['ticker', 'sector']
+      onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector']
     }),
     React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
@@ -11017,13 +11132,9 @@ function PositionModal(_ref12) {
     Array.isArray(initialSectorWeights)
       ? initialSectorWeights.map(w => ({ sector: w.sector || '', weight: w.weight != null ? String(w.weight) : '' }))
       : []);
-  const addSectorRow = () => setSectorRows(rows => [...rows, { sector: '', weight: '' }]);
-  const updateSectorRow = (i, patch) => setSectorRows(rows => rows.map((r, idx) => idx === i ? { ...r, ...patch } : r));
-  const removeSectorRow = (i) => setSectorRows(rows => rows.filter((_, idx) => idx !== i));
   const cleanSectorRows = sectorRows
     .map(r => ({ sector: r.sector, weight: parseFloat(r.weight) }))
     .filter(r => r.sector && isFinite(r.weight) && r.weight > 0);
-  const sectorWeightSum = cleanSectorRows.reduce((s, r) => s + r.weight, 0);
   // Holds the pending edit while the user confirms it: { changes, payload,
   // verifiedQuote }. null when no confirmation is in flight.
   const [confirmEdit, setConfirmEdit] = useState(null);
@@ -11167,36 +11278,7 @@ function PositionModal(_ref12) {
   }, React.createElement("label", {
     className: "form-label"
   }, "Sector breakdown (ETFs & funds)"),
-    sectorRows.length === 0
-      ? React.createElement("div", { className: "form-help", style: { marginTop: 0, marginBottom: 8 } },
-          "Optional. Split a fund or ETF across the sectors it actually holds, so your allocation chart looks through to its real sector mix instead of a single bucket.")
-      : React.createElement("div", { className: "sector-split-list" },
-          sectorRows.map((r, i) => React.createElement("div", { className: "sector-split-row", key: i },
-            React.createElement("select", {
-              className: "import-field-select sector-split-sector",
-              value: r.sector,
-              onChange: e => updateSectorRow(i, { sector: e.target.value })
-            }, React.createElement("option", { value: "" }, "Select sector…"),
-               (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s))),
-            React.createElement("div", { className: "input-suffix-wrap sector-split-weight" },
-              React.createElement("input", {
-                type: "number", inputMode: "decimal", min: "0", max: "100", step: "1",
-                placeholder: "0", value: r.weight,
-                onChange: e => updateSectorRow(i, { weight: e.target.value })
-              }),
-              React.createElement("span", { className: "suffix" }, "%")),
-            React.createElement("button", {
-              className: "icon-btn sector-split-del", type: "button", "aria-label": "Remove sector",
-              onClick: () => removeSectorRow(i)
-            }, React.createElement(Icon, { name: "x", size: 14 }))))),
-    React.createElement("div", { className: "sector-split-foot" },
-      React.createElement("button", { className: "btn btn-secondary btn-sm", type: "button", onClick: addSectorRow },
-        React.createElement(Icon, { name: "plus", size: 13 }), " Add sector"),
-      cleanSectorRows.length ? React.createElement("span", {
-        className: "sector-split-sum" + (Math.abs(sectorWeightSum - 100) < 0.1 ? " ok" : "")
-      }, "Total ", sectorWeightSum.toFixed(sectorWeightSum % 1 === 0 ? 0 : 1), "%") : null),
-    cleanSectorRows.length && Math.abs(sectorWeightSum - 100) >= 0.1 ? React.createElement("div", { className: "form-help" },
-      "Weights are applied relative to one another, so they needn't add up to exactly 100%.") : null
+    React.createElement(SectorWeightRows, { rows: sectorRows, setRows: setSectorRows })
   ), React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {

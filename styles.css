@@ -3138,12 +3138,28 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .sh-summary-val { font-size: 15px; font-weight: 700; font-family: var(--mono); margin-top: 4px; color: var(--text); }
 .sh-list { display: flex; flex-direction: column; gap: 7px; }
 .sh-row {
-  display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; cursor: pointer;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
-  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  display: flex; align-items: stretch; gap: 0; width: 100%; overflow: hidden;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+  transition: border-color 0.15s, background 0.15s;
 }
 .sh-row:hover { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); background: var(--bg-elev); }
-.sh-row:active { transform: scale(0.99); }
+/* Main tappable region (opens the holding); fills the row, edit button aside. */
+.sh-row-main {
+  display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0;
+  text-align: left; cursor: pointer; color: inherit;
+  background: none; border: none; padding: 10px 12px;
+  transition: transform 0.1s;
+}
+.sh-row-main:active { transform: scale(0.99); }
+.sh-row-edit {
+  flex: 0 0 auto; width: 44px; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; border-left: 1px solid var(--border);
+  color: var(--text-dim); cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.15s, background 0.15s;
+}
+.sh-row-edit:hover { color: var(--blue); background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.sh-row-edit:active { background: color-mix(in srgb, var(--blue) 14%, transparent); }
 .sh-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .sh-row-id { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
 /* Fixed-width ticker column → every company name starts at the same x. */
