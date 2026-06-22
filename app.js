@@ -4987,6 +4987,22 @@ function DashboardView(_ref6) {
   const totalCost = marketGroups.reduce((s, g) => s + g.cost, 0);
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = totalCost > 0 ? totalPnl / totalCost * 100 : 0;
+  // Today's movement across the whole book, in the display currency. Each
+  // holding's day change (price − previous close) is valued in its market's
+  // native currency then converted; yesterday's value anchors the percentage.
+  let todayChange = 0, todayPrevValue = 0, todayHasData = false;
+  positions.forEach(p => {
+    const q = prices[priceKey(p.market, p.ticker)];
+    if (!q || !isFinite(q.price) || typeof q.prevClose !== 'number' || !(q.prevClose > 0)) return;
+    const native = marketCurrency(p.market);
+    const valNow = convertCcy(p.shares * q.price, native, displayCurrency, rates);
+    const valPrev = convertCcy(p.shares * q.prevClose, native, displayCurrency, rates);
+    if (valNow != null && valPrev != null) {
+      todayChange += valNow - valPrev; todayPrevValue += valPrev; todayHasData = true;
+    }
+  });
+  const todayPct = (todayHasData && todayPrevValue > 0) ? todayChange / todayPrevValue * 100 : null;
+  const todayUp = todayChange >= 0;
   const [contribModalOpen, setContribModalOpen] = useState(false);
   const [contribImportOpen, setContribImportOpen] = useState(false);
   const [showContribHistory, setShowContribHistory] = useState(false);
@@ -5016,10 +5032,17 @@ function DashboardView(_ref6) {
             'aria-label': valueHidden ? "Show value" : "Hide value",
             style: { marginTop: -4, marginBottom: -4 }
           }, React.createElement(Icon, { name: valueHidden ? 'eye-off' : 'eye', size: 14 }))),
-        React.createElement("div", { className: "stat-value", style: valueHidden ? { filter: 'blur(10px)', userSelect: 'none', WebkitUserSelect: 'none' } : {} },
+        React.createElement("div", { className: "stat-value" + (valueHidden ? " val-blur" : "") },
           fmtCcy(totalValue, displayCurrency)),
-        React.createElement("div", { className: `stat-sub ${totalPnlPct >= 0 ? 'up' : 'down'}`, style: valueHidden ? { filter: 'blur(6px)', userSelect: 'none', WebkitUserSelect: 'none' } : {} },
-          totalPnlPct >= 0 ? '+' : '', totalPnlPct.toFixed(2), "% \xB7 ",
+        // Today's move — a clearly-labelled pill so it reads as the day's change
+        // and isn't mistaken for the all-time P/L line beneath it.
+        todayPct != null ? React.createElement("div", { className: "dash-today" + (valueHidden ? " val-blur" : "") },
+          React.createElement("span", { className: "dash-today-label" }, "Today"),
+          React.createElement("span", { className: `dash-today-val ${todayUp ? 'up' : 'down'}` },
+            React.createElement("span", { className: "dash-today-arrow" }, todayUp ? '▲' : '▼'),
+            fmtCcySigned(todayChange, displayCurrency), " \xB7 ", (todayUp ? '+' : '') + todayPct.toFixed(2) + '%')) : null,
+        React.createElement("div", { className: `stat-sub ${totalPnlPct >= 0 ? 'up' : 'down'}` + (valueHidden ? " val-blur" : "") },
+          "All-time ", totalPnlPct >= 0 ? '+' : '', totalPnlPct.toFixed(2), "% \xB7 ",
           fmtCcySigned(totalPnl, displayCurrency)),
         (() => {
           const snap = computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency });
@@ -5033,8 +5056,7 @@ function DashboardView(_ref6) {
           const hasFx = hasRates && Math.abs(fxGain) > 0.01;
           const hasContrib = totalContrib > 0;
           return (hasFx || hasContrib) ? React.createElement("div", {
-            className: "portfolio-summary-row",
-            style: valueHidden ? { filter: 'blur(6px)', userSelect: 'none', WebkitUserSelect: 'none' } : {}
+            className: "portfolio-summary-row" + (valueHidden ? " val-blur" : "")
           },
             hasFx && React.createElement("div", { className: "portfolio-summary-item" },
               React.createElement("span", { className: "portfolio-summary-label" },
@@ -5294,6 +5316,105 @@ function CurrentView(_ref7) {
   const tabLabel = (m) => MARKET_LABELS[m] || m;
   const activeMarket = tabs.includes(marketFilter) ? marketFilter : 'US';
   const countFor = (m) => positions.filter(p => p.market === m).length;
+  const rates = fxRates?.rates || null;
+
+  // Holdings sort — collapsed icon button + popover, sharing the watchlist's
+  // wl-iconbtn / wl-sortmenu styling so the two tabs read identically.
+  const [sortMode, setSortMode] = useState('manual');
+  const [sortOpen, setSortOpen] = useState(false);
+  const sortOptions = [
+    { id: 'manual', label: 'Default order' },
+    { id: 'value', label: 'Value: high → low' },
+    { id: 'plPct', label: 'Gain %: high → low' },
+    { id: 'plAmt', label: 'Gain amount' },
+    { id: 'today', label: "Today's move" },
+    { id: 'name', label: 'Name A–Z' }
+  ];
+  const sortRows = (rows, market) => {
+    if (sortMode === 'manual') return rows;
+    const arr = rows.slice();
+    arr.sort((a, b) => {
+      const qa = prices[priceKey(market, a.ticker)], qb = prices[priceKey(market, b.ticker)];
+      if (sortMode === 'today') {
+        const ca = qa && isFinite(qa.changePct) ? qa.changePct : -Infinity;
+        const cb = qb && isFinite(qb.changePct) ? qb.changePct : -Infinity;
+        return cb - ca;
+      }
+      if (sortMode === 'name') {
+        const na = positionDisplayName(a, market, qa) || a.ticker;
+        const nb = positionDisplayName(b, market, qb) || b.ticker;
+        return na.localeCompare(nb);
+      }
+      const va = valuePositionInCostCcy(a, qa, rates), vb = valuePositionInCostCcy(b, qb, rates);
+      if (sortMode === 'value') return (vb.value ?? -Infinity) - (va.value ?? -Infinity);
+      if (sortMode === 'plPct') return (vb.gainPct ?? -Infinity) - (va.gainPct ?? -Infinity);
+      if (sortMode === 'plAmt') return (vb.gain ?? -Infinity) - (va.gain ?? -Infinity);
+      return 0;
+    });
+    return arr;
+  };
+
+  // Aggregate the active market's holdings into one summary (in the market's
+  // native currency): total value, profit, and today's move. Cost booked in a
+  // different currency (crypto in ZAR) is converted into native first.
+  const computeMarketSummary = (rows, market) => {
+    const native = marketCurrency(market);
+    let value = 0, cost = 0, prevValue = 0, dayChange = 0, anyPrice = false, anyDay = false;
+    rows.forEach(p => {
+      const q = prices[priceKey(market, p.ticker)];
+      const c = convertCcy(p.shares * p.costBasis, positionCostCcy(p), native, rates);
+      cost += (c != null ? c : p.shares * p.costBasis);
+      if (q && isFinite(q.price)) {
+        value += p.shares * q.price; anyPrice = true;
+        if (typeof q.prevClose === 'number' && q.prevClose > 0) {
+          prevValue += p.shares * q.prevClose;
+          dayChange += p.shares * (q.price - q.prevClose);
+          anyDay = true;
+        } else { prevValue += p.shares * q.price; }
+      }
+    });
+    return {
+      native, value, cost, anyPrice,
+      gain: anyPrice ? value - cost : null,
+      gainPct: (anyPrice && cost > 0) ? (value - cost) / cost * 100 : null,
+      dayChange: anyDay ? dayChange : null,
+      dayPct: (anyDay && prevValue > 0) ? dayChange / prevValue * 100 : null
+    };
+  };
+
+  const renderSummary = (rows, market) => {
+    const s = computeMarketSummary(rows, market);
+    if (!s.anyPrice) return null;
+    const up = (s.gain ?? 0) >= 0;
+    const ccy = s.native;
+    // Stacked progress bar. Profit: [invested | profit] spans the current value.
+    // Loss: [value | shortfall] spans the original cost, so the red tail is the
+    // slice of cost that's been given back.
+    const total = up ? (s.value || 1) : (s.cost || 1);
+    const investedPct = Math.max(0, Math.min(100, (up ? s.cost : s.value) / total * 100));
+    const deltaPct = Math.max(0, 100 - investedPct);
+    const dayUp = (s.dayChange ?? 0) >= 0;
+    return React.createElement("div", { className: "holdings-summary" },
+      React.createElement("div", { className: "hsum-top" },
+        React.createElement("div", { className: "hsum-main" },
+          React.createElement("div", { className: "hsum-label" }, "Market value · " + ccy),
+          React.createElement("div", { className: "hsum-value mono" }, fmtCcy(s.value, ccy))),
+        React.createElement("div", { className: `hsum-pl ${up ? 'up' : 'down'}` },
+          React.createElement("div", { className: "hsum-pl-amt mono" }, fmtCcySigned(s.gain, ccy)),
+          s.gainPct != null ? React.createElement("div", { className: "hsum-pl-pct mono" },
+            (up ? '+' : '') + s.gainPct.toFixed(2) + '%') : null)),
+      React.createElement("div", { className: "hsum-bar" },
+        React.createElement("div", { className: "hsum-bar-invested", style: { width: investedPct + '%' } }),
+        React.createElement("div", { className: `hsum-bar-delta ${up ? 'up' : 'down'}`, style: { width: deltaPct + '%' } })),
+      React.createElement("div", { className: "hsum-foot" },
+        React.createElement("div", { className: "hsum-foot-legend" },
+          React.createElement("span", { className: "hsum-dot invested" }),
+          React.createElement("span", null, "Invested ", fmtCcy(s.cost, ccy))),
+        s.dayPct != null ? React.createElement("div", { className: `hsum-today ${dayUp ? 'up' : 'down'}` },
+          React.createElement("span", { className: "hsum-today-arrow" }, dayUp ? '▲' : '▼'),
+          React.createElement("span", { className: "mono" }, "Today ", fmtCcySigned(s.dayChange, ccy),
+            " · ", (dayUp ? '+' : '') + s.dayPct.toFixed(2) + '%')) : null));
+  };
 
   const renderMarket = (market) => {
     const rows = positions.filter(p => p.market === market);
@@ -5303,11 +5424,14 @@ function CurrentView(_ref7) {
         React.createElement("h3", null, "No ", tabLabel(market), " positions yet"),
         React.createElement("p", null, "Add your ", tabLabel(market), " holdings using the Add button above."));
     }
-    return React.createElement("div", null, React.createElement("div", {
+    const sorted = sortRows(rows, market);
+    return React.createElement("div", null,
+      renderSummary(rows, market),
+      React.createElement("div", {
       className: "eyebrow"
     }, "Your ", tabLabel(market), " positions"), React.createElement(HoldingsListHead, null), React.createElement("div", {
       className: "row-list"
-    }, rows.map(p => React.createElement(HoldingRow, {
+    }, sorted.map(p => React.createElement(HoldingRow, {
       key: p.id,
       position: p,
       market: market,
@@ -5334,11 +5458,28 @@ function CurrentView(_ref7) {
     React.createElement("span", { className: "toggle-opt-label" }, tabLabel(m)),
     React.createElement("span", { className: "toggle-opt-count" }, countFor(m))
   ))),
-    React.createElement("div", { className: "flex gap-2 items-center" },
+    React.createElement("div", { className: "holdings-actions", style: { position: 'relative' } },
+      countFor(activeMarket) > 1 ? React.createElement("button", {
+        className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
+        "aria-label": "Sort holdings", "aria-expanded": sortOpen,
+        onClick: () => setSortOpen(o => !o)
+      }, React.createElement(Icon, { name: "sort", size: 13 }),
+         sortMode !== 'manual' ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null) : null,
       onImportPositions ? React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onImportPositions },
-        React.createElement(Icon, { name: "download", size: 13 }), " Import") : null,
+        React.createElement(Icon, { name: "download", size: 12 }), " Import") : null,
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
-        React.createElement(Icon, { name: "plus", size: 13 }), " Add"))),
+        React.createElement(Icon, { name: "plus", size: 12 }), " Add"),
+      // Sort popover anchored to the cluster's right edge so it stays on-screen.
+      sortOpen ? React.createElement(React.Fragment, null,
+        React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setSortOpen(false) }),
+        React.createElement("div", { className: "wl-sortmenu", style: { left: 'auto', right: 0, transformOrigin: 'top right' } },
+          React.createElement("div", { className: "wl-sortmenu-head" }, "Sort by"),
+          sortOptions.map(o => React.createElement("button", {
+            key: o.id, className: "wl-sortmenu-row" + (sortMode === o.id ? " active" : ""),
+            onClick: () => { setSortMode(o.id); setSortOpen(false); }
+          }, React.createElement("span", { className: "wl-sortmenu-label" }, o.label),
+             sortMode === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)))
+      ) : null)),
     renderMarket(activeMarket));
 }
 // Shorthand / index names brokers and people actually use for instruments whose
@@ -7477,7 +7618,7 @@ function WatchlistView(_ref8) {
             if (searchOpen) { setSearch(''); setSearchOpen(false); }
             else { setSortOpen(false); setManageOpen(false); setSearchOpen(true); requestAnimationFrame(() => { try { searchInputRef.current && searchInputRef.current.focus(); } catch (_) {} }); }
           }
-        }, React.createElement(Icon, { name: searchOpen ? "x" : "search", size: 16 })),
+        }, React.createElement(Icon, { name: searchOpen ? "x" : "search", size: 14 })),
         React.createElement("input", {
           ref: searchInputRef,
           className: "wl-search2-input", type: "text", placeholder: "Filter by ticker or name",
@@ -7491,7 +7632,7 @@ function WatchlistView(_ref8) {
           className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
           "aria-label": "Sort", "aria-expanded": sortOpen,
           onClick: () => { setSearchOpen(false); setManageOpen(false); setSortOpen(o => !o); }
-        }, React.createElement(Icon, { name: "sort", size: 16 }),
+        }, React.createElement(Icon, { name: "sort", size: 14 }),
            sortMode !== 'manual' ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null),
         sortOpen ? React.createElement(React.Fragment, null,
           React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setSortOpen(false) }),
@@ -7511,7 +7652,7 @@ function WatchlistView(_ref8) {
           className: "wl-iconbtn" + (manageOpen ? " active" : ""),
           "aria-label": "Edit list", "aria-expanded": manageOpen,
           onClick: () => { setSearchOpen(false); setSortOpen(false); setManagingList(false); setManageOpen(o => !o); }
-        }, React.createElement(Icon, { name: "edit", size: 15 })),
+        }, React.createElement(Icon, { name: "edit", size: 13 })),
         manageOpen ? React.createElement(React.Fragment, null,
           React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => { setManageOpen(false); setManagingList(false); } }),
           React.createElement("div", { className: "wl-sortmenu" },
@@ -7537,7 +7678,7 @@ function WatchlistView(_ref8) {
         ) : null
       ) : null,
       React.createElement("button", { className: "btn btn-primary btn-sm wl-add-btn", onClick: () => setShowAddForm(true) },
-        React.createElement(Icon, { name: "plus", size: 13 }), " Add")
+        React.createElement(Icon, { name: "plus", size: 12 }), " Add")
     ),
     creatingList ? React.createElement("div", { className: "wl-inline-form mb-4" },
       React.createElement("input", {
@@ -12206,13 +12347,28 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
   // Re-sync when the parent order changes and we're not mid-drag.
   useEffect(() => { if (!draggingRef.current) setOrder(tabOrder); }, [tabOrder]);
 
-  // FLIP: animate the non-dragged rows from their captured positions to the new
-  // layout after each reorder commit.
+  // The lifted row's transform: stay glued to the finger and keep a subtle lift
+  // scale (matching the .is-dragging CSS, which the inline transform overrides).
+  const liftTransform = (y) => `translateY(${y}px) scale(1.02)`;
+
+  // FLIP after each reorder commit. Non-dragged rows animate from their captured
+  // positions to the new layout; the dragged row is silently re-glued to the
+  // finger from its NEW slot (pre-paint, so there's no one-frame back-jump).
   useLayoutEffect(() => {
     const prev = prevTops.current;
     if (!prev.size) return;
+    const d = dragRef.current;
     rowEls.current.forEach((el, key) => {
-      if (!el || key === dragKey) return;
+      if (!el) return;
+      if (key === dragKey) {
+        if (!d) return;
+        el.style.transition = 'none';
+        el.style.transform = '';
+        const top = el.getBoundingClientRect().top;
+        d.naturalTop = top;
+        el.style.transform = liftTransform(d.pointerY - d.grabOffset - top);
+        return;
+      }
       const before = prev.get(key);
       if (before == null) return;
       const after = el.getBoundingClientRect().top;
@@ -12238,31 +12394,40 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
     if (!el) return;
     e.preventDefault();
     draggingRef.current = true;
+    const rect = el.getBoundingClientRect();
     const stride = el.offsetHeight + 8; // row height + list gap
     // Track a synchronous working copy + index so the gesture stays correct even
-    // before React commits the reorder (setState is batched/async).
+    // before React commits the reorder (setState is batched/async). grabOffset is
+    // where the finger sits within the row; naturalTop is the top of its current
+    // slot — together they keep the lifted row pinned to the finger.
     const work = orderRef.current.slice();
-    dragRef.current = { key, startY: e.clientY, stride, idx: work.indexOf(key), work };
+    dragRef.current = {
+      key, stride, idx: work.indexOf(key), work,
+      grabOffset: e.clientY - rect.top, naturalTop: rect.top, pointerY: e.clientY
+    };
+    el.style.transition = 'none';
     setDragKey(key);
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_e) {}
   };
   const onHandleMove = (e) => {
     const d = dragRef.current;
     if (!d) return;
+    d.pointerY = e.clientY;
     const el = rowEls.current.get(d.key);
-    const dy = e.clientY - d.startY;
-    if (el) el.style.transform = `translateY(${dy}px)`;
-    let target = d.idx + Math.round(dy / d.stride);
-    target = Math.max(0, Math.min(d.work.length - 1, target));
-    if (target !== d.idx) {
-      captureTops();
-      // Keep the lifted row under the finger: shift the anchor by the slots moved.
-      const shift = (target - d.idx) * d.stride;
-      d.startY += shift;
-      d.work.splice(target, 0, d.work.splice(d.idx, 1)[0]);
-      d.idx = target;
-      if (el) el.style.transform = `translateY(${e.clientY - d.startY}px)`;
-      setOrder(d.work.slice());
+    // Glue the lifted row to the finger relative to its current slot.
+    if (el) el.style.transform = liftTransform(d.pointerY - d.grabOffset - d.naturalTop);
+    // Slots crossed from the current natural slot. The layout effect re-measures
+    // naturalTop after the commit, so multi-slot fast drags settle correctly.
+    const displacement = (d.pointerY - d.grabOffset) - d.naturalTop;
+    const steps = Math.round(displacement / d.stride);
+    if (steps !== 0) {
+      const target = Math.max(0, Math.min(d.work.length - 1, d.idx + steps));
+      if (target !== d.idx) {
+        captureTops();
+        d.work.splice(target, 0, d.work.splice(d.idx, 1)[0]);
+        d.idx = target;
+        setOrder(d.work.slice());
+      }
     }
   };
   const endDrag = () => {
@@ -12270,11 +12435,11 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
     if (!d) { draggingRef.current = false; setDragKey(null); return; }
     const el = rowEls.current.get(d.key);
     if (el) {
-      el.style.transition = 'transform 0.24s cubic-bezier(0.22,1,0.36,1)';
+      el.style.transition = 'transform 0.26s cubic-bezier(0.22,1,0.36,1)';
       el.style.transform = '';
       const clear = () => { el.style.transition = ''; };
       el.addEventListener('transitionend', clear, { once: true });
-      setTimeout(clear, 320);
+      setTimeout(clear, 340);
     }
     const finalOrder = d.work;
     dragRef.current = null;
