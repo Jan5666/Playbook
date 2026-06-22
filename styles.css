@@ -557,7 +557,10 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .hsum-today-arrow { font-size: 8px; line-height: 1; }
 /* Holdings action cluster — sort + import + add, pinned to the right. The sort
    popover anchors to this cluster's right edge so it never opens off-screen. */
-.holdings-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.holdings-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
+/* When the cluster sits on its own row beneath the summary it spans the width,
+   so right-align it and give it breathing room before the positions list. */
+.holdings-actions-bar { justify-content: flex-end; margin: 0 0 12px; }
 /* Subtle column header above a holdings list — labels the three zones
    (Holding · P/L · Current value). Mirrors the row's horizontal padding and
    the P/L / value margins so the labels sit over their columns and the value
@@ -1948,9 +1951,9 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 /* Action row: collapsed search/sort icon buttons + Add, all on one line. The
    search field expands inline (iOS-style) and the sort opens a popover menu. */
 .wl-toolbar { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; }
-.wl-add-btn { flex: 0 0 auto; margin-left: auto; height: 32px; min-height: 32px; padding: 0 12px; font-size: 12px; border-radius: 10px; }
+.wl-add-btn { flex: 0 0 auto; margin-left: auto; height: 28px; min-height: 28px; padding: 0 10px; font-size: 11px; border-radius: 9px; }
 .wl-iconbtn {
-  flex: 0 0 auto; width: 32px; height: 32px; border-radius: 10px; position: relative;
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 9px; position: relative;
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-raised); border: 1px solid var(--border); color: var(--text-muted);
   cursor: pointer; -webkit-tap-highlight-color: transparent;
@@ -1962,14 +1965,14 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .wl-iconbtn.on { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); }
 .wl-iconbtn.active.on { color: var(--bg); border-color: var(--text); }
 .wl-iconbtn-dot {
-  position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%;
+  position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%;
   background: var(--blue); box-shadow: 0 0 0 2px var(--bg-raised);
 }
 .wl-iconbtn.active .wl-iconbtn-dot { display: none; }
 /* Inline-expanding search — the icon button lives inside the pill, which grows
    from a 38px square to fill the row via an animated flex-basis. */
 .wl-search2 {
-  display: flex; align-items: center; flex: 0 0 32px; min-width: 32px; overflow: hidden;
+  display: flex; align-items: center; flex: 0 0 28px; min-width: 28px; overflow: hidden;
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px;
   transition: flex-basis 0.42s cubic-bezier(0.32, 0.72, 0, 1), border-color 0.22s, box-shadow 0.22s, background 0.22s;
 }
@@ -1978,7 +1981,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   border-color: color-mix(in srgb, var(--blue) 50%, var(--border));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 13%, transparent);
 }
-.wl-search2 .wl-iconbtn { background: transparent; border: none; width: 32px; height: 32px; color: var(--text-muted); }
+.wl-search2 .wl-iconbtn { background: transparent; border: none; width: 28px; height: 28px; color: var(--text-muted); }
 .wl-search2.open .wl-iconbtn { color: var(--blue); }
 .wl-search2 .wl-iconbtn:active { transform: scale(0.82); }
 .wl-search2-input {

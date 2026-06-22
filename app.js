@@ -5416,17 +5416,48 @@ function CurrentView(_ref7) {
             " · ", (dayUp ? '+' : '') + s.dayPct.toFixed(2) + '%')) : null));
   };
 
+  // Sort + Import + Add cluster. Lives directly beneath the market summary (or
+  // above the empty state) rather than up in the tab row, and uses the compact
+  // button sizing shared with the watchlist toolbar.
+  const renderActions = (market, count) => React.createElement("div", {
+    className: "holdings-actions holdings-actions-bar", style: { position: 'relative' }
+  },
+    count > 1 ? React.createElement("button", {
+      className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
+      "aria-label": "Sort holdings", "aria-expanded": sortOpen,
+      onClick: () => setSortOpen(o => !o)
+    }, React.createElement(Icon, { name: "sort", size: 13 }),
+       sortMode !== 'manual' ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null) : null,
+    onImportPositions ? React.createElement("button", { className: "btn btn-secondary btn-xs", onClick: onImportPositions },
+      React.createElement(Icon, { name: "download", size: 11 }), " Import") : null,
+    React.createElement("button", { className: "btn btn-primary btn-xs", onClick: onAddPosition },
+      React.createElement(Icon, { name: "plus", size: 11 }), " Add"),
+    // Sort popover anchored to the cluster's right edge so it stays on-screen.
+    sortOpen ? React.createElement(React.Fragment, null,
+      React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setSortOpen(false) }),
+      React.createElement("div", { className: "wl-sortmenu", style: { left: 'auto', right: 0, transformOrigin: 'top right' } },
+        React.createElement("div", { className: "wl-sortmenu-head" }, "Sort by"),
+        sortOptions.map(o => React.createElement("button", {
+          key: o.id, className: "wl-sortmenu-row" + (sortMode === o.id ? " active" : ""),
+          onClick: () => { setSortMode(o.id); setSortOpen(false); }
+        }, React.createElement("span", { className: "wl-sortmenu-label" }, o.label),
+           sortMode === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)))
+    ) : null);
+
   const renderMarket = (market) => {
     const rows = positions.filter(p => p.market === market);
     if (rows.length === 0) {
-      return React.createElement("div", { className: "empty" },
-        React.createElement(Icon, { name: "briefcase", size: 40 }),
-        React.createElement("h3", null, "No ", tabLabel(market), " positions yet"),
-        React.createElement("p", null, "Add your ", tabLabel(market), " holdings using the Add button above."));
+      return React.createElement("div", null,
+        renderActions(market, 0),
+        React.createElement("div", { className: "empty" },
+          React.createElement(Icon, { name: "briefcase", size: 40 }),
+          React.createElement("h3", null, "No ", tabLabel(market), " positions yet"),
+          React.createElement("p", null, "Add your ", tabLabel(market), " holdings using the Add button above.")));
     }
     const sorted = sortRows(rows, market);
     return React.createElement("div", null,
       renderSummary(rows, market),
+      renderActions(market, rows.length),
       React.createElement("div", {
       className: "eyebrow"
     }, "Your ", tabLabel(market), " positions"), React.createElement(HoldingsListHead, null), React.createElement("div", {
@@ -5457,29 +5488,7 @@ function CurrentView(_ref7) {
   },
     React.createElement("span", { className: "toggle-opt-label" }, tabLabel(m)),
     React.createElement("span", { className: "toggle-opt-count" }, countFor(m))
-  ))),
-    React.createElement("div", { className: "holdings-actions", style: { position: 'relative' } },
-      countFor(activeMarket) > 1 ? React.createElement("button", {
-        className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
-        "aria-label": "Sort holdings", "aria-expanded": sortOpen,
-        onClick: () => setSortOpen(o => !o)
-      }, React.createElement(Icon, { name: "sort", size: 13 }),
-         sortMode !== 'manual' ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null) : null,
-      onImportPositions ? React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onImportPositions },
-        React.createElement(Icon, { name: "download", size: 12 }), " Import") : null,
-      React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
-        React.createElement(Icon, { name: "plus", size: 12 }), " Add"),
-      // Sort popover anchored to the cluster's right edge so it stays on-screen.
-      sortOpen ? React.createElement(React.Fragment, null,
-        React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setSortOpen(false) }),
-        React.createElement("div", { className: "wl-sortmenu", style: { left: 'auto', right: 0, transformOrigin: 'top right' } },
-          React.createElement("div", { className: "wl-sortmenu-head" }, "Sort by"),
-          sortOptions.map(o => React.createElement("button", {
-            key: o.id, className: "wl-sortmenu-row" + (sortMode === o.id ? " active" : ""),
-            onClick: () => { setSortMode(o.id); setSortOpen(false); }
-          }, React.createElement("span", { className: "wl-sortmenu-label" }, o.label),
-             sortMode === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)))
-      ) : null)),
+  )))),
     renderMarket(activeMarket));
 }
 // Shorthand / index names brokers and people actually use for instruments whose
@@ -9310,8 +9319,8 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
       ? React.createElement(React.Fragment, null,
           React.createElement("div", { className: "flex justify-between items-center mb-3" },
             React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } }, "Your holdings"),
-            React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
-              React.createElement(Icon, { name: "plus", size: 13 }), " Add")),
+            React.createElement("button", { className: "btn btn-primary btn-xs", onClick: onAddPosition },
+              React.createElement(Icon, { name: "plus", size: 12 }), " Add")),
           React.createElement("div", { className: "empty empty-tfsa mb-4" },
             React.createElement(Icon, { name: "briefcase", size: 40 }),
             React.createElement("h3", null, "No TFSA holdings"),
@@ -9320,8 +9329,8 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
           title: "Your holdings", icon: "briefcase", defaultOpen: true, badge: positions.length
         },
           React.createElement("div", { style: { display: 'flex', justifyContent: 'flex-end', marginBottom: 10 } },
-            React.createElement("button", { className: "btn btn-primary btn-sm", onClick: onAddPosition },
-              React.createElement(Icon, { name: "plus", size: 13 }), " Add holding")),
+            React.createElement("button", { className: "btn btn-primary btn-xs", onClick: onAddPosition },
+              React.createElement(Icon, { name: "plus", size: 12 }), " Add holding")),
           React.createElement(HoldingsListHead, null),
           React.createElement("div", { className: "row-list" },
           positions.map(p => React.createElement(HoldingRow, {
