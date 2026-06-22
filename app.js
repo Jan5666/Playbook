@@ -1967,6 +1967,32 @@ function convertCcy(amount, from, to, rates) {
 function marketCurrency(market) {
   return (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code;
 }
+// The currency a position's cost basis is denominated in. Defaults to the
+// market's native currency, so every holding that predates the crypto-in-ZAR
+// feature (and any holding without an explicit costCurrency) behaves exactly as
+// before. Crypto bought on a ZAR exchange carries costCurrency:'ZAR' even though
+// the live price feed is in USD — letting the user keep what they actually paid.
+function positionCostCcy(p) {
+  return (p && p.costCurrency) || marketCurrency(p ? p.market : 'US');
+}
+// Value a position in its own cost currency: cost is already in that currency,
+// and the live price (quoted in the market's native currency) is converted into
+// it. When the cost currency equals the native currency this is a no-op, so the
+// returned figures match the pre-existing same-currency math bit-for-bit.
+function valuePositionInCostCcy(p, quote, rates) {
+  const native = marketCurrency(p.market);
+  const ccy = positionCostCcy(p);
+  const cost = p.shares * p.costBasis;
+  let value = null;
+  if (quote && isFinite(quote.price)) {
+    value = ccy === native
+      ? p.shares * quote.price
+      : convertCcy(p.shares * quote.price, native, ccy, rates);
+  }
+  const gain = value != null ? value - cost : null;
+  const gainPct = (value != null && cost > 0) ? (value - cost) / cost * 100 : null;
+  return { ccy, native, cost, value, gain, gainPct };
+}
 function resolvePositionUpdates(existing, updates, ctx) {
   const next = { ...updates };
   if (!existing) return next;
@@ -1974,14 +2000,16 @@ function resolvePositionUpdates(existing, updates, ctx) {
   const nextDate = updates.purchaseDate != null ? updates.purchaseDate : existing.purchaseDate;
   const marketChanged = updates.market != null && updates.market !== existing.market;
   const dateChanged = updates.purchaseDate != null && updates.purchaseDate !== existing.purchaseDate;
-  // Only touch the stored cost-basis FX rate when the date or market actually
-  // moved — a plain shares/cost edit must leave it untouched.
-  if (!marketChanged && !dateChanged) return next;
-  const nativeCode = marketCurrency(nextMarket);
+  const costCcyChanged = updates.costCurrency !== undefined && (updates.costCurrency || null) !== (existing.costCurrency || null);
+  // Only touch the stored cost-basis FX rate when the date, market, or cost
+  // currency actually moved — a plain shares/cost edit must leave it untouched.
+  if (!marketChanged && !dateChanged && !costCcyChanged) return next;
+  // The rate tracks whichever currency the cost basis is denominated in.
+  const fxCode = (updates.costCurrency !== undefined ? updates.costCurrency : existing.costCurrency) || marketCurrency(nextMarket);
   if (nextDate && nextDate !== ctx.today && ctx.historicalFx != null) {
     next.fxRateAtCost = ctx.historicalFx;
-  } else if ((!nextDate || nextDate === ctx.today) && ctx.fxRates?.rates?.[nativeCode]) {
-    next.fxRateAtCost = ctx.fxRates.rates[nativeCode];
+  } else if ((!nextDate || nextDate === ctx.today) && ctx.fxRates?.rates?.[fxCode]) {
+    next.fxRateAtCost = ctx.fxRates.rates[fxCode];
   }
   return next;
 }
@@ -2865,13 +2893,19 @@ function usePortfolio(fxRates, toast) {
       return merged.length === prev.length ? prev : merged;
     });
   }, []);
-  const addPosition = async (ticker, market, shares, costBasis, notes, purchaseDate) => {
+  const addPosition = async (ticker, market, shares, costBasis, notes, purchaseDate, costCurrency) => {
     const nativeCode = marketCurrency(market);
+    // The cost basis is denominated in costCurrency when given (e.g. a crypto
+    // holding bought in ZAR), otherwise in the market's native currency. The
+    // FX-at-cost rate is taken against whichever currency the cost is actually
+    // in, so the FX gain/loss breakdown reasons about the right exposure.
+    const costCode = (costCurrency && costCurrency !== nativeCode) ? costCurrency : null;
+    const fxCode = costCode || nativeCode;
     const today = new Date().toISOString().slice(0, 10);
     const dateKey = purchaseDate && purchaseDate !== today ? purchaseDate : null;
-    let rateAtCost = fxRates?.rates?.[nativeCode] || null;
+    let rateAtCost = fxRates?.rates?.[fxCode] || null;
     if (dateKey) {
-      const hist = await fetchHistoricalFx(dateKey, nativeCode);
+      const hist = await fetchHistoricalFx(dateKey, fxCode);
       if (hist != null) rateAtCost = hist;
     }
     const newShares = parseFloat(shares);
@@ -2884,8 +2918,15 @@ function usePortfolio(fxRates, toast) {
         // sector breakdown lives in the separate pb.sectorWeights map keyed by
         // MARKET:TICKER, so it is untouched here and the allocation structure the
         // user set for this fund stays in place through every top-up.
+        const exCcy = positionCostCcy(existing);
+        const addCcy = costCode || nativeCode;
+        // If the top-up was entered in a different currency than the holding's
+        // existing cost basis, convert it across at today's rate before averaging
+        // so the blended avg cost stays in one coherent currency.
+        const addCost = addCcy === exCcy ? newCost
+          : (convertCcy(newCost, addCcy, exCcy, fxRates?.rates || null) ?? newCost);
         const totalShares = existing.shares + newShares;
-        const avgCost = (existing.shares * existing.costBasis + newShares * newCost) / totalShares;
+        const avgCost = (existing.shares * existing.costBasis + newShares * addCost) / totalShares;
         return prev.map(p => p.id === existing.id ? {
           ...p, shares: totalShares, costBasis: avgCost,
           notes: notes ? (p.notes ? p.notes + '; ' + notes : notes) : p.notes,
@@ -2895,6 +2936,7 @@ function usePortfolio(fxRates, toast) {
       return [...prev, {
         id: uid(), ticker: tickerUp, market,
         shares: newShares, costBasis: newCost,
+        costCurrency: costCode || undefined,
         notes: notes || '', addedAt: new Date().toISOString(),
         purchaseDate: purchaseDate || today,
         fxRateAtCost: rateAtCost, fxBase: 'USD'
@@ -3008,10 +3050,14 @@ function usePortfolio(fxRates, toast) {
     const nextDate = updates.purchaseDate || (existing && existing.purchaseDate);
     const marketChanged = !!(existing && updates.market && updates.market !== existing.market);
     const dateChanged = !!(existing && updates.purchaseDate && updates.purchaseDate !== existing.purchaseDate);
+    // The cost basis can be denominated in a currency other than the market's
+    // native one (crypto bought in ZAR), so the FX-at-cost rate tracks the cost
+    // currency and is refetched when it, the date, or the market changes.
+    const nextCostCode = (updates.costCurrency !== undefined ? updates.costCurrency : (existing && existing.costCurrency)) || marketCurrency(nextMarket);
+    const costCcyChanged = !!(existing && updates.costCurrency !== undefined && (updates.costCurrency || null) !== (existing.costCurrency || null));
     let historicalFx = null;
-    if (existing && (marketChanged || dateChanged) && nextDate && nextDate !== today) {
-      const nativeCode = marketCurrency(nextMarket);
-      historicalFx = await fetchHistoricalFx(nextDate, nativeCode);
+    if (existing && (marketChanged || dateChanged || costCcyChanged) && nextDate && nextDate !== today) {
+      historicalFx = await fetchHistoricalFx(nextDate, nextCostCode);
     }
     setPositions(prev => prev.map(p => {
       if (p.id !== id) return p;
@@ -3689,6 +3735,7 @@ function App() {
       positions: positions,
       marketFilter: marketFilter,
       setMarketFilter: setMarketFilter,
+      fxRates: fxRates,
       onOpenDetail: openDetail,
       onAddPosition: () => {
         setPosModalEditId(null);
@@ -3902,6 +3949,7 @@ function App() {
     editId: posModalEditId,
     existing: posModalEditId ? positions.find(p => p.id === posModalEditId) : null,
     defaultMarket: posModalDefaultMarket,
+    displayCurrency: displayCurrency,
     initialSectorWeights: (() => {
       const ex = posModalEditId ? positions.find(p => p.id === posModalEditId) : null;
       return ex ? (sectorWeights[priceKey(ex.market, ex.ticker)] || null) : null;
@@ -3915,7 +3963,7 @@ function App() {
         if (quote) mergePrices({ [priceKey(data.market, data.ticker)]: quote });
         else seedQuote(data.ticker, data.market);
       } else {
-        addPosition(data.ticker, data.market, data.shares, data.costBasis, data.notes, data.purchaseDate);
+        addPosition(data.ticker, data.market, data.shares, data.costBasis, data.notes, data.purchaseDate, data.costCurrency);
         if (quote) mergePrices({ [priceKey(data.market, data.ticker)]: quote });
         else seedQuote(data.ticker, data.market);
       }
@@ -3951,9 +3999,10 @@ function App() {
   }), buyModalPos && React.createElement(BuyModal, {
     position: buyModalPos,
     prices: prices,
+    fxRates: fxRates,
     onClose: () => setBuyModalPos(null),
-    onBuy: (ticker, market, shares, price, date, notes) => {
-      addPosition(ticker, market, shares, price, notes, date);
+    onBuy: (ticker, market, shares, price, date, notes, costCurrency) => {
+      addPosition(ticker, market, shares, price, notes, date, costCurrency);
       setBuyModalPos(null);
     }
   }), showInstallBanner && React.createElement(InstallBanner, {
@@ -4239,7 +4288,7 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
       if (!q) return;
       const native = marketCurrency(p.market);
       const entryDate = p.purchaseDate || p.addedAt?.slice(0, 10) || today;
-      const costVal = convertCcy(p.shares * p.costBasis, native, displayCurrency, rates) || 0;
+      const costVal = convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates) || 0;
       const curVal = convertCcy(p.shares * q.price, native, displayCurrency, rates) || 0;
       if (!dateMap[entryDate]) dateMap[entryDate] = { date: entryDate, value: 0, contributed: 0 };
       if (!dateMap[today]) dateMap[today] = { date: today, value: 0, contributed: 0 };
@@ -4894,7 +4943,12 @@ function DashboardView(_ref6) {
       const qCcy = q?.currency?.toUpperCase();
       const nativeUpper = native.toUpperCase();
       const sameCcy = !qCcy || qCcy === nativeUpper || qCcy === 'ZAC' && nativeUpper === 'ZAR' || qCcy === 'GBX' && nativeUpper === 'GBP';
-      cost += p.shares * p.costBasis;
+      // This view groups by trading currency and sums in that currency. When a
+      // holding's cost is booked in a different currency (crypto bought in ZAR),
+      // convert it into the group's currency so cost and value stay comparable.
+      const costCcy = positionCostCcy(p);
+      const rawCost = p.shares * p.costBasis;
+      cost += costCcy === native ? rawCost : (convertCcy(rawCost, costCcy, native, fxRates?.rates || null) ?? rawCost);
       if (q && sameCcy) value += p.shares * q.price; else hasAllPrices = false;
     });
     return { cost, value, pnl: value - cost, pnlPct: cost > 0 ? (value - cost) / cost * 100 : 0, hasAllPrices };
@@ -4920,7 +4974,9 @@ function DashboardView(_ref6) {
     const native = marketCurrency(g.market);
     g.posns.forEach(p => {
       const q = prices[priceKey(p.market, p.ticker)];
-      const c = convertCcy(p.shares * p.costBasis, native, displayCurrency, rates);
+      // Value is in the market's native currency; cost may be booked in another
+      // (crypto bought in ZAR), so convert each from its own currency to display.
+      const c = convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates);
       const v = q ? convertCcy(p.shares * q.price, native, displayCurrency, rates) : null;
       if (c != null) cost += c;
       if (v != null) value += v;
@@ -5143,7 +5199,7 @@ function HoldingsListHead() {
     React.createElement("span", { className: "hlh-val" }, "Current value"));
 }
 function HoldingRow(_refHR) {
-  let { position: p, market, quote: q, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
+  let { position: p, market, quote: q, rates, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
   // Heading is the company/instrument name. Resolve it from every source — the
   // name saved on the holding, the live quote's company name, the curated lists,
   // then the learned name cache — and only fall back to the bare ticker when
@@ -5155,11 +5211,17 @@ function HoldingRow(_refHR) {
   // id is never shown.
   const isUT = isUnitTrustId(p.ticker);
   const mainLabel = isUT && hasName ? name : p.ticker;
-  const marketValue = q ? p.shares * q.price : null;
-  const cost = p.shares * p.costBasis;
-  const gain = marketValue != null ? marketValue - cost : null;
+  // Value the position in the currency the cost basis is in. For ordinary
+  // holdings that's the market's native currency (a no-op); for crypto bought in
+  // ZAR it converts the live USD price into ZAR so cost and value line up and the
+  // rand they paid is preserved instead of being silently re-based to dollars.
+  const val = valuePositionInCostCcy(p, q, rates);
+  const rowCcy = val.ccy;
+  const marketValue = val.value;
+  const cost = val.cost;
+  const gain = val.gain;
   const gainUp = gain != null && gain >= 0;
-  const growthPct = marketValue != null && cost > 0 ? (marketValue - cost) / cost * 100 : null;
+  const growthPct = val.gainPct;
   const dayPct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
   const dayUp = dayPct != null && dayPct >= 0;
   return React.createElement("button", {
@@ -5178,13 +5240,13 @@ function HoldingRow(_refHR) {
       gain != null
         ? React.createElement(React.Fragment, null,
             React.createElement("div", { className: `holding-gl-amt mono ${gainUp ? 'text-up' : 'text-down'}` },
-              (gainUp ? '+' : '−') + fmt(gain, market)),
+              (gainUp ? '+' : '−') + fmtCcy(gain, rowCcy)),
             growthPct != null ? React.createElement("div", { className: `holding-gl-pct mono ${gainUp ? 'text-up' : 'text-down'}` },
               (gainUp ? '+' : '') + growthPct.toFixed(2) + '%') : null)
         : React.createElement("div", { className: "holding-gl-amt mono text-dim" }, "—")),
     // RIGHT — current value, with the day's movement underneath
     React.createElement("div", { className: "row-right" },
-      React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmt(marketValue, market) : "—"),
+      React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmtCcy(marketValue, rowCcy) : "—"),
       dayPct != null ? React.createElement("div", {
         className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
       }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
@@ -5204,7 +5266,7 @@ function HoldingRow(_refHR) {
           className: "btn-edit-inline",
           onClick: e => { e.stopPropagation(); onEditPosition(p); }
         }, "Edit") : null),
-      React.createElement("span", { className: "hold-avg" }, "Avg cost ", fmt(p.costBasis, market))));
+      React.createElement("span", { className: "hold-avg" }, "Avg cost ", fmtCcy(p.costBasis, rowCcy))));
 }
 function CurrentView(_ref7) {
   let {
@@ -5212,6 +5274,7 @@ function CurrentView(_ref7) {
     positions,
     marketFilter,
     setMarketFilter,
+    fxRates,
     onOpenDetail,
     onAddPosition,
     onEditPosition,
@@ -5249,6 +5312,7 @@ function CurrentView(_ref7) {
       position: p,
       market: market,
       quote: prices[priceKey(market, p.ticker)],
+      rates: fxRates?.rates || null,
       onOpenDetail: onOpenDetail,
       onBuyPosition: onBuyPosition,
       onSellPosition: onSellPosition,
@@ -8172,8 +8236,11 @@ function HeatmapView(_ref8b) {
       // appears — coloured grey, exactly like a market-heatmap constituent whose
       // quote is still streaming in — instead of vanishing from the grid.
       const native = marketCurrency(p.market);
-      const unit = q && q.price > 0 ? q.price : p.costBasis;
-      const value = convertCcy(p.shares * unit, native, displayCurrency, rates);
+      // Live value is in the market's native currency; the cost-basis fallback is
+      // in the currency the holding was booked in (crypto-in-ZAR keeps its rand).
+      const value = (q && q.price > 0)
+        ? convertCcy(p.shares * q.price, native, displayCurrency, rates)
+        : convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates);
       if (value == null || value <= 0) return null;
       const changePct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
       let sec = DATA.findSector(p.ticker, p.market);
@@ -10098,10 +10165,20 @@ function DetailModal(_ref10) {
       // figures users care about most — what they paid vs. what it's worth now —
       // sit together under a divider with the clearer "Purchase value" /
       // "Current value" wording, with Profit / Loss as the bottom line.
-      const purchaseValue = pos.shares * pos.costBasis;
-      const currentValue = pos.shares * quote.price;
-      const pl = currentValue - purchaseValue;
-      const plPct = pos.costBasis > 0 ? ((quote.price - pos.costBasis) / pos.costBasis * 100) : 0;
+      // Value the position in its cost currency (native for normal holdings, the
+      // fiat the user paid for crypto bought in ZAR), so every line reads in one
+      // coherent currency and the price-vs-cost % is meaningful.
+      const rates = fxRates?.rates || null;
+      const val = valuePositionInCostCcy(pos, quote, rates);
+      const posCcy = val.ccy;
+      const curPriceInCcy = posCcy === val.native
+        ? quote.price
+        : convertCcy(quote.price, val.native, posCcy, rates);
+      const purchaseValue = val.cost;
+      const currentValue = val.value;
+      const pl = val.gain;
+      const plPct = val.gainPct != null ? val.gainPct : 0;
+      const isCryptoPos = pos.market === 'CRYPTO';
       const posLine = (label, value, opts) => React.createElement("div", {
         className: "pos-line" + ((opts && opts.sep) ? " pos-line-sep" : "") + ((opts && opts.strong) ? " pos-line-strong" : "")
       },
@@ -10110,15 +10187,15 @@ function DetailModal(_ref10) {
       return React.createElement("div", { className: "holding-card" },
         React.createElement("div", { className: "eyebrow" }, "Your position"),
         React.createElement("div", { className: "pos-list" },
-          posLine("Shares", pos.shares),
-          posLine("Avg price", fmt(pos.costBasis, market)),
-          posLine("Current price", fmt(quote.price, market)),
-          posLine("Purchase value", fmt(purchaseValue, market), { sep: true }),
-          posLine("Current value", fmt(currentValue, market)),
+          posLine(isCryptoPos ? "Amount" : "Shares", pos.shares),
+          posLine(isCryptoPos ? "Avg cost" : "Avg price", fmtCcy(pos.costBasis, posCcy)),
+          posLine("Current price", curPriceInCcy != null ? fmtCcy(curPriceInCcy, posCcy) : fmt(quote.price, market)),
+          posLine("Purchase value", currentValue != null ? fmtCcy(purchaseValue, posCcy) : "—", { sep: true }),
+          posLine("Current value", currentValue != null ? fmtCcy(currentValue, posCcy) : "—"),
           posLine("Profit / Loss",
             React.createElement(React.Fragment, null,
-              fmtCcySigned(pl, ccy), " (", plPct >= 0 ? '+' : '', plPct.toFixed(1), "%)"),
-            { strong: true, cls: pl >= 0 ? 'text-up' : 'text-down' })
+              fmtCcySigned(pl, posCcy), " (", plPct >= 0 ? '+' : '', plPct.toFixed(1), "%)"),
+            { strong: true, cls: (pl != null && pl >= 0) ? 'text-up' : 'text-down' })
         )
       );
     })(),
@@ -11247,6 +11324,7 @@ function PositionModal(_ref12) {
     editId,
     existing,
     defaultMarket,
+    displayCurrency,
     initialSectorWeights,
     onClose,
     onSave
@@ -11256,6 +11334,18 @@ function PositionModal(_ref12) {
   const [market, setMarket] = useState(existing?.market || defaultMarket || 'US');
   const [shares, setShares] = useState(existing?.shares?.toString() || '');
   const [costBasis, setCostBasis] = useState(existing?.costBasis?.toString() || '');
+  const isCrypto = market === 'CRYPTO';
+  // Crypto trades globally in USD but people buy it in fiat (often ZAR here). Let
+  // the holder record what they actually paid: choose the cost currency and enter
+  // either a price per coin or the total they spent. costCurrency defaults to the
+  // user's display currency so a ZAR user gets ZAR without extra taps; absent /
+  // USD it behaves exactly like a normal USD-priced holding.
+  const [costCurrency, setCostCurrency] = useState(existing?.costCurrency || displayCurrency || 'USD');
+  const [costMode, setCostMode] = useState(isEdit ? 'perUnit' : 'total'); // crypto only
+  const [totalSpent, setTotalSpent] = useState(
+    existing && existing.costCurrency && existing.shares
+      ? String(parseFloat((existing.shares * existing.costBasis).toFixed(2)))
+      : '');
   const [notes, setNotes] = useState(existing?.notes || '');
   const todayISO = new Date().toISOString().slice(0, 10);
   const [purchaseDate, setPurchaseDate] = useState(existing?.purchaseDate || todayISO);
@@ -11295,7 +11385,9 @@ function PositionModal(_ref12) {
     if (payload.ticker !== exTicker) out.push({ label: 'Ticker', from: exTicker || '—', to: payload.ticker });
     if (payload.market !== ex.market) out.push({ label: 'Market', from: ex.market || '—', to: payload.market });
     if (Number(payload.shares) !== Number(ex.shares)) out.push({ label: 'Shares', from: fmtShares(ex.shares), to: fmtShares(payload.shares) });
-    if (Number(payload.costBasis) !== Number(ex.costBasis)) out.push({ label: 'Avg price', from: ccy + Number(ex.costBasis || 0).toFixed(2), to: ccy + Number(payload.costBasis).toFixed(2) });
+    const exCcySym = CURRENCY_SYMBOLS[positionCostCcy(ex)] || ccy;
+    if (Number(payload.costBasis) !== Number(ex.costBasis)) out.push({ label: 'Avg price', from: exCcySym + Number(ex.costBasis || 0).toFixed(2), to: ccy + Number(payload.costBasis).toFixed(2) });
+    if ((payload.costCurrency || null) !== (ex.costCurrency || null)) out.push({ label: 'Cost currency', from: positionCostCcy(ex), to: payload.costCurrency || marketCurrency(payload.market) });
     if ((payload.purchaseDate || '') !== (ex.purchaseDate || '')) out.push({ label: 'Purchase date', from: ex.purchaseDate || '—', to: payload.purchaseDate || '—' });
     if ((payload.sector || '') !== (ex.sector || '')) out.push({ label: 'Sector', from: ex.sector || 'Other', to: payload.sector || 'Other' });
     const wStr = (ws) => Array.isArray(ws) && ws.length ? ws.map(w => `${w.sector} ${w.weight}%`).join(', ') : '—';
@@ -11306,10 +11398,18 @@ function PositionModal(_ref12) {
     if ((payload.notes || '') !== (ex.notes || '')) out.push({ label: 'Notes', from: ex.notes || '—', to: payload.notes || '—' });
     return out;
   };
+  // The currency the cost basis is entered/stored in: the chosen fiat for crypto,
+  // otherwise the market's native currency. Drives the input prefix and storage.
+  const costCcyCode = isCrypto ? costCurrency : marketCurrency(market);
+  // Per-unit cost: crypto in "total" mode derives it from total ÷ amount, so the
+  // user can just type what they spent. Everything else is a direct per-share price.
+  const perUnitCost = (isCrypto && costMode === 'total')
+    ? ((parseDecimal(shares) > 0) ? parseDecimal(totalSpent) / parseDecimal(shares) : NaN)
+    : parseDecimal(costBasis);
   const submit = async () => {
     if (!ticker.trim()) return;
     const s = parseDecimal(shares);
-    const c = parseDecimal(costBasis);
+    const c = perUnitCost;
     if (!isFinite(s) || s <= 0) return;
     if (!isFinite(c) || c <= 0) return;
     if (purchaseDate && purchaseDate > todayISO) {
@@ -11339,7 +11439,10 @@ function PositionModal(_ref12) {
       market, shares: s, costBasis: c, notes,
       purchaseDate: purchaseDate || null,
       sector: sectorValue || null,
-      sectorWeights: cleanSectorRows.length ? cleanSectorRows : null
+      sectorWeights: cleanSectorRows.length ? cleanSectorRows : null,
+      // Only persist a cost currency when it genuinely differs from the market's
+      // native one (crypto bought in ZAR) — keeps every normal holding untouched.
+      costCurrency: (isCrypto && costCcyCode !== marketCurrency(market)) ? costCcyCode : undefined
     };
     // Editing an existing holding: confirm the change first and show exactly
     // what's changing (field: old → new) so an accidental edit can't slip
@@ -11352,7 +11455,7 @@ function PositionModal(_ref12) {
     }
     onSave(payload, verifiedQuote);
   };
-  const ccy = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).sym;
+  const ccy = isCrypto ? (CURRENCY_SYMBOLS[costCurrency] || '$') : (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).sym;
   return React.createElement(React.Fragment, null, React.createElement("div", {
     className: "modal"
   }, React.createElement("div", {
@@ -11412,26 +11515,65 @@ function PositionModal(_ref12) {
       !ticker.trim() ? "Pick a ticker first — we'll auto-detect the sector."
         : sectorUnknown ? "Couldn't auto-detect this one — choose where it lands in your allocation chart."
         : "Where this lands in your allocation chart (auto-detected — change if needed).")
-  ), React.createElement("div", {
+  ), (!isCrypto && React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {
     className: "form-label"
   }, "Sector breakdown (ETFs & funds)"),
     React.createElement(SectorWeightRows, { rows: sectorRows, setRows: setSectorRows })
-  ), React.createElement("div", {
+  )), React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {
     className: "form-label"
-  }, "Shares"), React.createElement("input", {
+  }, isCrypto ? "Amount" : "Shares"), React.createElement("input", {
     type: "text",
     inputMode: "decimal",
     autoComplete: "off",
     autoCorrect: "off",
     spellCheck: false,
-    placeholder: "10",
+    placeholder: isCrypto ? "0.5" : "10",
     value: shares,
     onChange: e => setShares(sanitizeDecimalInput(e.target.value))
-  })), React.createElement("div", {
+  }), isCrypto ? React.createElement("div", { className: "form-help" },
+      "Number of coins or tokens you hold — fractional amounts are fine.") : null),
+  isCrypto ? React.createElement("div", {
+    className: "form-group"
+  }, React.createElement("label", { className: "form-label" }, "Cost"),
+    React.createElement("div", { className: "crypto-cost-controls" },
+      React.createElement("select", {
+        className: "import-field-select crypto-cost-ccy",
+        value: costCurrency,
+        onChange: e => setCostCurrency(e.target.value),
+        "aria-label": "Cost currency"
+      }, DISPLAY_CURRENCIES.map(d => React.createElement("option", { key: d.code, value: d.code }, d.code + " (" + d.sym + ")"))),
+      React.createElement("div", { className: "seg-toggle crypto-cost-mode" },
+        React.createElement("button", {
+          type: "button", className: "seg-opt" + (costMode === 'total' ? " active" : ""),
+          onClick: () => setCostMode('total')
+        }, "Total spent"),
+        React.createElement("button", {
+          type: "button", className: "seg-opt" + (costMode === 'perUnit' ? " active" : ""),
+          onClick: () => setCostMode('perUnit')
+        }, "Price per coin"))),
+    React.createElement("div", { className: "input-prefix-wrap" },
+      React.createElement("span", { className: "prefix" }, ccy),
+      React.createElement("input", {
+        type: "text", inputMode: "decimal", autoComplete: "off", autoCorrect: "off", spellCheck: false,
+        placeholder: "0.00",
+        value: costMode === 'total' ? totalSpent : costBasis,
+        onChange: e => (costMode === 'total' ? setTotalSpent : setCostBasis)(sanitizeDecimalInput(e.target.value))
+      })),
+    React.createElement("div", { className: "form-help" },
+      costMode === 'total'
+        ? (isFinite(perUnitCost) && perUnitCost > 0
+            ? "≈ " + ccy + perUnitCost.toLocaleString('en-US', { maximumFractionDigits: 8 }) + " per coin"
+            : "Total you paid in " + costCurrency + " — we'll work out the per-coin cost.")
+        : (parseDecimal(shares) > 0 && isFinite(perUnitCost) && perUnitCost > 0
+            ? "Total ≈ " + ccy + (perUnitCost * parseDecimal(shares)).toLocaleString('en-US', { maximumFractionDigits: 2 })
+            : "Price per coin you paid, in " + costCurrency + ".")),
+    costCurrency !== 'USD' ? React.createElement("div", { className: "form-help" },
+      "Priced live in USD and converted to " + costCurrency + " — your " + costCurrency + " cost is kept as-is.") : null)
+  : React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {
     className: "form-label"
@@ -11643,7 +11785,7 @@ function SellModal({ position, prices, onClose, onSell }) {
 // Buy more of an existing holding. Adds shares at a new cost/share and lets the
 // shared addPosition merge + re-average the position. Previews the resulting
 // share count and blended average cost before committing.
-function BuyModal({ position, prices, onClose, onBuy }) {
+function BuyModal({ position, prices, fxRates, onClose, onBuy }) {
   const [shares, setShares] = useState('');
   const [buyPrice, setBuyPrice] = useState('');
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -11653,10 +11795,18 @@ function BuyModal({ position, prices, onClose, onBuy }) {
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
   const q = prices[priceKey(position.market, position.ticker)];
+  // Top up in the same currency the holding's cost is booked in: native for a
+  // normal holding, the chosen fiat for crypto bought in ZAR. The live quote is
+  // in the market's native currency, so seed it converted into the cost currency.
+  const isCryptoPos = position.market === 'CRYPTO';
+  const nativeCode = marketCurrency(position.market);
+  const costCcy = positionCostCcy(position);
+  const rates = fxRates?.rates || null;
+  const seededPrice = q ? (costCcy === nativeCode ? q.price : convertCcy(q.price, nativeCode, costCcy, rates)) : null;
   useEffect(() => {
-    if (q && !buyPrice) setBuyPrice(q.price.toFixed(2));
-  }, [q]);
-  const ccy = (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
+    if (seededPrice != null && isFinite(seededPrice) && !buyPrice) setBuyPrice(seededPrice.toFixed(2));
+  }, [seededPrice]);
+  const ccy = isCryptoPos ? (CURRENCY_SYMBOLS[costCcy] || '$') : (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
   const numShares = parseDecimal(shares);
   const numPrice = parseDecimal(buyPrice);
   const dateOk = !buyDate || buyDate <= todayISO;
@@ -11666,7 +11816,7 @@ function BuyModal({ position, prices, onClose, onBuy }) {
   const newAvg = valid ? (position.shares * position.costBasis + numShares * numPrice) / newTotalShares : null;
   const submit = () => {
     if (!valid) return;
-    onBuy(position.ticker, position.market, numShares, numPrice, buyDate, notes);
+    onBuy(position.ticker, position.market, numShares, numPrice, buyDate, notes, costCcy);
     onClose();
   };
   return React.createElement("div", { className: "modal" },
@@ -11677,26 +11827,26 @@ function BuyModal({ position, prices, onClose, onBuy }) {
         React.createElement("div", null,
           React.createElement("div", { className: "modal-title" }, "Buy more ", position.ticker),
           React.createElement("div", { className: "modal-subtitle" },
-            position.shares, " share", position.shares === 1 ? "" : "s", " held \xB7 avg ", ccy, position.costBasis.toFixed(2))),
+            position.shares, isCryptoPos ? " held \xB7 avg " : (position.shares === 1 ? " share held \xB7 avg " : " shares held \xB7 avg "), ccy, position.costBasis.toFixed(2))),
         React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
           React.createElement(Icon, { name: "x" }))),
       React.createElement("div", { className: "modal-body" },
         React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "Shares to buy"),
+          React.createElement("label", { className: "form-label" }, isCryptoPos ? "Amount to buy" : "Shares to buy"),
           React.createElement("input", {
             type: "text", inputMode: "decimal",
             autoComplete: "off", autoCorrect: "off", spellCheck: false,
-            placeholder: "10",
+            placeholder: isCryptoPos ? "0.5" : "10",
             value: shares, onChange: e => setShares(sanitizeDecimalInput(e.target.value))
           })),
         React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "Cost per share"),
+          React.createElement("label", { className: "form-label" }, isCryptoPos ? ("Cost per coin (" + costCcy + ")") : "Cost per share"),
           React.createElement("div", { className: "input-prefix-wrap" },
             React.createElement("span", { className: "prefix" }, ccy),
             React.createElement("input", {
               type: "text", inputMode: "decimal",
               autoComplete: "off", autoCorrect: "off", spellCheck: false,
-              placeholder: q ? q.price.toFixed(2) : '0.00',
+              placeholder: seededPrice != null && isFinite(seededPrice) ? seededPrice.toFixed(2) : '0.00',
               value: buyPrice, onChange: e => setBuyPrice(sanitizeDecimalInput(e.target.value))
             }))),
         React.createElement("div", { className: "form-group" },
@@ -11736,16 +11886,19 @@ function computeFxSnapshot({ positions, contributions, prices, fxRates, displayC
   positions.forEach(p => {
     const q = prices[priceKey(p.market, p.ticker)];
     const native = marketCurrency(p.market);
+    // Value is in the market's native currency; cost is in the currency the user
+    // paid in (native for normal holdings, the booked fiat for crypto-in-ZAR).
+    const costCcy = positionCostCcy(p);
     const valueNative = q ? p.shares * q.price : null;
-    const costNative = p.shares * p.costBasis;
+    const costInCostCcy = p.shares * p.costBasis;
     const valueInDisplay = convertCcy(valueNative, native, displayCurrency, rates);
-    const costNowInDisplay = convertCcy(costNative, native, displayCurrency, rates);
+    const costNowInDisplay = convertCcy(costInCostCcy, costCcy, displayCurrency, rates);
     const fxAtCost = p.fxRateAtCost && isFinite(p.fxRateAtCost) && p.fxRateAtCost > 1e-6 ? p.fxRateAtCost : null;
-    const fxNative = rates && rates[native] && isFinite(rates[native]) && rates[native] > 1e-6 ? rates[native] : null;
+    const fxCostCcy = rates && rates[costCcy] && isFinite(rates[costCcy]) && rates[costCcy] > 1e-6 ? rates[costCcy] : null;
     const fxDisplay = rates && rates[displayCurrency] && isFinite(rates[displayCurrency]) && rates[displayCurrency] > 1e-6 ? rates[displayCurrency] : null;
     const costAtPurchaseUSD = fxAtCost
-      ? costNative / fxAtCost
-      : (fxNative ? costNative / fxNative : null);
+      ? costInCostCcy / fxAtCost
+      : (fxCostCcy ? costInCostCcy / fxCostCcy : null);
     const costAtPurchaseDisplay = costAtPurchaseUSD != null && isFinite(costAtPurchaseUSD) && fxDisplay
       ? costAtPurchaseUSD * fxDisplay
       : null;
