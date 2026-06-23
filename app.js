@@ -9,6 +9,26 @@ const {
   useCallback
 } = React;
 const DATA = window.PB_DATA;
+// ─── Backup namespace ────────────────────────────────────────────────────────
+// Every piece of user data the app persists lives under the `pb.` prefix in
+// localStorage. A backup is therefore just the full set of those keys — new
+// persisted state is captured automatically, with no hand-maintained field list
+// to fall out of date. The SKIP set is volatile/re-derivable cache that isn't
+// worth carrying (and, for the churny ones like prices, must NOT trigger a cloud
+// sync on every write — see `_backupNotify`).
+const BACKUP_PREFIX = 'pb.';
+const BACKUP_SKIP = new Set([
+  'pb.prices.v1',          // live quote cache, refetched on load
+  'pb.nameCache.v1',       // ticker→name cache, rebuilt on demand
+  'pb.fxRates.v1',         // refreshed from network
+  'pb.sectorCache.v1',     // sector classifications, refetched
+  'pb.heatmap.lastgood.v1',// last-good heatmap snapshot, recomputed
+  'pb.installDismissed.v2',// per-device UI nag state
+  'pb.backup.lastSync.v1'  // sync bookkeeping — excluding it avoids a sync loop
+]);
+// Installed by useCloudBackup; called (debounced) whenever durable state changes
+// so the cloud copy is kept current. Null when cloud backup is off.
+let _backupNotify = null;
 const LS = {
   get(key, fallback) {
     try {
@@ -21,6 +41,7 @@ const LS = {
   set(key, val) {
     try {
       localStorage.setItem(key, JSON.stringify(val));
+      if (_backupNotify && key.startsWith(BACKUP_PREFIX) && !BACKUP_SKIP.has(key)) _backupNotify();
       return true;
     } catch (e) {
       console.warn('LS.set failed:', e);
@@ -30,9 +51,130 @@ const LS = {
   remove(key) {
     try {
       localStorage.removeItem(key);
+      if (_backupNotify && key.startsWith(BACKUP_PREFIX) && !BACKUP_SKIP.has(key)) _backupNotify();
     } catch (e) {}
   }
 };
+// Snapshot every durable `pb.*` key as raw JSON strings so a restore round-trips
+// byte-for-byte. The envelope carries a version + timestamp for forward compat.
+function gatherBackup() {
+  const keys = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith(BACKUP_PREFIX) || BACKUP_SKIP.has(k)) continue;
+    const v = localStorage.getItem(k);
+    if (v != null) keys[k] = v;
+  }
+  return { v: 1, app: 'playbook', exportedAt: new Date().toISOString(), keys };
+}
+// Legacy (v3) flat exports stored named fields instead of raw pb.* keys. Map them
+// back so old backup files still restore.
+const LEGACY_KEY_MAP = {
+  positions: 'pb.positions.v2',
+  watchlist: 'pb.watchlist.v2',
+  watchlistGroups: 'pb.watchlistGroups.v1',
+  alerts: 'pb.alerts.v2',
+  triggered: 'pb.triggered.v2',
+  contributions: 'pb.contributions.v1',
+  transactions: 'pb.transactions.v1',
+  tfsaDeposits: 'pb.tfsa.deposits.v1'
+};
+// Write a backup envelope (or legacy flat object) back into localStorage. Returns
+// the number of keys restored, or -1 if the payload wasn't recognisable.
+function applyBackup(payload) {
+  if (!payload || typeof payload !== 'object') return -1;
+  let keys = null;
+  if (payload.keys && typeof payload.keys === 'object') {
+    keys = payload.keys; // new envelope: { key: rawJsonString }
+  } else {
+    keys = {};           // legacy flat: { positions: [...], ... }
+    for (const field in LEGACY_KEY_MAP) {
+      if (payload[field] !== undefined) keys[LEGACY_KEY_MAP[field]] = JSON.stringify(payload[field]);
+    }
+    if (Object.keys(keys).length === 0) return -1;
+  }
+  let n = 0;
+  for (const k in keys) {
+    if (!k.startsWith(BACKUP_PREFIX)) continue;
+    try { localStorage.setItem(k, keys[k]); n++; } catch (_e) {}
+  }
+  return n;
+}
+
+// ─── Cloud-backup crypto ─────────────────────────────────────────────────────
+// The recovery code is the only secret. From it we derive (a) a lookup key —
+// SHA-256(code) — under which the encrypted blob is stored server-side, so the
+// server never sees the code itself, and (b) an AES-GCM key via PBKDF2 that
+// encrypts the snapshot client-side. The Worker stores opaque ciphertext: even
+// with full KV access it cannot read your portfolio without the code. Losing the
+// code means the cloud copy is unrecoverable — that's the trade-off for zero-knowledge.
+const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford-ish: no I/L/O/U ambiguity
+function generateRecoveryCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  let s = '';
+  for (let i = 0; i < 12; i++) s += CODE_ALPHABET[bytes[i] % 32];
+  return s.replace(/(.{4})(.{4})(.{4})/, '$1-$2-$3'); // 60 bits, shown as XXXX-XXXX-XXXX
+}
+function normalizeCode(s) { return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function formatCode(s) { return normalizeCode(s).replace(/(.{4})/g, '$1-').replace(/-$/, ''); }
+function _b64(bytes) {
+  const a = new Uint8Array(bytes); let s = '';
+  for (let i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
+  return btoa(s);
+}
+function _unb64(b64) {
+  const s = atob(b64); const a = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+  return a;
+}
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function deriveAesKey(code, salt) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(code), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+  );
+}
+async function encryptBlob(code, plaintext) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveAesKey(code, salt);
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+  return { v: 1, salt: _b64(salt), iv: _b64(iv), ct: _b64(ct) };
+}
+async function decryptBlob(code, blob) {
+  const key = await deriveAesKey(code, _unb64(blob.salt));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: _unb64(blob.iv) }, key, _unb64(blob.ct));
+  return new TextDecoder().decode(pt);
+}
+
+// Save a backup to disk. In an iOS standalone PWA an `<a download>` is silently
+// ignored, so prefer the Web Share sheet (saves into Files / iCloud Drive);
+// fall back to a download anchor on desktop and browsers without file sharing.
+async function saveBackupFile(jsonString, toast) {
+  const filename = `playbook-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  try {
+    const file = new File([jsonString], filename, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'Playbook backup' });
+      return; // user saved or cancelled within the sheet
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // user dismissed the share sheet
+    // otherwise fall through to the download path
+  }
+  const blob = new Blob([jsonString], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  if (toast) toast('Backup saved');
+}
 function usePersistedState(key, defaultValue) {
   const [value, setValue] = useState(() => LS.get(key, defaultValue));
   useEffect(() => {
@@ -2795,6 +2937,79 @@ async function backendPost(base, path, payload) {
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json().catch(() => ({}));
 }
+// Cloud backup: an encrypted, always-current copy of every durable pb.* key,
+// stored on the same Worker as push (its URL is reused). This is what survives
+// deleting + re-adding the home-screen icon — the one thing on-device storage
+// can't guarantee on iOS. Zero-knowledge: see the crypto helpers up top.
+function useCloudBackup(backendBase, toast) {
+  const [enabled, setEnabled] = usePersistedState('pb.backup.enabled.v1', false);
+  const [code, setCode] = usePersistedState('pb.backup.code.v1', '');
+  const [lastSync, setLastSync] = usePersistedState('pb.backup.lastSync.v1', 0);
+  const [status, setStatus] = useState('off'); // off | idle | syncing | synced | error
+  const base = normalizeBackend(backendBase);
+  const ready = !!(enabled && base && code);
+
+  // A ref so the long-lived _backupNotify closure always reads current values.
+  const stateRef = useRef({ base, code, enabled });
+  useEffect(() => { stateRef.current = { base, code, enabled }; }, [base, code, enabled]);
+
+  const pushNow = useCallback(async () => {
+    const s = stateRef.current;
+    if (!s.enabled || !s.base || !s.code) return;
+    try {
+      setStatus('syncing');
+      const norm = normalizeCode(s.code);
+      const blob = await encryptBlob(norm, JSON.stringify(gatherBackup()));
+      const key = await sha256Hex(norm);
+      const r = await backendPost(s.base, '/backup', { key, blob });
+      setLastSync((r && r.updatedAt) || Date.now());
+      setStatus('synced');
+    } catch (_e) {
+      setStatus('error');
+    }
+  }, [setLastSync]);
+
+  // Wire durable writes → debounced cloud push, plus one flush on mount/enable so
+  // the cloud copy reflects this session even if the last one didn't get to sync.
+  useEffect(() => {
+    if (!ready) { _backupNotify = null; setStatus(enabled && !base ? 'error' : 'off'); return; }
+    let t = null;
+    _backupNotify = () => { clearTimeout(t); t = setTimeout(() => pushNow(), 4000); };
+    setStatus('idle');
+    pushNow();
+    return () => { clearTimeout(t); _backupNotify = null; };
+  }, [ready, enabled, base, pushNow]);
+
+  const enable = useCallback(() => {
+    setCode(prev => prev || generateRecoveryCode());
+    setEnabled(true);
+  }, [setCode, setEnabled]);
+  const disable = useCallback(() => { setEnabled(false); setStatus('off'); }, [setEnabled]);
+
+  // Pull the cloud copy for an entered code, decrypt, adopt it, then reload so all
+  // persisted state re-initialises. Used after re-adding the icon on a fresh wipe.
+  const restore = useCallback(async (inputCode) => {
+    const norm = normalizeCode(inputCode);
+    if (norm.length < 8) throw new Error('Enter your full recovery code');
+    const b = normalizeBackend(stateRef.current.base);
+    if (!b) throw new Error('Set the backend URL under Connections first');
+    const res = await fetch(b + '/backup?key=' + (await sha256Hex(norm)));
+    if (res.status === 404) throw new Error('No cloud backup found for that code');
+    if (!res.ok) throw new Error('Server error (' + res.status + ')');
+    const rec = await res.json();
+    let plain;
+    try { plain = await decryptBlob(norm, rec.blob); }
+    catch (_e) { throw new Error('Wrong recovery code for this backup'); }
+    const n = applyBackup(JSON.parse(plain));
+    if (n < 0) throw new Error('Backup was unreadable');
+    // Make sure sync resumes after reload even if the snapshot predates these keys.
+    setCode(formatCode(norm));
+    setEnabled(true);
+    return rec.updatedAt;
+  }, [setCode, setEnabled]);
+
+  return { enabled, code, status, lastSync, ready, base, enable, disable, pushNow, restore };
+}
 async function registerPushWithBackend(base, alerts) {
   const r = await fetch(base + '/vapid-public-key');
   if (!r.ok) throw new Error('server unreachable (' + r.status + ')');
@@ -3610,6 +3825,7 @@ function App() {
   // Optional server-push backend for always-on, app-closed alerts (premium tier).
   const { pushStatus, connectPush, testPush, disconnectPush } =
     usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast);
+  const cloudBackup = useCloudBackup(pushBackend, toast);
   const requestNotifPerm = useCallback(async () => {
     if (typeof Notification === 'undefined') {
       toast('Notifications not supported in this browser');
@@ -3702,43 +3918,21 @@ function App() {
     LS.set('pb.installDismissed.v2', true);
   };
   const exportData = () => {
-    const data = {
-      positions,
-      watchlist,
-      watchlistGroups,
-      alerts,
-      triggered,
-      contributions,
-      transactions,
-      tfsaDeposits,
-      exportedAt: new Date().toISOString(),
-      version: 3
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: 'application/json'
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `playbook-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast('Backup downloaded');
+    // Full snapshot of every durable pb.* key (not a hand-picked subset), so the
+    // file captures holdings, watchlists, alerts, contributions, transactions,
+    // sector weights, TFSA targets and all settings.
+    saveBackupFile(JSON.stringify(gatherBackup(), null, 2), toast);
   };
   const importData = file => {
     const reader = new FileReader();
     reader.onload = e => {
       try {
-        const data = JSON.parse(e.target.result);
-        if (data.positions) setPositions(data.positions);
-        if (data.watchlist) setWatchlist(data.watchlist);
-        if (data.watchlistGroups) setWatchlistGroups(data.watchlistGroups);
-        if (data.alerts) setAlerts(data.alerts);
-        if (data.triggered) setTriggered(data.triggered);
-        if (data.contributions) setContributions(data.contributions);
-        if (data.transactions) setTransactions(data.transactions);
-        if (data.tfsaDeposits) setTfsaDeposits(data.tfsaDeposits);
-        toast('Backup restored');
+        const n = applyBackup(JSON.parse(e.target.result));
+        if (n < 0) { toast('Invalid backup file'); return; }
+        // The simplest, race-free way to adopt a wholesale restore is to let every
+        // usePersistedState re-initialise from the freshly written localStorage.
+        toast('Backup restored — reloading…');
+        setTimeout(() => location.reload(), 600);
       } catch (err) {
         toast('Invalid backup file');
       }
@@ -3976,6 +4170,7 @@ function App() {
     prices: prices,
     onExport: exportData,
     onImport: importData,
+    cloudBackup: cloudBackup,
     onDeleteHoldings: removePositions,
     ribbonItems: ribbonItems,
     onSetRibbonItems: setRibbonItems,
@@ -12576,7 +12771,7 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
 }
 
 function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
-                        positions, contributions, prices, onExport, onImport, onDeleteHoldings,
+                        positions, contributions, prices, onExport, onImport, cloudBackup, onDeleteHoldings,
                         ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode,
                         tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
                         perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
@@ -12588,6 +12783,11 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const [pkDraft, setPkDraft] = useState(perplexityKey || '');
   const [pkReveal, setPkReveal] = useState(false);
   const [pushDraft, setPushDraft] = useState(pushBackend || '');
+  const [restoreCode, setRestoreCode] = useState('');
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreErr, setRestoreErr] = useState('');
+  const [codeCopied, setCodeCopied] = useState(false);
+  const [codeReveal, setCodeReveal] = useState(false);
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
   // Settings is a centered dialog (premium app feel), not a swipe-down sheet,
@@ -12608,6 +12808,20 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const pkConfigured = !!perplexityKey;
   const savePk = () => onSetPerplexityKey(pkDraft.trim());
   const clearPk = () => { setPkDraft(''); onSetPerplexityKey(''); };
+  // Cloud backup handlers
+  const cb = cloudBackup || {};
+  const cbStatusLabel = {
+    syncing: 'Syncing…', synced: 'Backed up', idle: 'Connected', error: 'Backend URL needed', off: 'Off'
+  }[cb.status] || 'Off';
+  const copyCode = async () => {
+    try { await navigator.clipboard.writeText(formatCode(cb.code || '')); setCodeCopied(true); setTimeout(() => setCodeCopied(false), 1500); }
+    catch (_e) { setCodeReveal(true); } // clipboard blocked — at least reveal it to copy by hand
+  };
+  const doRestore = async () => {
+    setRestoreErr(''); setRestoreBusy(true);
+    try { await cb.restore(restoreCode); /* reloads on success */ }
+    catch (e) { setRestoreErr(e.message || 'Restore failed'); setRestoreBusy(false); }
+  };
   const sections = [
     { key: 'display', label: 'Currency', icon: 'globe' },
     { key: 'tabs', label: 'Tabs', icon: 'list' },
@@ -12966,16 +13180,16 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
         activeSection === 'data' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-data-row" },
             React.createElement("div", { className: "settings-row-label" },
-              React.createElement("div", { className: "settings-row-title" }, "Backup data"),
-              React.createElement("div", { className: "settings-row-desc" }, "Export positions, watchlist, alerts and contributions as JSON")
+              React.createElement("div", { className: "settings-row-title" }, "Save backup file"),
+              React.createElement("div", { className: "settings-row-desc" }, "All data + settings as JSON. On iPhone, save it to Files / iCloud.")
             ),
             React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: onExport },
               React.createElement(Icon, { name: "download", size: 13 }), " Export")
           ),
           React.createElement("div", { className: "settings-data-row" },
             React.createElement("div", { className: "settings-row-label" },
-              React.createElement("div", { className: "settings-row-title" }, "Restore backup"),
-              React.createElement("div", { className: "settings-row-desc" }, "Import from a previously exported JSON backup file")
+              React.createElement("div", { className: "settings-row-title" }, "Restore from file"),
+              React.createElement("div", { className: "settings-row-desc" }, "Import a previously exported JSON backup (replaces current data)")
             ),
             React.createElement("button", { className: "btn btn-secondary btn-sm", onClick: () => fileInputRef.current?.click() },
               React.createElement(Icon, { name: "share", size: 13 }), " Import")
@@ -12985,9 +13199,64 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             style: { display: 'none' },
             onChange: e => { if (e.target.files[0]) onImport(e.target.files[0]); e.target.value = ''; }
           }),
+
+          // ─── Cloud backup ─────────────────────────────────────────────────
+          React.createElement("div", { className: "settings-content-title mt-4" }, "Cloud backup"),
+          React.createElement("div", { className: "settings-data-row" },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, cb.enabled ? "Auto-backup is on" : "Encrypted auto-backup"),
+              React.createElement("div", { className: "settings-row-desc" },
+                cb.enabled
+                  ? ("Saved to your backend on every change. Status: " + cbStatusLabel + (cb.lastSync ? " \xB7 " + new Date(cb.lastSync).toLocaleString() : ""))
+                  : "Keep an encrypted copy on your backend so data survives deleting + re-adding the app icon.")
+            ),
+            cb.enabled
+              ? React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: cb.disable }, "Turn off")
+              : React.createElement("button", { className: "btn btn-primary btn-sm", onClick: cb.enable, disabled: !cb.base },
+                  React.createElement(Icon, { name: "refresh", size: 13 }), " Turn on")
+          ),
+          !cb.base && React.createElement("div", { className: "settings-info-box mt-2" },
+            React.createElement("div", { className: "settings-info-body" },
+              "Set your backend URL under Connections first — cloud backup uses the same server (redeploy the Worker so it has the /backup route).")
+          ),
+          cb.enabled && cb.code && React.createElement("div", { className: "settings-info-box mt-2" },
+            React.createElement("div", { className: "settings-row-title" }, "Recovery code"),
+            React.createElement("div", { className: "settings-row-desc" },
+              "Write this down. You enter it to restore after re-adding the icon — it's the only key and can't be recovered for you."),
+            React.createElement("div", { className: "pk-row mt-2" },
+              React.createElement("code", { className: "pk-input", style: { letterSpacing: '0.12em', fontFamily: 'ui-monospace, monospace' } },
+                codeReveal ? formatCode(cb.code) : "••••-••••-••••"),
+              React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: () => setCodeReveal(v => !v) }, codeReveal ? "Hide" : "Show"),
+              React.createElement("button", { className: "btn btn-primary btn-xs", onClick: copyCode }, codeCopied ? "Copied!" : "Copy")
+            ),
+            React.createElement("div", { className: "pk-actions mt-2" },
+              React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: cb.pushNow, disabled: cb.status === 'syncing' },
+                React.createElement(Icon, { name: "refresh", size: 13 }), cb.status === 'syncing' ? " Syncing…" : " Sync now"))
+          ),
+
+          // Restore-from-cloud — works on a fresh device too (enter the code).
+          React.createElement("div", { className: "settings-data-row mt-3" },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, "Restore from cloud"),
+              React.createElement("div", { className: "settings-row-desc" }, "Re-added the icon? Enter your recovery code to pull your data back.")
+            )
+          ),
+          React.createElement("div", { className: "pk-row" },
+            React.createElement("input", {
+              type: "text", inputMode: "text", autoComplete: "off", autoCapitalize: "characters", spellCheck: false,
+              placeholder: "XXXX-XXXX-XXXX", value: restoreCode, className: "pk-input",
+              onChange: e => setRestoreCode(e.target.value)
+            }),
+            React.createElement("button", {
+              className: "btn btn-primary btn-xs", disabled: restoreBusy || !cb.base || normalizeCode(restoreCode).length < 8,
+              onClick: doRestore
+            }, restoreBusy ? "…" : "Restore")
+          ),
+          restoreErr && React.createElement("div", { className: "settings-row-desc", style: { color: 'var(--negative, #f87171)', marginTop: 6 } }, restoreErr),
+
           React.createElement("div", { className: "settings-info-box mt-3" },
             React.createElement("div", { className: "settings-info-body" },
-              "Backups include all your positions, watchlist tickers, price alerts, and contribution history."
+              "Backups cover everything: holdings, watchlists & groups, alerts, contributions, transactions, sector weights, TFSA targets and all settings. Cloud copies are end-to-end encrypted — the server only stores unreadable ciphertext."
             )
           )
         )

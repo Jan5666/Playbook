@@ -41,6 +41,35 @@ async function handleFetch(request, env) {
     return json({ publicKey: env.VAPID_PUBLIC });
   }
 
+  // ─── Encrypted data backup ──────────────────────────────────────────────────
+  // The client stores a zero-knowledge snapshot keyed by SHA-256(recoveryCode).
+  // We only ever see the hash (`key`) and opaque AES-GCM ciphertext (`blob`); the
+  // recovery code never reaches the server, so we cannot read the portfolio. Kept
+  // under the `backup:` prefix so the alert cron (which lists `client:`) ignores it.
+  if (path === '/backup') {
+    const validKey = k => typeof k === 'string' && /^[a-f0-9]{32,128}$/.test(k);
+    if (request.method === 'GET') {
+      const key = url.searchParams.get('key') || '';
+      if (!validKey(key)) return json({ error: 'bad key' }, 400);
+      const rec = await kvGet(env, 'backup:' + key);
+      if (!rec) return json({ error: 'not found' }, 404);
+      return json(rec);
+    }
+    if (request.method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch (_e) { return json({ error: 'bad json' }, 400); }
+      if (!validKey(body.key)) return json({ error: 'bad key' }, 400);
+      const b = body.blob;
+      if (!b || typeof b !== 'object' || typeof b.ct !== 'string' || typeof b.iv !== 'string' || typeof b.salt !== 'string')
+        return json({ error: 'bad blob' }, 400);
+      if (b.ct.length > 6_000_000) return json({ error: 'too large' }, 413); // ~4.5MB plaintext cap
+      const updatedAt = Date.now();
+      await kvPut(env, 'backup:' + body.key, { blob: b, updatedAt });
+      return json({ ok: true, updatedAt });
+    }
+    return json({ error: 'method not allowed' }, 405);
+  }
+
   if (request.method === 'POST') {
     let body;
     try { body = await request.json(); } catch (_e) { return json({ error: 'bad json' }, 400); }
