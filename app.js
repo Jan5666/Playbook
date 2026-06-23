@@ -4127,12 +4127,6 @@ function App() {
     className: "badge blue"
   }, alerts.length > 9 ? '9+' : alerts.length)), React.createElement("button", {
     className: "icon-btn",
-    onClick: () => setTheme(t => t === 'dark' ? 'light' : 'dark'),
-    "aria-label": "Theme"
-  }, React.createElement(Icon, {
-    name: theme === 'dark' ? 'sun' : 'moon'
-  })), React.createElement("button", {
-    className: "icon-btn",
     onClick: () => setShowSettings(true),
     "aria-label": "Settings"
   }, React.createElement(Icon, {
@@ -4212,6 +4206,8 @@ function App() {
     onDisconnectPush: disconnectPush,
     iconTheme: iconTheme,
     onSetIconTheme: setIconTheme,
+    theme: theme,
+    onSetTheme: setTheme,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -12801,7 +12797,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                         tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
                         perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
                         onConnectPush, onTestPush, onDisconnectPush,
-                        iconTheme, onSetIconTheme, onClose }) {
+                        iconTheme, onSetIconTheme, theme, onSetTheme, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -12850,7 +12846,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   };
   const sections = [
     { key: 'display', label: 'Currency', icon: 'globe' },
-    { key: 'appearance', label: 'App icon', icon: 'image' },
+    { key: 'appearance', label: 'Appearance', icon: 'image' },
     { key: 'tabs', label: 'Tabs', icon: 'list' },
     { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
@@ -12945,6 +12941,28 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
           )
         ),
         activeSection === 'appearance' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-row mb-3" },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, "Theme"),
+              React.createElement("div", { className: "settings-row-desc" }, "Light or dark appearance for the app")
+            ),
+            React.createElement("div", { className: "seg-toggle", style: { flex: '0 0 auto', minWidth: 168 } },
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (theme === 'light' ? " active" : ""),
+                style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 },
+                onClick: () => onSetTheme('light'),
+                "aria-pressed": theme === 'light'
+              }, React.createElement(Icon, { name: "sun", size: 14 }), "Light"),
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (theme !== 'light' ? " active" : ""),
+                style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 },
+                onClick: () => onSetTheme('dark'),
+                "aria-pressed": theme !== 'light'
+              }, React.createElement(Icon, { name: "moon", size: 14 }), "Dark")
+            )
+          ),
           React.createElement("div", { className: "settings-section-title mb-1" }, "Home-screen icon"),
           React.createElement("div", { className: "settings-row-desc mb-3" },
             "Pick the app icon for your phone's home screen, the browser tab, and PWA install. On iPhone, remove and re-add Playbook to the Home Screen after switching to refresh the icon."),
