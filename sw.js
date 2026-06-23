@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v22';
+const CACHE_NAME   = 'playbook-shell-v23';
 const CDN_CACHE    = 'playbook-cdn-v1';
 
 const SHELL_ASSETS = [
@@ -9,9 +9,19 @@ const SHELL_ASSETS = [
   './app.js',
   './data.js',
   './manifest.json',
+  './manifest-light.json',
   './icon-180.png',
   './icon-192.png',
   './icon-512.png',
+  // Brand icons — dark (default) + light home-screen variants, favicon.
+  './brand/favicon.svg',
+  './brand/favicon-32.png',
+  './brand/apple-touch-icon.png',
+  './brand/apple-touch-icon-light.png',
+  './brand/icon-192.png',
+  './brand/icon-512.png',
+  './brand/icon-light-192.png',
+  './brand/icon-light-512.png',
 ];
 
 // ─── Install: pre-cache the entire app shell ──────────────────────────────────

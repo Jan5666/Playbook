@@ -3573,8 +3573,29 @@ function reconcileTabOrder(stored) {
   const missing = ALL_TAB_KEYS.filter(k => !known.includes(k));
   return [...known, ...missing];
 }
+// Brand mark — the indigo "Ascent" rising bars, shown left of the wordmark.
+// Inlined (not <img src="mark.svg">) so the muted bar recolors with the UI
+// theme: #3A3A52 on dark, #C9CBDB on light (per brand/icon-light.svg).
+function BrandMark({ theme }) {
+  const muted = theme === 'light' ? '#C9CBDB' : '#3A3A52';
+  return React.createElement("svg", {
+    className: "brand-mark", width: 28, height: 28, viewBox: "0 0 120 120",
+    "aria-hidden": "true", focusable: "false"
+  },
+    React.createElement("rect", { x: 14, y: 74, width: 18, height: 32, rx: 6, fill: muted }),
+    React.createElement("rect", { x: 42, y: 46, width: 18, height: 60, rx: 6, fill: "#5A5AD0" }),
+    React.createElement("rect", { x: 70, y: 20, width: 18, height: 86, rx: 6, fill: "#6E6EF0" })
+  );
+}
 function App() {
   const [theme, setTheme] = usePersistedState('pb.theme.v2', 'dark');
+  // Home-screen / favicon icon tile. Synced to the bootstrap in index.html via
+  // window.applyIconTheme so the apple-touch-icon + manifest swap to match.
+  const [iconTheme, setIconTheme] = usePersistedState('pb.iconTheme.v1',
+    (typeof window !== 'undefined' && window.__pbIconTheme) || 'dark');
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.applyIconTheme) window.applyIconTheme(iconTheme);
+  }, [iconTheme]);
   const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
   const [pushBackend, setPushBackend] = usePersistedState('pb.pushBackend.v1', '');
   const [displayCurrency, setDisplayCurrency] = usePersistedState('pb.displayCurrency.v1', 'USD');
@@ -4074,7 +4095,9 @@ function App() {
     className: "header-inner"
   }, React.createElement("div", {
     className: "brand"
-  }, React.createElement("div", {
+  }, React.createElement(BrandMark, {
+    theme: theme
+  }), React.createElement("div", {
     className: "brand-title"
   }, "Playbook")), React.createElement("div", {
     className: "status-chip",
@@ -4187,6 +4210,8 @@ function App() {
     onConnectPush: connectPush,
     onTestPush: testPush,
     onDisconnectPush: disconnectPush,
+    iconTheme: iconTheme,
+    onSetIconTheme: setIconTheme,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -12775,7 +12800,8 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                         ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode,
                         tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
                         perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
-                        onConnectPush, onTestPush, onDisconnectPush, onClose }) {
+                        onConnectPush, onTestPush, onDisconnectPush,
+                        iconTheme, onSetIconTheme, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -12824,6 +12850,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   };
   const sections = [
     { key: 'display', label: 'Currency', icon: 'globe' },
+    { key: 'appearance', label: 'App icon', icon: 'image' },
     { key: 'tabs', label: 'Tabs', icon: 'list' },
     { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
@@ -12915,6 +12942,36 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               React.createElement(Icon, { name: "globe", size: 12 }), " How FX gain/loss is calculated"),
             React.createElement("div", { className: "settings-info-body" },
               "When you add a position, the live exchange rate is stored. Price P/L tracks native-currency changes. FX impact shows how much your ", displayCurrency, " value has shifted purely from currency moves.")
+          )
+        ),
+        activeSection === 'appearance' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-section-title mb-1" }, "Home-screen icon"),
+          React.createElement("div", { className: "settings-row-desc mb-3" },
+            "Pick the app icon for your phone's home screen, the browser tab, and PWA install. On iPhone, remove and re-add Playbook to the Home Screen after switching to refresh the icon."),
+          React.createElement("div", { className: "icon-choice-grid" },
+            [
+              { key: 'dark',  label: 'Dark',  tile: '#0B0B10', muted: '#3A3A52' },
+              { key: 'light', label: 'Light', tile: '#FFFFFF', muted: '#C9CBDB' }
+            ].map(opt => {
+              const active = (iconTheme || 'dark') === opt.key;
+              return React.createElement("button", {
+                key: opt.key,
+                type: "button",
+                className: `icon-choice ${active ? 'active' : ''}`,
+                onClick: () => onSetIconTheme(opt.key),
+                "aria-pressed": active
+              },
+                React.createElement("svg", { className: "icon-choice-tile", viewBox: "0 0 512 512", width: 76, height: 76, "aria-hidden": "true" },
+                  React.createElement("rect", { width: 512, height: 512, rx: 114, fill: opt.tile }),
+                  React.createElement("rect", { x: 142, y: 260, width: 56, height: 120, rx: 18, fill: opt.muted }),
+                  React.createElement("rect", { x: 228, y: 180, width: 56, height: 200, rx: 18, fill: "#5A5AD0" }),
+                  React.createElement("rect", { x: 314, y: 90, width: 56, height: 290, rx: 18, fill: "#6E6EF0" })
+                ),
+                React.createElement("span", { className: "icon-choice-label" }, opt.label),
+                active && React.createElement("span", { className: "icon-choice-check" },
+                  React.createElement(Icon, { name: "check", size: 13 }))
+              );
+            })
           )
         ),
         activeSection === 'tabs' && React.createElement("div", { className: "settings-section" },
