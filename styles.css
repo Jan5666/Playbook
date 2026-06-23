@@ -2138,6 +2138,19 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   width: 30px; height: 30px; padding: 0; justify-content: center;
 }
 .watch-body .card-alert-bell .card-alert-count { position: absolute; top: -3px; right: -3px; }
+/* Pre/after-hours line: centered at the foot of the card, divided from the body
+   row above so it reads as a tidy secondary detail. */
+.watch-ext {
+  display: flex; justify-content: center; flex-wrap: nowrap; gap: 5px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+/* Smaller amber pill here than in detail rows — the card is compact. */
+.watch-ext .ext-label {
+  font-size: 8px; padding: 1px 5px; letter-spacing: 0.1em;
+}
+.watch-ext .ext-price { font-size: 11px; }
+.watch-ext .ext-chg { font-size: 10px; }
 @media (max-width: 640px) {
   .watchlist-list .pos-card { padding: 10px 12px; }
   .watchlist-list .pos-head { margin-bottom: 6px; }
