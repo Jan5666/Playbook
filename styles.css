@@ -14,6 +14,11 @@
   --rose: #f43f5e;
   --amber: #f59e0b;
   --purple: #a855f7;
+  /* Brand indigo/periwinkle from the app logo mark (ascending bars).
+     Shared across themes — the logo uses the same #6E6EF0 / #5A5AD0 on
+     both the dark and light icon. */
+  --brand: #6E6EF0;
+  --brand-dim: #5A5AD0;
   --serif: 'Fraunces', Georgia, serif;
   /* Numbers/tickers/labels: a clean grotesk with tabular figures — the premium
      fintech look (Stripe/Mercury/Linear), not a code monospace. Inter is already
@@ -3889,3 +3894,60 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .alert-item-tap:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .alert-item-go { flex-shrink: 0; color: var(--text-dim); transition: color 0.15s ease, transform 0.15s ease; }
 .alert-item-tap:hover .alert-item-go { color: var(--blue); transform: translateX(2px); }
+
+/* ─── Startup loader (.pb-loader) ──────────────────────────────────────────
+   Markup + CSS lifted from loader/playbook-loader-text.html. Used both as the
+   pre-React splash in index.html (#pb-splash) and as the React <LoadingScreen>
+   shown while the dashboard's first quotes are still loading. Colors and the
+   bar/sheen/wordmark animation timing are unchanged from the source; the only
+   additions are the opacity transition for the fade-out and a wordmark font
+   swapped to the app's brand serif (var(--serif)) so we don't pull a second
+   web font just for the splash. Theme follows the OS via prefers-color-scheme,
+   as in the source. The global reset already sets box-sizing/margins, so the
+   source's `*` and `html,body` rules are intentionally omitted. */
+:root {
+  --pb-bg: #070709; --pb-tile: #0E0E16; --pb-border: #1C1C28;
+  --pb-word: #F2F2F7; --pb-sheen: rgba(255,255,255,0.16);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --pb-bg: #F4F4F2; --pb-tile: #FFFFFF; --pb-border: #E6E4DD;
+    --pb-word: #13131A; --pb-sheen: rgba(110,110,240,0.14);
+  }
+}
+.pb-loader {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 30px; background: var(--pb-bg);
+  opacity: 1; transition: opacity 0.3s ease;
+}
+.pb-loader.pb-hiding { opacity: 0; pointer-events: none; }
+.pb-tile {
+  position: relative; width: 118px; height: 118px; border-radius: 28px;
+  background: var(--pb-tile); border: 1px solid var(--pb-border);
+  display: flex; align-items: flex-end; justify-content: center; gap: 9px;
+  padding: 34px 0; overflow: hidden; box-shadow: 0 10px 40px rgba(110,110,240,0.14);
+}
+.pb-bar {
+  width: 13px; height: 50px; border-radius: 4px; transform-origin: bottom center;
+  animation: pb-wave 1.4s ease-in-out infinite;
+}
+.pb-bar:nth-child(1) { background: linear-gradient(180deg,#8A8AFF,#6E6EF0); animation-delay: 0s; }
+.pb-bar:nth-child(2) { background: linear-gradient(180deg,#7C7CF5,#5A5AD0); animation-delay: .16s; }
+.pb-bar:nth-child(3) { background: linear-gradient(180deg,#9A9AFF,#6E6EF0); animation-delay: .32s; }
+.pb-sheen {
+  position: absolute; top: 0; left: 0; width: 42%; height: 100%;
+  background: linear-gradient(105deg,transparent,var(--pb-sheen),transparent);
+  animation: pb-sweep 2.1s cubic-bezier(.45,0,.2,1) infinite;
+}
+.pb-word {
+  font-family: var(--serif); font-weight: 700; font-size: 24px; color: var(--pb-word);
+  letter-spacing: -0.01em; animation: pb-fade 1.8s ease-in-out infinite;
+}
+@keyframes pb-wave { 0%,100% { transform: scaleY(.42); opacity: .45; } 50% { transform: scaleY(1); opacity: 1; } }
+@keyframes pb-sweep { 0% { transform: translateX(-160%); } 60%,100% { transform: translateX(320%); } }
+@keyframes pb-fade { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .pb-bar, .pb-sheen, .pb-word { animation: none; }
+  .pb-bar { transform: scaleY(1); }
+}

@@ -3002,9 +3002,17 @@ function useCloudBackup(backendBase, toast) {
     catch (_e) { throw new Error('Wrong recovery code for this backup'); }
     const n = applyBackup(JSON.parse(plain));
     if (n < 0) throw new Error('Backup was unreadable');
-    // Make sure sync resumes after reload even if the snapshot predates these keys.
+    // Persist the entered code + enabled flag synchronously — the usePersistedState
+    // effect won't run before we reload — so cloud sync resumes for THIS code even
+    // if the restored snapshot predated these keys.
+    LS.set('pb.backup.code.v1', formatCode(norm));
+    LS.set('pb.backup.enabled.v1', true);
     setCode(formatCode(norm));
     setEnabled(true);
+    // Reload so every usePersistedState (holdings, settings, ribbon, …) re-reads the
+    // freshly written localStorage — the same wholesale-adoption path as file import.
+    // Without this the restored data sits in storage but the live UI never updates.
+    setTimeout(() => location.reload(), 600);
     return rec.updatedAt;
   }, [setCode, setEnabled]);
 
@@ -3587,6 +3595,37 @@ function BrandMark({ theme }) {
     React.createElement("rect", { x: 70, y: 20, width: 18, height: 86, rx: 6, fill: "#6E6EF0" })
   );
 }
+// Startup loading screen — the branded `.pb-loader` (bars + wordmark) shown over
+// the app while it bootstraps. Driven by a `visible` prop: when it flips false we
+// add `.pb-hiding` to fade opacity to 0 over 300ms (see styles.css), then unmount
+// once the fade finishes so it doesn't pop. CSS (keyframes, light/dark via
+// prefers-color-scheme, reduced-motion) lives in styles.css.
+function LoadingScreen({ visible }) {
+  const [mounted, setMounted] = useState(visible);
+  const [hiding, setHiding] = useState(false);
+  useEffect(() => {
+    if (visible) {
+      setMounted(true);
+      setHiding(false);
+      return;
+    }
+    if (!mounted) return;
+    setHiding(true);
+    const t = setTimeout(() => setMounted(false), 320); // just past the 300ms fade
+    return () => clearTimeout(t);
+  }, [visible, mounted]);
+  if (!mounted) return null;
+  return React.createElement("div", {
+    className: "pb-loader" + (hiding ? " pb-hiding" : ""),
+    role: "status", "aria-label": "Loading Playbook"
+  },
+    React.createElement("div", { className: "pb-tile" },
+      React.createElement("span", { className: "pb-bar" }),
+      React.createElement("span", { className: "pb-bar" }),
+      React.createElement("span", { className: "pb-bar" }),
+      React.createElement("span", { className: "pb-sheen" })),
+    React.createElement("div", { className: "pb-word" }, "Playbook"));
+}
 function App() {
   const [theme, setTheme] = usePersistedState('pb.theme.v2', 'dark');
   // Home-screen / favicon icon tile. Synced to the bootstrap in index.html via
@@ -3791,6 +3830,19 @@ function App() {
     });
   }, [positions, watchlist, alerts, ribbonItems]);
   const { prices, loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(tickersToFetch, toast);
+  // Startup splash gate. Keep the branded loader up until the first quotes land
+  // (lastUpdate set), the feed gives up (failStreak), or there's simply nothing
+  // to fetch — so the dashboard never flashes empty/placeholder numbers on a cold
+  // open. The fail-safe timeout guarantees we never trap the user behind it.
+  const [booting, setBooting] = useState(true);
+  useEffect(() => {
+    if (!booting) return;
+    if (lastUpdate || failStreak >= 2 || tickersToFetch.length === 0) setBooting(false);
+  }, [booting, lastUpdate, failStreak, tickersToFetch.length]);
+  useEffect(() => {
+    const t = setTimeout(() => setBooting(false), 8000);
+    return () => clearTimeout(t);
+  }, []);
   // Fetch one symbol now and merge it so dashboard charts update immediately
   // after a holding is added/imported, instead of waiting for the poll cycle.
   const seedQuote = useCallback(async (ticker, market) => {
@@ -4283,7 +4335,7 @@ function App() {
     onInstall: handleInstall,
     onDismiss: dismissInstall,
     canPrompt: !!installEvent
-  }));
+  }), React.createElement(LoadingScreen, { visible: booting }));
 }
 function Hero(_ref4) {
   let {
@@ -4706,7 +4758,7 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
       React.createElement("line", { key: "hl", x1: hx, x2: hx, y1: PAD_T, y2: PAD_T + chartH,
         stroke: "var(--text-dim)", strokeWidth: "0.8", strokeDasharray: "3,2", opacity: "0.5" }),
       React.createElement("circle", { key: "hc", cx: hx, cy: hy, r: "5",
-        fill: "var(--blue)", stroke: "var(--bg)", strokeWidth: "2.5" })
+        fill: "var(--brand)", stroke: "var(--bg)", strokeWidth: "2.5" })
     );
     const label = fmtFull(hoverPoint.value);
     const estW = label.length * 7.5 + 16;
@@ -4744,7 +4796,7 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
           onClick: () => setRange(r.key) }, r.label))),
       React.createElement("div", { className: "chart-line-meta" },
         React.createElement("span", { className: "chart-legend-item" },
-          React.createElement("span", { className: "chart-legend-dot", style: { background: 'var(--blue)' } }), "Value"),
+          React.createElement("span", { className: "chart-legend-dot", style: { background: 'var(--brand)' } }), "Value"),
         React.createElement("span", { className: "chart-legend-item" },
           React.createElement("span", { className: "chart-legend-dot chart-legend-dot--dashed" }), "Cost"),
         loading ? React.createElement("span", { className: "text-dim text-xs" }, "Loading…")
@@ -4763,8 +4815,12 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
     },
       React.createElement("defs", null,
         React.createElement("linearGradient", { id: "areaGrad", x1: "0", y1: "0", x2: "0", y2: "1" },
-          React.createElement("stop", { offset: "0%", stopColor: "var(--blue)", stopOpacity: "0.25" }),
-          React.createElement("stop", { offset: "100%", stopColor: "var(--blue)", stopOpacity: "0.02" }))),
+          React.createElement("stop", { offset: "0%", stopColor: "var(--brand)", stopOpacity: "0.25" }),
+          React.createElement("stop", { offset: "100%", stopColor: "var(--brand)", stopOpacity: "0.02" })),
+        // Left-to-right indigo → periwinkle, echoing the logo's ascending bars.
+        React.createElement("linearGradient", { id: "lineGrad", x1: "0", y1: "0", x2: "1", y2: "0" },
+          React.createElement("stop", { offset: "0%", stopColor: "var(--brand-dim)" }),
+          React.createElement("stop", { offset: "100%", stopColor: "var(--brand)" }))),
       yLabels.map((l, i) => React.createElement("line", {
         key: i, x1: PAD_L, x2: W - PAD_R, y1: l.y, y2: l.y,
         stroke: "var(--border)", strokeWidth: "0.5", strokeDasharray: "3,3" })),
@@ -4780,8 +4836,8 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
         points[points.length - 1].date.slice(5)),
       React.createElement("path", { d: areaPath, fill: "url(#areaGrad)" }),
       React.createElement("path", { d: contribPath, fill: "none", stroke: "var(--text-dim)", strokeWidth: "1.5", strokeDasharray: "4,3", opacity: "0.4" }),
-      React.createElement("path", { d: valuePath, fill: "none", stroke: "var(--blue)", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" }),
-      hoverIdx == null && React.createElement("circle", { cx: x(points.length - 1), cy: y(lastVal.value), r: "4", fill: "var(--blue)", stroke: "var(--bg-raised)", strokeWidth: "2" }),
+      React.createElement("path", { d: valuePath, fill: "none", stroke: "url(#lineGrad)", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" }),
+      hoverIdx == null && React.createElement("circle", { cx: x(points.length - 1), cy: y(lastVal.value), r: "4", fill: "var(--brand)", stroke: "var(--bg-raised)", strokeWidth: "2" }),
       ...hoverElements,
       React.createElement("rect", { x: PAD_L, y: PAD_T, width: chartW, height: chartH,
         fill: "transparent", style: { cursor: 'crosshair' } })
@@ -5602,8 +5658,10 @@ function CurrentView(_ref7) {
   const rates = fxRates?.rates || null;
 
   // Holdings sort — collapsed icon button + popover, sharing the watchlist's
-  // wl-iconbtn / wl-sortmenu styling so the two tabs read identically.
-  const [sortMode, setSortMode] = useState('manual');
+  // wl-iconbtn / wl-sortmenu styling so the two tabs read identically. Defaults to
+  // value (largest holding first) so each market tab opens biggest → smallest;
+  // "Default order" (manual/insertion) is still available from the menu.
+  const [sortMode, setSortMode] = useState('value');
   const [sortOpen, setSortOpen] = useState(false);
   const sortOptions = [
     { id: 'manual', label: 'Default order' },
@@ -9571,6 +9629,13 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
   const deposits = tfsaDeposits || [];
   const curStart = currentTfsaTaxYearStart();
   const annualUsed = deposits.reduce((s, d) => s + (tfsaTaxYearStart(d.date) === curStart ? (d.amount || 0) : 0), 0);
+  // Holdings listed largest position first (mirrors the Holdings tab's default
+  // value sort), falling back to cost when there's no live quote yet.
+  const tfsaHoldingValue = (p) => {
+    const q = prices['TFSA:' + p.ticker];
+    return q ? p.shares * q.price : p.shares * p.costBasis;
+  };
+  const sortedPositions = [...positions].sort((a, b) => tfsaHoldingValue(b) - tfsaHoldingValue(a));
 
   // ── 1. TFSA holdings — graph + account value/cost/P/L, first in the tab ──
   const holdingsCard = hasPositions ? React.createElement("div", { className: "card mb-4" },
@@ -9632,7 +9697,7 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
               React.createElement(Icon, { name: "plus", size: 12 }), " Add holding")),
           React.createElement(HoldingsListHead, null),
           React.createElement("div", { className: "row-list" },
-          positions.map(p => React.createElement(HoldingRow, {
+          sortedPositions.map(p => React.createElement(HoldingRow, {
             key: p.id,
             position: p,
             market: 'TFSA',
