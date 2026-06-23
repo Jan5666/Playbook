@@ -51,6 +51,9 @@ ok('JSE closed — Wed 16:00 UTC (18:00 SAST)', marketOpen('JSE', new Date('2026
 // ── symbol + unit helpers ────────────────────────────────────────────────────
 ok('yahooSymbol JSE → .JO', yahooSymbol('NPN', 'JSE') === 'NPN.JO');
 ok('yahooSymbol LSE → .L', yahooSymbol('SHEL', 'LSE') === 'SHEL.L');
+ok('yahooSymbol CRYPTO → -USD pair', yahooSymbol('BTC', 'CRYPTO') === 'BTC-USD');
+ok('yahooSymbol CRYPTO no double -USD', yahooSymbol('ETH-USD', 'CRYPTO') === 'ETH-USD');
+ok('marketOpen CRYPTO true on weekend', marketOpen('CRYPTO', new Date('2026-06-20T03:00:00Z')) === true);
 ok('centDivisor JSE ZAc = 100', centDivisor('JSE', 'ZAc') === 100);
 ok('centDivisor US USD = 1', centDivisor('US', 'USD') === 1);
 ok('sanitizeAlerts drops malformed rows', sanitizeAlerts([{ id: 'x', ticker: 'AAPL', market: 'US', targetPrice: 1 }, { ticker: 'NOID' }]).length === 1);
