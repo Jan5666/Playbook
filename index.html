@@ -45,20 +45,21 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="./styles.css">
-
-<style>
-  /* Loading splash */
-  #loader { position: fixed; inset: 0; background: #09090b; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; }
-  #loader .mark { width: 72px; height: 72px; border-radius: 18px; background: linear-gradient(135deg, #3b82f6, #a855f7); display: flex; align-items: center; justify-content: center; color: white; font-family: Fraunces, serif; font-weight: 700; font-size: 42px; margin-bottom: 14px; }
-  #loader .txt { color: #71717a; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; }
-  #loader.hide { opacity: 0; pointer-events: none; transition: opacity 0.3s; }
-</style>
 </head>
 <body>
 
-<div id="loader">
-  <div class="mark">P</div>
-  <div class="txt">Loading playbook…</div>
+<!-- Pre-React splash. Reuses the same `.pb-loader` styles (styles.css) as the
+     in-app React <LoadingScreen>, so the handoff is seamless: when React mounts
+     this fades out via `.pb-hiding` while the React loader (z-index 9999) takes
+     over until the dashboard's first quotes land. -->
+<div id="pb-splash" class="pb-loader" role="status" aria-label="Loading Playbook">
+  <div class="pb-tile">
+    <span class="pb-bar"></span>
+    <span class="pb-bar"></span>
+    <span class="pb-bar"></span>
+    <span class="pb-sheen"></span>
+  </div>
+  <div class="pb-word">Playbook</div>
 </div>
 
 <div id="root"></div>
@@ -72,18 +73,25 @@
 <script src="./app.js"></script>
 
 <script>
-  // Hide loader once React mounts
+  // Retire the pre-React splash once React mounts. The in-app <LoadingScreen>
+  // (identical .pb-loader, z-index 9999) is already covering it, so we just fade
+  // this one out (300ms, matching .pb-hiding) and remove it.
+  function hidePbSplash() {
+    const el = document.getElementById('pb-splash');
+    if (!el) return;
+    el.classList.add('pb-hiding');
+    setTimeout(() => el.remove(), 350);
+  }
   const obs = new MutationObserver(() => {
     const root = document.getElementById('root');
     if (root && root.children.length > 0) {
-      document.getElementById('loader')?.classList.add('hide');
-      setTimeout(() => document.getElementById('loader')?.remove(), 400);
+      hidePbSplash();
       obs.disconnect();
     }
   });
   obs.observe(document.getElementById('root'), { childList: true, subtree: true });
   // Fail-safe: hide after 8s regardless
-  setTimeout(() => document.getElementById('loader')?.classList.add('hide'), 8000);
+  setTimeout(hidePbSplash, 8000);
 </script>
 
 <script>
