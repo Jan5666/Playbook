@@ -1060,7 +1060,7 @@ async function fetchIndicatorHistory(cat, range) {
   if (cat.source === 'vixmood') return fetchVixMoodHistory(range);
   return null;
 }
-async function fetchQuote(ticker, market) {
+async function fetchQuote(ticker, market, opts = {}) {
   // Macro indicators sourced outside Yahoo (FRED / liquidity proxy / VIX mood)
   // route here before the Yahoo path. Yahoo-native indicators (^TNX, DXY, ^DJT)
   // carry no `source` and fall through to the normal fetch below.
@@ -1074,7 +1074,13 @@ async function fetchQuote(ticker, market) {
   // response is suspiciously old, we re-shoot with the 1m chart which carries
   // a fresher tick on extended-hours sessions.
   const sym = yahooSymbol(ticker, market);
-  const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d&includePrePost=true`;
+  // A manual refresh passes cacheBust so a unique query param sidesteps any
+  // response the shared CORS proxies have cached — that stale-proxy cache is a
+  // big reason tapping "refresh" could return the same numbers. Yahoo ignores
+  // the extra param, so it's harmless on the auto-poll path (left off there to
+  // keep benefiting from proxy caching).
+  const cb = opts.cacheBust ? `&_=${Date.now()}` : '';
+  const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d&includePrePost=true${cb}`;
   const dailyText = await fetchViaProxies(dailyUrl);
   let quote = null;
   if (dailyText) {
@@ -1093,7 +1099,7 @@ async function fetchQuote(ticker, market) {
   const ageMs = quote && quote.fetchedAt ? Date.now() - (quote.regularMarketTime || quote.fetchedAt) : Infinity;
   const looksStale = !quote || ageMs > PRICE_FRESH_MS;
   if (looksStale) {
-    const intraUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1m&range=1d&includePrePost=true`;
+    const intraUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1m&range=1d&includePrePost=true${cb}`;
     const intraText = await fetchViaProxies(intraUrl);
     if (intraText) {
       try {
@@ -1152,22 +1158,30 @@ async function fetchQuote(ticker, market) {
 // batch of 4 lets 4 fetchQuote calls race in parallel, then we pause for the
 // next batch. Per-symbol failures are kept out of `results` so callers can
 // treat absence as "no data"; the rejection reason is logged for diagnostics.
-async function fetchQuoteBatch(items) {
+async function fetchQuoteBatch(items, opts = {}) {
+  const { onBatch, cacheBust } = opts;
   const results = {};
   const batchSize = 8;
   const runPass = async (list) => {
     for (let i = 0; i < list.length; i += batchSize) {
       const batch = list.slice(i, i + batchSize);
-      const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market)));
+      const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market, { cacheBust })));
+      // Collect just this batch's fresh quotes so the caller can paint them
+      // immediately — the portfolio's "today" move then updates as the first
+      // holdings land instead of waiting for the whole sweep (watchlist, ribbon,
+      // recommended lists) to finish.
+      const fresh = {};
       settled.forEach((r, idx) => {
         const { market, ticker } = batch[idx];
         const key = priceKey(market, ticker);
         if (r.status === 'fulfilled' && r.value) {
           results[key] = r.value;
+          fresh[key] = r.value;
         } else if (r.status === 'rejected') {
           console.warn(`fetchQuoteBatch: ${key} rejected`, r.reason);
         }
       });
+      if (onBatch && Object.keys(fresh).length) onBatch(fresh);
     }
   };
   await runPass(items);
@@ -2571,24 +2585,35 @@ function usePriceFeed(tickersToFetch, toast) {
     if (!obj || !Object.keys(obj).length) return;
     setPrices(prev => { const next = { ...prev, ...obj }; persistPrices(next); return next; });
   }, [persistPrices]);
-  const refresh = useCallback(async () => {
-    if (loadingRef.current) return;
+  // A manual tap that arrives mid-fetch sets this so the in-flight run loops
+  // once more (with cache-bust) the moment it finishes — the press always ends
+  // in genuinely fresh data instead of being silently dropped by the guard.
+  const pendingForceRef = useRef(false);
+  const runFetch = useCallback(async (cacheBust) => {
     loadingRef.current = true;
     setLoading(true);
     try {
-      const newPrices = await fetchQuoteBatch(tickersToFetch);
-      const gotAny = Object.keys(newPrices).length > 0;
-      if (gotAny) {
-        setPrices(prev => { const next = { ...prev, ...newPrices }; persistPrices(next); return next; });
-        setLastUpdate(new Date());
-        setFailStreak(0);
-      } else if (tickersToFetch.length > 0) {
-        setFailStreak(prev => {
-          const next = prev + 1;
-          if (next === 2 && toast) toast('Price feed unreachable — using last known prices');
-          return next;
+      do {
+        const force = cacheBust || pendingForceRef.current;
+        pendingForceRef.current = false;
+        const newPrices = await fetchQuoteBatch(tickersToFetch, {
+          cacheBust: force,
+          // Merge each batch as it lands so holdings paint progressively.
+          onBatch: (partial) => setPrices(prev => {
+            const next = { ...prev, ...partial }; persistPrices(next); return next;
+          })
         });
-      }
+        if (Object.keys(newPrices).length > 0) {
+          setLastUpdate(new Date());
+          setFailStreak(0);
+        } else if (tickersToFetch.length > 0) {
+          setFailStreak(prev => {
+            const next = prev + 1;
+            if (next === 2 && toast) toast('Price feed unreachable — using last known prices');
+            return next;
+          });
+        }
+      } while (pendingForceRef.current);
     } catch (e) {
       console.error('Refresh failed:', e);
       if (toast) toast('Price refresh failed');
@@ -2597,6 +2622,18 @@ function usePriceFeed(tickersToFetch, toast) {
     loadingRef.current = false;
     setLoading(false);
   }, [tickersToFetch, toast, persistPrices]);
+  // Auto-poll: skip if a fetch is already running (no point double-polling).
+  const refresh = useCallback(() => {
+    if (loadingRef.current) return;
+    runFetch(false);
+  }, [runFetch]);
+  // Manual refresh button: never a no-op. If idle, fetch now with cache-bust;
+  // if a poll is mid-flight, flag a forced re-run so it fires the instant the
+  // current sweep ends.
+  const refreshNow = useCallback(() => {
+    if (loadingRef.current) { pendingForceRef.current = true; return; }
+    runFetch(true);
+  }, [runFetch]);
   // Battery-aware cadence: 90s while any tracked market is open, 5 min when
   // they're all shut (prices barely move overnight). A low-frequency meta-timer
   // flips the rate at open/close boundaries; server push covers the closed app.
@@ -2608,7 +2645,7 @@ function usePriceFeed(tickersToFetch, toast) {
     return () => clearInterval(id);
   }, [tickersToFetch]);
   usePolledRefresh(refresh, pollMs, 60000, tickersToFetch);
-  return { prices, loading, lastUpdate, failStreak, refresh, mergePrices };
+  return { prices, loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
 // price/alert change. fireNotification is injected because its closure (toast,
@@ -3496,15 +3533,19 @@ function App() {
     return () => document.removeEventListener('contextmenu', block);
   }, []);
   const tickersToFetch = useMemo(() => {
+    // Order matters: the batch fetcher works front-to-back and paints each batch
+    // as it lands, so the user's own positions go first — that's what drives the
+    // portfolio's "today" move and should refresh before the watchlist, ribbon
+    // indices, or the static recommendation lists.
     const set = new Set();
+    positions.forEach(p => set.add(priceKey(p.market, p.ticker)));
+    watchlist.forEach(w => set.add(priceKey(w.market, w.ticker)));
+    alerts.forEach(a => set.add(priceKey(a.market, a.ticker)));
+    ribbonItems.forEach(k => set.add(k));
     DATA.HOLDINGS.forEach(h => set.add('US:' + h.ticker));
     DATA.NEW_PICKS.forEach(p => set.add('US:' + p.ticker));
     DATA.HEDGES.forEach(h => set.add('US:' + h.ticker));
     set.add('US:VOO');
-    ribbonItems.forEach(k => set.add(k));
-    positions.forEach(p => set.add(priceKey(p.market, p.ticker)));
-    watchlist.forEach(w => set.add(priceKey(w.market, w.ticker)));
-    alerts.forEach(a => set.add(priceKey(a.market, a.ticker)));
     return Array.from(set).map(k => {
       const [m, ...rest] = k.split(':');
       return {
@@ -3513,7 +3554,7 @@ function App() {
       };
     });
   }, [positions, watchlist, alerts, ribbonItems]);
-  const { prices, loading, lastUpdate, failStreak, refresh: refreshPrices, mergePrices } = usePriceFeed(tickersToFetch, toast);
+  const { prices, loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(tickersToFetch, toast);
   // Fetch one symbol now and merge it so dashboard charts update immediately
   // after a holding is added/imported, instead of waiting for the poll cycle.
   const seedQuote = useCallback(async (ticker, market) => {
@@ -3853,7 +3894,7 @@ function App() {
     minute: '2-digit'
   }) : '…')), React.createElement("button", {
     className: `icon-btn ${loading ? 'spin' : ''}`,
-    onClick: refreshPrices,
+    onClick: refreshPricesNow,
     "aria-label": "Refresh"
   }, React.createElement(Icon, {
     name: "refresh"
