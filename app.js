@@ -632,27 +632,48 @@ function derivePrevClose(bars, livePrice, fallback) {
   if (ratio > 0.01 && ratio < 100) return candidate;
   return fallback;
 }
-// Decide which extended-hours quote (pre or post) to surface based on Yahoo's
-// market-state hint and which of pre/post differ meaningfully from the
-// regular price. All inputs must already be in natural units.
-function pickExtendedHours(meta, regularPrice, preMarketPrice, postMarketPrice) {
-  const hasPre = preMarketPrice && regularPrice > 0 && Math.abs(preMarketPrice - regularPrice) > 0.001;
-  const hasPost = postMarketPrice && regularPrice > 0 && Math.abs(postMarketPrice - regularPrice) > 0.001;
-  const state = meta.marketState || 'UNKNOWN';
-  const isPreState = state === 'PRE' || state === 'PREPRE';
-  const isPostState = state === 'POST' || state === 'POSTPOST' || state === 'CLOSED';
-  let extPrice = null, extKind = null;
-  if (isPreState && hasPre) { extPrice = preMarketPrice; extKind = 'pre'; }
-  else if (isPostState && hasPost) { extPrice = postMarketPrice; extKind = 'post'; }
-  else if (hasPre && !hasPost) { extPrice = preMarketPrice; extKind = 'pre'; }
-  else if (hasPost && !hasPre) { extPrice = postMarketPrice; extKind = 'post'; }
-  else if (hasPre && hasPost) { extPrice = preMarketPrice; extKind = 'pre'; }
-  if (extPrice == null) return { extPrice: null, extChange: null, extChangePct: null, extKind: null };
+// Derive the live extended-hours (pre/post) quote from an intraday chart result.
+// Yahoo's chart `meta` no longer carries preMarketPrice/postMarketPrice and the
+// v7 quote endpoint that did is now blocked — so the only reliable source is the
+// intraday bars themselves (fetched with includePrePost). We classify "now"
+// against the day's trading periods and, when we're actually in pre- or
+// post-market, take the latest traded close in that session and measure it
+// against the regular close — exactly the figure Google shows as
+// "Pre-market" / "After hours". Returns null outside extended hours so the UI
+// shows nothing during the regular session or when the market is fully closed.
+function deriveIntradayExt(result, market) {
+  const meta = result?.meta;
+  const ctp = meta?.currentTradingPeriod;
+  const ts = result?.timestamp;
+  const closes = result?.indicators?.quote?.[0]?.close;
+  if (!meta || !ctp || !ctp.regular || !Array.isArray(ts) || !Array.isArray(closes)) return null;
+  if (typeof meta.regularMarketPrice !== 'number') return null;
+  const nowSec = Date.now() / 1000;
+  let kind = null, sess = null;
+  if (ctp.post && nowSec >= ctp.post.start && nowSec < ctp.post.end) { kind = 'post'; sess = ctp.post; }
+  else if (ctp.pre && nowSec >= ctp.pre.start && nowSec < ctp.pre.end) { kind = 'pre'; sess = ctp.pre; }
+  else return null;
+  // Latest non-null close that falls inside the active extended session.
+  let raw = null;
+  for (let i = ts.length - 1; i >= 0; i--) {
+    const c = closes[i];
+    if (c == null || !isFinite(c)) continue;
+    if (ts[i] >= sess.start && ts[i] < sess.end) { raw = c; break; }
+  }
+  if (raw == null) return null;
+  const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+  const divisor = centDivisor(market, currency);
+  const extPrice = raw / divisor;
+  const regularPrice = meta.regularMarketPrice / divisor;
+  if (!(regularPrice > 0) || !(extPrice > 0)) return null;
+  // No move yet (first ext bar equals the close) → nothing meaningful to show.
+  if (Math.abs(extPrice - regularPrice) < 0.0005 * regularPrice) return null;
   return {
     extPrice,
     extChange: extPrice - regularPrice,
     extChangePct: (extPrice - regularPrice) / regularPrice * 100,
-    extKind
+    extKind: kind,
+    marketState: kind === 'post' ? 'POST' : 'PRE'
   };
 }
 // Convert one Yahoo chart result into the app's normalized quote shape.
@@ -672,8 +693,6 @@ function parseYahooQuote(result, market) {
   let dayHigh = meta.regularMarketDayHigh || null;
   let dayLow = meta.regularMarketDayLow || null;
   const volume = meta.regularMarketVolume || null;
-  let preMarketPrice = meta.preMarketPrice || null;
-  let postMarketPrice = meta.postMarketPrice || null;
   if (divisor !== 1) {
     price = price / divisor;
     prevClose = prevClose / divisor;
@@ -681,8 +700,6 @@ function parseYahooQuote(result, market) {
     if (yearLow) yearLow = yearLow / divisor;
     if (dayHigh) dayHigh = dayHigh / divisor;
     if (dayLow) dayLow = dayLow / divisor;
-    if (preMarketPrice) preMarketPrice = preMarketPrice / divisor;
-    if (postMarketPrice) postMarketPrice = postMarketPrice / divisor;
   }
   // The market the user filed this symbol under is authoritative for the display
   // currency. Normalise to it so every surface (price, fundamentals, P/L, chart)
@@ -693,7 +710,6 @@ function parseYahooQuote(result, market) {
   try {
     prevClose = derivePrevClose(buildDailyBars(result, divisor), price, prevClose);
   } catch (_e) {}
-  const ext = pickExtendedHours(meta, price, preMarketPrice, postMarketPrice);
   return {
     price,
     prevClose,
@@ -704,12 +720,12 @@ function parseYahooQuote(result, market) {
     dayHigh,
     dayLow,
     volume,
-    preMarketPrice,
-    postMarketPrice,
-    extPrice: ext.extPrice,
-    extChange: ext.extChange,
-    extChangePct: ext.extChangePct,
-    extKind: ext.extKind,
+    // Extended-hours (pre/post) is derived from intraday bars by the caller via
+    // deriveIntradayExt — the daily chart meta carries no pre/post fields.
+    extPrice: null,
+    extChange: null,
+    extChangePct: null,
+    extKind: null,
     currency,
     marketState: meta.marketState || 'UNKNOWN',
     shortName: meta.shortName || meta.longName || null,
@@ -802,7 +818,6 @@ function morningstarRowToQuote(r) {
     price, prevClose, change,
     changePct: prevClose > 0 ? (change / prevClose) * 100 : 0,
     yearHigh: null, yearLow: null, dayHigh: null, dayLow: null, volume: null,
-    preMarketPrice: null, postMarketPrice: null,
     extPrice: null, extChange: null, extChangePct: null, extKind: null,
     currency: 'ZAR',
     marketState: 'CLOSED',     // a unit trust strikes one NAV per day, not live
@@ -1085,6 +1100,9 @@ async function fetchQuote(ticker, market) {
         const data = JSON.parse(intraText);
         const result = data?.chart?.result?.[0];
         const fresh = result ? parseYahooQuote(result, market) : null;
+        // The extended-hours quote can only be derived from the intraday bars
+        // (the daily endpoint has no pre/post data); null outside ext hours.
+        const ext = result ? deriveIntradayExt(result, market) : null;
         if (fresh && fresh.price > 0) {
           if (quote) {
             // Splice fresher price/change/extended-hours onto the daily quote.
@@ -1095,19 +1113,17 @@ async function fetchQuote(ticker, market) {
               changePct: quote.prevClose > 0 ? (fresh.price - quote.prevClose) / quote.prevClose * 100 : 0,
               dayHigh: fresh.dayHigh || quote.dayHigh,
               dayLow: fresh.dayLow || quote.dayLow,
-              preMarketPrice: fresh.preMarketPrice || quote.preMarketPrice,
-              postMarketPrice: fresh.postMarketPrice || quote.postMarketPrice,
-              extPrice: fresh.extPrice || quote.extPrice,
-              extChange: fresh.extChange != null ? fresh.extChange : quote.extChange,
-              extChangePct: fresh.extChangePct != null ? fresh.extChangePct : quote.extChangePct,
-              extKind: fresh.extKind || quote.extKind,
+              extPrice: ext ? ext.extPrice : null,
+              extChange: ext ? ext.extChange : null,
+              extChangePct: ext ? ext.extChangePct : null,
+              extKind: ext ? ext.extKind : null,
               regularMarketTime: fresh.regularMarketTime || quote.regularMarketTime,
-              marketState: fresh.marketState || quote.marketState,
+              marketState: ext ? ext.marketState : (fresh.marketState || quote.marketState),
               fetchedAt: Date.now(),
               source: 'yahoo+intraday'
             };
           } else {
-            quote = fresh;
+            quote = ext ? { ...fresh, ...ext } : fresh;
           }
         }
       } catch (_e) {}
@@ -4139,6 +4155,7 @@ function PriceBlock(_ref5) {
   const extUp = hasExt && quote.extChangePct >= 0;
   const extLabel = quote.extKind === 'pre' ? 'Pre-market' : quote.extKind === 'post' ? 'After-hours' : '';
   const chgAbs = (typeof quote.change === 'number' && isFinite(quote.change)) ? quote.change : null;
+  const extChgAbs = (typeof quote.extChange === 'number' && isFinite(quote.extChange)) ? quote.extChange : null;
   const prevClose = (typeof quote.prevClose === 'number' && isFinite(quote.prevClose) && quote.prevClose > 0) ? quote.prevClose : null;
   return React.createElement("div", {
     className: "price-block-wrap"
@@ -4174,20 +4191,25 @@ function PriceBlock(_ref5) {
       )
     ),
     hasExt && React.createElement("div", { className: "daily-divider" }),
+    // Extended-hours column mirrors the "Today" column: the live pre/post price on
+    // top, then its move vs the regular close as "+%  ·  +cash" — the same figures
+    // Google surfaces as e.g. "After hours 1 235,00 +23,62 (1,95%)".
     hasExt && React.createElement("div", { className: "daily-col" },
       React.createElement("div", { className: "daily-row" },
         React.createElement("span", { className: "daily-label" }, extLabel),
-        React.createElement("span", { className: `daily-val mono ${extUp ? 'up' : 'down'}` },
-          (extUp ? '+' : '') + quote.extChangePct.toFixed(2) + '%'
-        )
+        React.createElement("span", { className: "daily-val mono" }, sym + fmtNum(quote.extPrice))
       ),
       React.createElement("div", { className: "daily-row prevclose-row" },
-        React.createElement("span", { className: "daily-label" }, extLabel === 'Pre-market' ? 'Pre price' : 'Ext price'),
-        React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + fmtNum(quote.extPrice))
+        React.createElement("span", { className: "daily-label" }, "vs close"),
+        React.createElement("span", { className: `daily-val mono ${extUp ? 'up' : 'down'}` },
+          (extUp ? '+' : '') + quote.extChangePct.toFixed(2) + '%' +
+          (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + sym + fmtNum(Math.abs(extChgAbs)) : '')
+        )
       )
     )
   ),
-  // Outside the detail card (rows/lists) keep the original inline ext-hours chip.
+  // Outside the detail card (rows/lists): compact ext-hours chip — label, live
+  // pre/post price, then the signed % (with cash move) vs the regular close.
   !showDailyRow && hasExt && React.createElement("div", {
     className: "ext-hours"
   }, React.createElement("span", {
@@ -4196,7 +4218,8 @@ function PriceBlock(_ref5) {
     className: "ext-price mono"
   }, sym, fmtNum(quote.extPrice)), React.createElement("span", {
     className: `ext-chg mono ${extUp ? 'up' : 'down'}`
-  }, extUp ? '+' : '', quote.extChangePct.toFixed(2), "%")));
+  }, (extUp ? '+' : '') + quote.extChangePct.toFixed(2) + '%' +
+     (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + sym + fmtNum(Math.abs(extChgAbs)) : ''))));
 }
 // SVG-based line chart for portfolio growth over time
 function PortfolioLineChart({ positions, prices, contributions, displayCurrency, fxRates }) {
@@ -9721,9 +9744,17 @@ function PriceChart(_refChart) {
   const baseline = is1d && quote && typeof quote.prevClose === 'number' && quote.prevClose > 0 ? quote.prevClose : null;
   let points = rawPoints;
   if (is1d && quote && typeof quote.price === 'number' && quote.price > 0) {
+    // During extended hours the live tick is the pre/post price, not the regular
+    // close — append THAT (tagged with its session) so the line ends where the
+    // after-hours / pre-market readout sits instead of snapping back down to the
+    // regular close and drawing a phantom drop at the end.
+    const liveP = (quote.extPrice != null && quote.extKind) ? quote.extPrice : quote.price;
+    const liveSession = quote.extKind === 'post' ? 'post'
+      : quote.extKind === 'pre' ? 'pre'
+      : (rawPoints[rawPoints.length - 1].session || 'regular');
     const lastP = rawPoints[rawPoints.length - 1].p;
-    if (Math.abs(lastP - quote.price) / quote.price > 0.0005) {
-      points = [...rawPoints, { t: Date.now(), p: quote.price, session: rawPoints[rawPoints.length - 1].session || 'regular' }];
+    if (Math.abs(lastP - liveP) / liveP > 0.0005) {
+      points = [...rawPoints, { t: Date.now(), p: liveP, session: liveSession }];
     }
   }
   const W = 600, H = 180;
