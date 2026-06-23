@@ -71,6 +71,13 @@ Tap **Send test push** to confirm delivery.
   trading day stays far inside the free-tier write quota; off-hours runs fetch
   nothing.
 - **`GET /vapid-public-key`**, **`POST /unsubscribe`**, **`POST /test`** round it out.
+- **`POST /backup`** / **`GET /backup?key=…`** — encrypted data backup. The app
+  stores a zero-knowledge snapshot of all its data keyed by `SHA-256(recoveryCode)`
+  under `backup:<hash>`. The server only ever sees the hash and **opaque AES-GCM
+  ciphertext** — the recovery code never leaves the device, so a KV dump can't
+  reveal anyone's portfolio. This is what lets data survive deleting + re-adding
+  the iOS home-screen icon (which wipes on-device storage). Connect it in the app
+  under **Settings → Data → Cloud backup** (reuses the push server URL).
 
 Trigger semantics (cross-once, 5-minute cooldown before re-arming) mirror the
 in-app and service-worker engines exactly, so the three layers never double-fire.
@@ -93,4 +100,5 @@ cd backend/test
 npm install
 node verify.mjs        # encryption cross-checked against canonical http_ece + VAPID JWT
 node worker.test.mjs   # trigger evaluation + market-hours logic
+node verify-cloud-backup.mjs   # /backup routes + client encrypt/restore round-trip
 ```
