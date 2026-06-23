@@ -4138,6 +4138,7 @@ function PriceBlock(_ref5) {
     size = 'md',
     showDailyRow = false,
     hideChange = false,
+    hideExt = false,
     market
   } = _ref5;
   if (!quote) return React.createElement("span", {
@@ -4210,7 +4211,9 @@ function PriceBlock(_ref5) {
   ),
   // Outside the detail card (rows/lists): compact ext-hours chip — label, live
   // pre/post price, then the signed % (with cash move) vs the regular close.
-  !showDailyRow && hasExt && React.createElement("div", {
+  // hideExt lets a caller (e.g. the watchlist card) lift the chip out of the
+  // price block and place it elsewhere so the header price stays right-aligned.
+  !showDailyRow && hasExt && !hideExt && React.createElement("div", {
     className: "ext-hours"
   }, React.createElement("span", {
     className: "ext-label"
@@ -7782,6 +7785,13 @@ function WatchlistView(_ref8) {
         const ac = alerts.filter(a => a.ticker === w.ticker && a.market === w.market).length;
         const hasDay = q && typeof q.changePct === 'number' && isFinite(q.changePct);
         const dayUp = hasDay && q.changePct >= 0;
+        // Extended-hours chip lives in the card body (bottom-middle), lifted out
+        // of the header price block so the price stays pinned to the right edge.
+        const hasExt = q && q.extPrice != null && q.extChangePct != null;
+        const extUp = hasExt && q.extChangePct >= 0;
+        const extLabel = q && q.extKind === 'pre' ? 'Pre-market' : q && q.extKind === 'post' ? 'After-hours' : '';
+        const extSym = (MARKET_CURRENCY[w.market] || MARKET_CURRENCY.US).sym;
+        const extChgAbs = hasExt && typeof q.extChange === 'number' && isFinite(q.extChange) ? q.extChange : null;
         return React.createElement("div", {
           key: w.id,
           ref: setCardRef(w.id),
@@ -7809,7 +7819,8 @@ function WatchlistView(_ref8) {
                     ? customListsOf(w).map(id => React.createElement("span", { key: id, className: "wl-card-list" }, listNameById(id))) : null),
                 displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null),
               // Stock price now sits top-right (swapped with the 52W high below).
-              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, market: w.market })),
+              // The ext-hours chip is lifted out (hideExt) and shown in the body.
+              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, hideExt: true, market: w.market })),
             React.createElement("div", { className: "watch-body" },
               // 52W high now sits bottom-left (swapped with the price), with the
               // alert bell directly beside it.
@@ -7826,7 +7837,15 @@ function WatchlistView(_ref8) {
                 ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
                     React.createElement("div", { className: "watch-today-pct mono" },
                       (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
-                : React.createElement("div", { className: "watch-today" }))));
+                : React.createElement("div", { className: "watch-today" })),
+            // Pre/after-hours readout on its own centered line at the foot of the
+            // card so it reads as a secondary detail without crowding the name.
+            hasExt && React.createElement("div", { className: "watch-ext ext-hours" },
+              React.createElement("span", { className: "ext-label" }, extLabel),
+              React.createElement("span", { className: "ext-price mono" }, extSym, fmtNum(q.extPrice)),
+              React.createElement("span", { className: `ext-chg mono ${extUp ? 'up' : 'down'}` },
+                (extUp ? '+' : '') + q.extChangePct.toFixed(2) + '%' +
+                (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + extSym + fmtNum(Math.abs(extChgAbs)) : '')))));
       })),
 
     alertPopup && React.createElement("div", { className: "alert-popup-overlay" },
