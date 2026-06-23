@@ -119,6 +119,11 @@ function yahooSymbol(ticker, market) {
   if (market === 'FRA') return ticker + '.F';
   if (market === 'PAR') return ticker + '.PA';
   if (market === 'AMS') return ticker + '.AS';
+  // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
+  // Without this we fetch the wrong instrument (e.g. an equity also tickered
+  // "BTC") and fire triggers off a price that isn't the live crypto market —
+  // mirror app.js's yahooSymbol exactly.
+  if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
   return encodeURIComponent(ticker);
 }
 function centDivisor(market, currency) {
@@ -162,9 +167,11 @@ const SESSIONS = {
   ASX:  { tz: 'Australia/Sydney',      open: 10 * 60, close: 16 * 60 + 10 },
   FRA:  { tz: 'Europe/Berlin',         open: 9 * 60,  close: 17 * 60 + 35 },
   PAR:  { tz: 'Europe/Paris',          open: 9 * 60,  close: 17 * 60 + 35 },
-  AMS:  { tz: 'Europe/Amsterdam',      open: 9 * 60,  close: 17 * 60 + 35 }
+  AMS:  { tz: 'Europe/Amsterdam',      open: 9 * 60,  close: 17 * 60 + 35 },
+  CRYPTO: { tz: 'UTC',                 open: 0,       close: 24 * 60 }  // 24/7
 };
 function marketOpen(market, now = new Date()) {
+  if (market === 'CRYPTO') return true; // crypto trades 24/7, incl. weekends
   const s = SESSIONS[market] || SESSIONS.US;
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: s.tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false

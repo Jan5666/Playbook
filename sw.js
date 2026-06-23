@@ -221,6 +221,11 @@ function swYahooSymbol(ticker, market) {
   if (market === 'FRA') return ticker + '.F';
   if (market === 'PAR') return ticker + '.PA';
   if (market === 'AMS') return ticker + '.AS';
+  // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
+  // Without this the background check fetches the wrong instrument (e.g. an
+  // equity also tickered "BTC") and fires triggers off a price that isn't the
+  // live crypto market — mirror app.js's yahooSymbol exactly.
+  if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
   return encodeURIComponent(ticker);
 }
 // JSE reports in cents and LSE in pence for many instruments — divide to natural units.
