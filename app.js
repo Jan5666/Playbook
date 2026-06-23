@@ -2136,6 +2136,28 @@ function convertCcy(amount, from, to, rates) {
   if (!fr || !tr) return null;
   return amount / fr * tr;
 }
+// The capital a deposit actually committed, valued in `displayCurrency`. This is
+// the "money put in" used for overall-profit: it uses the rate locked when the
+// deposit was made — the real achieved rate when the user recorded how much USD
+// actually landed (fxRateAtContrib = source units ÷ USD landed), otherwise the
+// market rate at deposit time — rather than revaluing at today's market rate. So
+// a deposit kept in the display currency always counts at its face amount, and a
+// cross-currency deposit counts at the dollars that genuinely entered the
+// account. Falls back to today's conversion only when no rate was ever captured.
+function contribInDisplay(c, displayCurrency, rates) {
+  if (!c) return 0;
+  const amt = c.amount;
+  if (!isFinite(amt)) return 0;
+  if (c.currency === displayCurrency) return amt;
+  const lockedRate = (c.fxRateAtContrib && isFinite(c.fxRateAtContrib) && c.fxRateAtContrib > 1e-6) ? c.fxRateAtContrib : null;
+  const dispRate = (rates && rates[displayCurrency] && isFinite(rates[displayCurrency]) && rates[displayCurrency] > 1e-6) ? rates[displayCurrency] : null;
+  if (lockedRate && dispRate) {
+    const usd = amt / lockedRate; // the USD that actually landed at deposit time
+    return usd * dispRate;        // revalue that committed USD into the display currency
+  }
+  const conv = convertCcy(amt, c.currency, displayCurrency, rates);
+  return conv != null ? conv : 0;
+}
 function marketCurrency(market) {
   return (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code;
 }
@@ -3353,11 +3375,21 @@ function usePortfolio(fxRates, toast) {
     setPositions(prev => prev.filter(p => !set.has(p.id)));
     toast(set.size === 1 ? 'Holding deleted' : set.size + ' holdings deleted');
   };
-  const addContribution = (amount, currency, date, note) => {
-    const rateAtContrib = fxRates?.rates?.[currency] || null;
+  const addContribution = (amount, currency, date, note, usdLanded) => {
+    const amt = parseFloat(amount);
+    const landed = parseFloat(usdLanded);
+    // If the user recorded how much USD actually arrived (e.g. R18 000 sent →
+    // $1 000 landed), lock in the *real* achieved rate (source units per USD) so
+    // overall profit measures what they put in against what they hold now. Else
+    // fall back to the market rate at deposit time.
+    const hasLanded = currency !== 'USD' && isFinite(landed) && landed > 0;
+    const rateAtContrib = hasLanded
+      ? Math.abs(amt) / landed
+      : (fxRates?.rates?.[currency] || null);
     setContributions(prev => [...prev, {
-      id: uid(), amount: parseFloat(amount), currency, date, note: note || '',
-      fxRateAtContrib: rateAtContrib, fxBase: 'USD'
+      id: uid(), amount: amt, currency, date, note: note || '',
+      fxRateAtContrib: rateAtContrib, fxBase: 'USD',
+      ...(hasLanded ? { usdLanded: landed } : {})
     }]);
     toast('Contribution logged');
   };
@@ -3603,6 +3635,11 @@ function BrandMark({ theme }) {
 function LoadingScreen({ visible }) {
   const [mounted, setMounted] = useState(visible);
   const [hiding, setHiding] = useState(false);
+  // The loader is a fixed full-screen overlay rendered *over* the already-mounted
+  // app, whose full-height content would otherwise let the document scroll behind
+  // it — showing a stray scrollbar on the splash. Lock the body while the loader
+  // is mounted (through the fade-out) so nothing scrolls underneath it.
+  useBodyScrollLock(mounted);
   useEffect(() => {
     if (visible) {
       setMounted(true);
@@ -3638,6 +3675,10 @@ function App() {
   const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
   const [pushBackend, setPushBackend] = usePersistedState('pb.pushBackend.v1', '');
   const [displayCurrency, setDisplayCurrency] = usePersistedState('pb.displayCurrency.v1', 'USD');
+  // Allocation donut style: 'classic' (every holding its own wedge, varied
+  // palette) or 'grouped' (top 10 holdings + a single "Other" wedge, brand
+  // indigo→blue ramp). Chosen in Settings → Appearance.
+  const [donutStyle, setDonutStyle] = usePersistedState('pb.donutStyle.v1', 'classic');
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
   const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
   const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
@@ -3835,12 +3876,27 @@ function App() {
   // to fetch — so the dashboard never flashes empty/placeholder numbers on a cold
   // open. The fail-safe timeout guarantees we never trap the user behind it.
   const [booting, setBooting] = useState(true);
+  // Warm-start fast path: last-known prices are rehydrated from localStorage
+  // synchronously (see usePriceFeed), so if they already cover every one of the
+  // user's own holdings the dashboard can paint real numbers immediately — no
+  // reason to sit on the splash waiting for the network round-trip. Only a true
+  // cold open (no cached prices) falls through to wait for the first fetch.
+  const positionsCached = useMemo(
+    () => positions.length > 0 && positions.every(p => {
+      const q = prices[priceKey(p.market, p.ticker)];
+      return q && typeof q.price === 'number';
+    }),
+    [positions, prices]
+  );
   useEffect(() => {
     if (!booting) return;
-    if (lastUpdate || failStreak >= 2 || tickersToFetch.length === 0) setBooting(false);
-  }, [booting, lastUpdate, failStreak, tickersToFetch.length]);
+    if (lastUpdate || positionsCached || failStreak >= 2 || tickersToFetch.length === 0) setBooting(false);
+  }, [booting, lastUpdate, positionsCached, failStreak, tickersToFetch.length]);
+  // Fail-safe so a slow/unreachable feed never traps the user behind the splash.
+  // Kept short — the warm-start path above already covers the common reopen, so
+  // this only bounds genuine cold opens and shouldn't feel overly long.
   useEffect(() => {
-    const t = setTimeout(() => setBooting(false), 8000);
+    const t = setTimeout(() => setBooting(false), 4000);
     return () => clearTimeout(t);
   }, []);
   // Fetch one symbol now and merge it so dashboard charts update immediately
@@ -4052,7 +4108,8 @@ function App() {
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
       sectorWeights: sectorWeights,
-      onSetSectorWeights: setSectorWeightsFor
+      onSetSectorWeights: setSectorWeightsFor,
+      donutStyle: donutStyle
     }),
     current: React.createElement(CurrentView, {
       prices: prices,
@@ -4260,6 +4317,8 @@ function App() {
     onSetIconTheme: setIconTheme,
     theme: theme,
     onSetTheme: setTheme,
+    donutStyle: donutStyle,
+    onSetDonutStyle: setDonutStyle,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -4635,8 +4694,7 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
 
     let cumContrib = 0;
     contribSorted.forEach(c => {
-      const conv = convertCcy(c.amount, c.currency, displayCurrency, rates);
-      if (conv != null) cumContrib += conv;
+      cumContrib += contribInDisplay(c, displayCurrency, rates);
     });
     const totalContrib = cumContrib;
 
@@ -4745,10 +4803,6 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
     return sym + Math.round(v).toLocaleString('en-US');
   };
   const fmtFull = v => sym + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const lastVal = points[points.length - 1];
-  const firstVal = points[0];
-  const gain = lastVal.value - firstVal.contributed;
-  const gainPct = firstVal.contributed > 0 ? (gain / firstVal.contributed * 100) : 0;
 
   const hoverPoint = hoverIdx != null ? points[hoverIdx] : null;
   const hoverElements = [];
@@ -4799,9 +4853,7 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
           React.createElement("span", { className: "chart-legend-dot", style: { background: 'var(--brand)' } }), "Value"),
         React.createElement("span", { className: "chart-legend-item" },
           React.createElement("span", { className: "chart-legend-dot chart-legend-dot--dashed" }), "Cost"),
-        loading ? React.createElement("span", { className: "text-dim text-xs" }, "Loading…")
-          : React.createElement("span", { className: `chart-legend-gain ${gain >= 0 ? 'up' : 'down'}` },
-          (gain >= 0 ? '+' : '') + gainPct.toFixed(1) + '%'))
+        loading ? React.createElement("span", { className: "text-dim text-xs" }, "Loading…") : null)
     ),
     React.createElement("svg", {
       ref: svgRef,
@@ -4837,7 +4889,7 @@ function PortfolioLineChart({ positions, prices, contributions, displayCurrency,
       React.createElement("path", { d: areaPath, fill: "url(#areaGrad)" }),
       React.createElement("path", { d: contribPath, fill: "none", stroke: "var(--text-dim)", strokeWidth: "1.5", strokeDasharray: "4,3", opacity: "0.4" }),
       React.createElement("path", { d: valuePath, fill: "none", stroke: "url(#lineGrad)", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" }),
-      hoverIdx == null && React.createElement("circle", { cx: x(points.length - 1), cy: y(lastVal.value), r: "4", fill: "var(--brand)", stroke: "var(--bg-raised)", strokeWidth: "2" }),
+      hoverIdx == null && React.createElement("circle", { cx: x(points.length - 1), cy: y(points[points.length - 1].value), r: "4", fill: "var(--brand)", stroke: "var(--bg-raised)", strokeWidth: "2" }),
       ...hoverElements,
       React.createElement("rect", { x: PAD_L, y: PAD_T, width: chartW, height: chartH,
         fill: "transparent", style: { cursor: 'crosshair' } })
@@ -4950,7 +5002,7 @@ function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, 
 }
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR', CRYPTO: 'Crypto' };
-function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes }) {
+function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes, donutStyle }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
@@ -5034,10 +5086,32 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     return React.createElement("div", { className: "chart-empty" },
       React.createElement("div", { className: "text-dim text-sm" }, "Add positions to see allocation breakdown."));
   }
+  // "Grouped" style (Settings → Appearance): collapse everything past the 10
+  // largest slices into a single residual "Other" wedge so the donut stays
+  // legible, and colour the wedges with the brand indigo→blue ramp below. The
+  // centre total is unchanged because "Other" carries the folded-in value.
+  const isGrouped = donutStyle === 'grouped';
+  const TOP_N = 10;
+  let displaySlices = slices;
+  if (isGrouped && slices.length > TOP_N) {
+    const keep = [];
+    let otherVal = 0;
+    // slices is already sorted desc with any pre-existing "Other" sunk last, so
+    // indexing front-to-back keeps the genuine top holdings and folds the tail
+    // (plus any residual "Other") into one wedge.
+    slices.forEach((sl, i) => {
+      if (i < TOP_N && sl.label !== 'Other') keep.push(sl);
+      else otherVal += sl.value;
+    });
+    if (otherVal > 0) keep.push({ label: 'Other', value: otherVal, __other: true });
+    displaySlices = keep;
+  }
   // Clicking a wedge/legend row: holdings → open the stock; sector or market →
-  // open a breakdown of the holdings that make up that slice.
+  // open a breakdown of the holdings that make up that slice. The grouped
+  // "Other" wedge isn't a real instrument or group, so it's inert.
   const clickable = mode === 'ticker' || mode === 'sector' || mode === 'market';
   const handleSlice = (a) => {
+    if (a.__other) return;
     if (mode === 'ticker') onOpenDetail(a.ticker, a.market);
     else setOpenSector(a.label);
   };
@@ -5046,11 +5120,20 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     'var(--purple)', '#06b6d4', '#ec4899', '#84cc16',
     '#f97316', '#6366f1', '#14b8a6', '#e879f9'
   ];
+  // Brand indigo→blue→cyan ramp for the grouped style. Six stops are the values
+  // supplied for the design; the four interleaved (#5479E1, #4F91D6, #54A5C9,
+  // #6E84CA) were sourced to fill a smooth 10-stop ramp in the same indigo/
+  // periwinkle family as the logo. The largest holding gets the brand indigo.
+  const BRAND_RAMP = [
+    '#6E6EF0', '#5A6FE6', '#5479E1', '#4F86DC', '#4F91D6',
+    '#4F9BCF', '#54A5C9', '#5AAFC2', '#6E84CA', '#7E7AD6'
+  ];
+  const OTHER_COLOR = '#2E2E3C';
   const SIZE = 154, CX = SIZE / 2, CY = SIZE / 2, R = 61, INNER_R = 39;
   const RING_R = (R + INNER_R) / 2, RING_W = R - INNER_R;
-  const single = slices.length === 1;
+  const single = displaySlices.length === 1;
   let cumAngle = -Math.PI / 2;
-  const arcs = slices.map((s, i) => {
+  const arcs = displaySlices.map((s, i) => {
     const angle = (s.value / total) * Math.PI * 2;
     const startAngle = cumAngle;
     cumAngle += angle;
@@ -5065,7 +5148,10 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     // ring circle instead so it shows a clean full donut.
     const d = single ? null
       : `M${x1},${y1}A${R},${R} 0 ${largeArc},1 ${x2},${y2}L${ix1},${iy1}A${INNER_R},${INNER_R} 0 ${largeArc},0 ${ix2},${iy2}Z`;
-    return { ...s, d, color: COLORS[i % COLORS.length], pct: (s.value / total * 100) };
+    const color = isGrouped
+      ? ((s.__other || s.label === 'Other') ? OTHER_COLOR : BRAND_RAMP[i % BRAND_RAMP.length])
+      : COLORS[i % COLORS.length];
+    return { ...s, d, color, pct: (s.value / total * 100) };
   });
   const sym = CURRENCY_SYMBOLS[displayCurrency] || '$';
   const fmtTotal = v => sym + Math.round(v).toLocaleString('en-US');
@@ -5272,7 +5358,8 @@ function DashboardView(_ref6) {
     sectorCache,
     fundamentals,
     sectorWeights,
-    onSetSectorWeights
+    onSetSectorWeights,
+    donutStyle
   } = _ref6;
   const computeStats = list => {
     let cost = 0, value = 0, hasAllPrices = true;
@@ -5348,9 +5435,11 @@ function DashboardView(_ref6) {
   const [showTxHistory, setShowTxHistory] = useState(false);
   const [txFilter, setTxFilter] = useState('all');
   const [valueHidden, setValueHidden] = usePersistedState('pb.valueHidden.v1', false);
+  // "Money put in" = each deposit valued at the rate locked when it was made
+  // (the real rate when USD-landed was recorded), not today's market rate — so
+  // overall return compares what you contributed to what you now hold.
   const totalContribDisplay = contributions.reduce((sum, c) => {
-    const conv = convertCcy(c.amount, c.currency, displayCurrency, rates);
-    return sum + (conv || 0);
+    return sum + contribInDisplay(c, displayCurrency, rates);
   }, 0);
   const overallReturn = totalValue - totalContribDisplay;
   const overallReturnPct = totalContribDisplay > 0 ? (overallReturn / totalContribDisplay * 100) : 0;
@@ -5381,14 +5470,13 @@ function DashboardView(_ref6) {
             React.createElement("span", { className: "dash-today-arrow" }, todayUp ? '▲' : '▼'),
             fmtCcySigned(todayChange, displayCurrency), " \xB7 ", (todayUp ? '+' : '') + todayPct.toFixed(2) + '%')) : null,
         React.createElement("div", { className: `stat-sub ${totalPnlPct >= 0 ? 'up' : 'down'}` + (valueHidden ? " val-blur" : "") },
-          "All-time ", totalPnlPct >= 0 ? '+' : '', totalPnlPct.toFixed(2), "% \xB7 ",
+          "Unrealised ", totalPnlPct >= 0 ? '+' : '', totalPnlPct.toFixed(2), "% \xB7 ",
           fmtCcySigned(totalPnl, displayCurrency)),
         (() => {
           const snap = computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency });
           const hasRates = !!fxRates?.rates;
           const totalContrib = contributions.reduce((s, c) => {
-            const v = convertCcy(c.amount, c.currency, displayCurrency, fxRates?.rates || null);
-            return s + (v || 0);
+            return s + contribInDisplay(c, displayCurrency, fxRates?.rates || null);
           }, 0);
           const overallProfit = totalValue - totalContrib;
           const fxGain = snap.fxGainOnCost;
@@ -5415,7 +5503,7 @@ function DashboardView(_ref6) {
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights })),
+        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutStyle })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
@@ -5480,6 +5568,9 @@ function DashboardView(_ref6) {
                 React.createElement("div", { key: c.id || i, className: "transaction-row" },
                   React.createElement("div", { className: "transaction-info" },
                     React.createElement("div", { className: "transaction-date" }, new Date(c.date + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })),
+                    c.usdLanded ? React.createElement("div", { className: "transaction-note" },
+                      "→ $" + c.usdLanded.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " landed"
+                      + (c.fxRateAtContrib ? " · " + (CURRENCY_SYMBOLS[c.currency] || '') + c.fxRateAtContrib.toFixed(2) + "/$" : "")) : null,
                     c.note && React.createElement("div", { className: "transaction-note" }, c.note)),
                   React.createElement("div", { className: `transaction-amount ${c.amount >= 0 ? 'up' : 'down'}` },
                     (c.amount >= 0 ? '+' : '\u2212') + (CURRENCY_SYMBOLS[c.currency] || '') + Math.abs(c.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })),
@@ -5536,7 +5627,7 @@ function DashboardView(_ref6) {
       contribModalOpen ? React.createElement(ContributionModal, {
         onClose: () => setContribModalOpen(false),
         onOpenImport: onImportContributions ? () => setContribImportOpen(true) : null,
-        onSave: (amount, currency, date, note) => { onAddContribution(amount, currency, date, note); setContribModalOpen(false); }
+        onSave: (amount, currency, date, note, usdLanded) => { onAddContribution(amount, currency, date, note, usdLanded); setContribModalOpen(false); }
       }) : null,
       // Deposit / withdrawal bulk import
       contribImportOpen ? React.createElement(ContributionImportModal, {
@@ -11190,18 +11281,22 @@ function ContributionModal({ onClose, onSave, onOpenImport }) {
   const [flow, setFlow] = useState('deposit'); // 'deposit' | 'withdraw'
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('USD');
+  const [usdLanded, setUsdLanded] = useState('');
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState('');
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
   useBodyScrollLock();
   const isWithdraw = flow === 'withdraw';
+  // The "USD landed" field only makes sense for a non-USD deposit funding a USD
+  // account (e.g. ZAR → USD). Hidden otherwise.
+  const showLanded = !isWithdraw && currency !== 'USD';
   const submit = () => {
     const a = parseDecimal(amount);
     if (!isFinite(a) || a <= 0) return;
     // Withdrawals are stored as negative cash flows so the contribution history
     // and overall-return maths net them out automatically.
-    onSave(isWithdraw ? -a : a, currency, date, note);
+    onSave(isWithdraw ? -a : a, currency, date, note, showLanded ? usdLanded : '');
   };
   const ccy = currency === 'ZAR' ? 'R' : '$';
   return React.createElement("div", { className: "modal" },
@@ -11243,7 +11338,7 @@ function ContributionModal({ onClose, onSave, onOpenImport }) {
           )
         ),
         React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "Amount"),
+          React.createElement("label", { className: "form-label" }, isWithdraw ? "Amount" : "Amount transferred"),
           React.createElement("div", { className: "input-prefix-wrap" },
             React.createElement("span", { className: "prefix" }, ccy),
             React.createElement("input", {
@@ -11256,6 +11351,21 @@ function ContributionModal({ onClose, onSave, onOpenImport }) {
             })
           )
         ),
+        showLanded ? React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "USD landed in account"),
+          React.createElement("div", { className: "input-prefix-wrap" },
+            React.createElement("span", { className: "prefix" }, "$"),
+            React.createElement("input", {
+              type: "text", inputMode: "decimal",
+              autoComplete: "off", autoCorrect: "off", spellCheck: false,
+              placeholder: "0.00", value: usdLanded,
+              onChange: e => setUsdLanded(sanitizeDecimalInput(e.target.value)),
+              onKeyDown: e => { if (e.key === 'Enter') submit(); }
+            })
+          ),
+          React.createElement("div", { className: "text-dim", style: { fontSize: 12, marginTop: 6, lineHeight: 1.4 } },
+            "Optional — the dollars that actually arrived after conversion & fees. Locks in the real rate so overall profit compares what you put in to what you hold now.")
+        ) : null,
         React.createElement("div", { className: "form-group" },
           React.createElement("label", { className: "form-label" }, "Date"),
           React.createElement("input", { type: "date", value: date, onChange: e => setDate(e.target.value) })
@@ -12862,7 +12972,8 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                         tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
                         perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
                         onConnectPush, onTestPush, onDisconnectPush,
-                        iconTheme, onSetIconTheme, theme, onSetTheme, onClose }) {
+                        iconTheme, onSetIconTheme, theme, onSetTheme,
+                        donutStyle, onSetDonutStyle, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -13055,6 +13166,29 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                   React.createElement(Icon, { name: "check", size: 13 }))
               );
             })
+          ),
+          React.createElement("div", { className: "settings-row", style: { marginTop: 18 } },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, "Allocation chart"),
+              React.createElement("div", { className: "settings-row-desc" },
+                (donutStyle === 'grouped')
+                  ? "Top 10 holdings, the rest grouped into “Other”, on a brand indigo→blue ramp."
+                  : "Every holding gets its own wedge in a varied palette.")
+            ),
+            React.createElement("div", { className: "seg-toggle", style: { flex: '0 0 auto', minWidth: 168 } },
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (donutStyle !== 'grouped' ? " active" : ""),
+                onClick: () => onSetDonutStyle('classic'),
+                "aria-pressed": donutStyle !== 'grouped'
+              }, "Full"),
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (donutStyle === 'grouped' ? " active" : ""),
+                onClick: () => onSetDonutStyle('grouped'),
+                "aria-pressed": donutStyle === 'grouped'
+              }, "Top 10")
+            )
           )
         ),
         activeSection === 'tabs' && React.createElement("div", { className: "settings-section" },
