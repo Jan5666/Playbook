@@ -2655,7 +2655,10 @@ const Icon = _ref => {
       d: "m21 16-4 4-4-4"
     }), React.createElement("path", {
       d: "M17 20V4"
-    }))
+    })),
+    filter: React.createElement("polygon", {
+      points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+    })
   };
   return React.createElement("svg", {
     width: size,
@@ -3675,10 +3678,14 @@ function App() {
   const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
   const [pushBackend, setPushBackend] = usePersistedState('pb.pushBackend.v1', '');
   const [displayCurrency, setDisplayCurrency] = usePersistedState('pb.displayCurrency.v1', 'USD');
-  // Allocation donut style: 'classic' (every holding its own wedge, varied
-  // palette) or 'grouped' (top 10 holdings + a single "Other" wedge, brand
-  // indigo→blue ramp). Chosen in Settings → Appearance.
-  const [donutStyle, setDonutStyle] = usePersistedState('pb.donutStyle.v1', 'classic');
+  // Allocation donut appearance (Settings → Appearance), two independent knobs:
+  //  • palette — 'spectrum' (a distinct multi-hue colour per holding) or 'indigo'
+  //    (the brand's periwinkle→blue gradient). Both scale to any holding count.
+  //  • topN — how many of the largest holdings to show individually before the
+  //    rest fold into one "Other" wedge (0 = show all). Holdings view only;
+  //    sectors and markets are never grouped.
+  const [donutPalette, setDonutPalette] = usePersistedState('pb.donutPalette.v1', 'spectrum');
+  const [donutTopN, setDonutTopN] = usePersistedState('pb.donutTopN.v1', 10);
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
   const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
   const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
@@ -3888,15 +3895,27 @@ function App() {
     }),
     [positions, prices]
   );
+  // Whether this open was warm (cached prices ready at mount) is captured once.
+  // Warm opens dismiss the splash the instant data is ready; cold opens hold it
+  // for at least MIN_COLD_MS so the opening animation plays through and the
+  // dashboard doesn't flash in half-loaded.
+  const bootStartRef = useRef(Date.now());
+  const [warmStart] = useState(() => positionsCached);
+  const MIN_COLD_MS = 2500;
   useEffect(() => {
     if (!booting) return;
-    if (lastUpdate || positionsCached || failStreak >= 2 || tickersToFetch.length === 0) setBooting(false);
-  }, [booting, lastUpdate, positionsCached, failStreak, tickersToFetch.length]);
-  // Fail-safe so a slow/unreachable feed never traps the user behind the splash.
-  // Kept short — the warm-start path above already covers the common reopen, so
-  // this only bounds genuine cold opens and shouldn't feel overly long.
+    const ready = warmStart || lastUpdate || positionsCached || failStreak >= 2 || tickersToFetch.length === 0;
+    if (!ready) return;
+    const minMs = warmStart ? 0 : MIN_COLD_MS;
+    const elapsed = Date.now() - bootStartRef.current;
+    if (elapsed >= minMs) { setBooting(false); return; }
+    const t = setTimeout(() => setBooting(false), minMs - elapsed);
+    return () => clearTimeout(t);
+  }, [booting, warmStart, lastUpdate, positionsCached, failStreak, tickersToFetch.length]);
+  // Absolute fail-safe so a slow/unreachable feed never traps the user behind
+  // the splash, even on a cold open.
   useEffect(() => {
-    const t = setTimeout(() => setBooting(false), 4000);
+    const t = setTimeout(() => setBooting(false), 8000);
     return () => clearTimeout(t);
   }, []);
   // Fetch one symbol now and merge it so dashboard charts update immediately
@@ -4109,7 +4128,8 @@ function App() {
       fundamentals: fundamentalsByTicker,
       sectorWeights: sectorWeights,
       onSetSectorWeights: setSectorWeightsFor,
-      donutStyle: donutStyle
+      donutPalette: donutPalette,
+      donutTopN: donutTopN
     }),
     current: React.createElement(CurrentView, {
       prices: prices,
@@ -4179,7 +4199,9 @@ function App() {
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
       sectorWeights: sectorWeights,
-      onSetSectorWeights: setSectorWeightsFor
+      onSetSectorWeights: setSectorWeightsFor,
+      donutPalette: donutPalette,
+      donutTopN: donutTopN
     }),
     hot: React.createElement(HotTopicsView, {
       hot: hotTopicsCache['hot'],
@@ -4317,8 +4339,10 @@ function App() {
     onSetIconTheme: setIconTheme,
     theme: theme,
     onSetTheme: setTheme,
-    donutStyle: donutStyle,
-    onSetDonutStyle: setDonutStyle,
+    donutPalette: donutPalette,
+    onSetDonutPalette: setDonutPalette,
+    donutTopN: donutTopN,
+    onSetDonutTopN: setDonutTopN,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -5000,15 +5024,93 @@ function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, 
           React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
           React.createElement("button", { className: "btn btn-primary", onClick: save }, "Save allocation")))));
 }
+// ── Donut palettes ──────────────────────────────────────────────────────────
+// The allocation donut offers two colour scales (Settings → Appearance), each
+// generated to exactly N distinct stops so every holding gets its own colour at
+// any portfolio size — no recycling once a list outgrows a fixed array.
+function _donutHexToRgb(h) {
+  const n = parseInt(h.slice(1), 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+function _donutRgbToHex(r, g, b) {
+  const c = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return '#' + c(r) + c(g) + c(b);
+}
+function _donutHslToHex(h, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    return (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255;
+  };
+  return _donutRgbToHex(f(0), f(8), f(4));
+}
+// "Indigo" — the logo's periwinkle → indigo → blue → cyan family, sampled
+// smoothly across however many holdings are shown. Stays on-brand at any size.
+const DONUT_INDIGO_ANCHORS = ['#8A7BF2', '#6E6EF0', '#5A6FE6', '#4F86DC', '#4F9BCF', '#5AAFC2'];
+function donutIndigoPalette(n) {
+  if (n <= 0) return [];
+  if (n === 1) return [DONUT_INDIGO_ANCHORS[1]];
+  const A = DONUT_INDIGO_ANCHORS, segs = A.length - 1, out = [];
+  // With only a few wedges a smooth indigo ramp reads as nearly one colour, so
+  // stretch its tonal range when the list is short: darken the low end and
+  // brighten the high end (a lift that runs −1→+1 across the list), with an
+  // amount that fades out by ~12 wedges. Each step then becomes a clearly bigger
+  // jump while staying in the same family. Indigo scale only.
+  const stretch = Math.max(0, (12 - n) / 10); // ~1 at n=2 → 0 at n>=12
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1) * segs;
+    const k = Math.min(segs - 1, Math.floor(t));
+    const f = t - k;
+    const a = _donutHexToRgb(A[k]), b = _donutHexToRgb(A[k + 1]);
+    const lift = ((i / (n - 1)) * 2 - 1) * stretch * 34;
+    out.push(_donutRgbToHex(
+      a.r + (b.r - a.r) * f + lift,
+      a.g + (b.g - a.g) * f + lift,
+      a.b + (b.b - a.b) * f + lift
+    ));
+  }
+  return out;
+}
+// "Spectrum" — a curated multi-hue set, extended with golden-angle hues (so
+// neighbouring wedges never look alike) once a portfolio outgrows the base set.
+const DONUT_SPECTRUM_BASE = ['#3b82f6', '#10b981', '#f43f5e', '#f59e0b', '#a855f7', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#6366f1', '#14b8a6', '#e879f9'];
+function donutSpectrumPalette(n) {
+  if (n <= DONUT_SPECTRUM_BASE.length) return DONUT_SPECTRUM_BASE.slice(0, n);
+  const out = DONUT_SPECTRUM_BASE.slice();
+  for (let i = DONUT_SPECTRUM_BASE.length; i < n; i++) {
+    out.push(_donutHslToHex((210 + i * 137.508) % 360, 0.62, 0.58));
+  }
+  return out;
+}
+function donutPaletteColors(palette, n) {
+  return palette === 'indigo' ? donutIndigoPalette(n) : donutSpectrumPalette(n);
+}
+const DONUT_OTHER_COLOR = '#2E2E3C';
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR', CRYPTO: 'Crypto' };
-function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes, donutStyle }) {
+function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes, donutPalette, donutTopN }) {
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
   // When set ({ ticker, market, name }), the dedicated sector-allocation editor
   // is open for that instrument — launched from the sector-breakdown popup.
   const [editWeightsFor, setEditWeightsFor] = useState(null);
+  // Optional market filter (top-right of the card): narrows the donut to one
+  // market's holdings. Only offered when the book spans more than one market.
+  const [marketFilter, setMarketFilter] = useState('all');
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterRef = useRef(null);
+  const availMarkets = useMemo(() => Array.from(new Set(positions.map(p => p.market))), [positions]);
+  useEffect(() => {
+    if (marketFilter !== 'all' && !availMarkets.includes(marketFilter)) setMarketFilter('all');
+  }, [availMarkets, marketFilter]);
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onDown = (e) => { if (filterRef.current && !filterRef.current.contains(e.target)) setFilterOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('touchstart', onDown);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('touchstart', onDown); };
+  }, [filterOpen]);
   const allModes = [
     { key: 'ticker', label: 'Holdings' },
     { key: 'sector', label: 'Sector' },
@@ -5018,9 +5120,10 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
   // is the same single market, so the breakdown would be a meaningless 100%).
   const modes = availableModes ? allModes.filter(m => availableModes.includes(m.key)) : allModes;
   const rates = fxRates?.rates || null;
-  // Build per-position values
+  // Build per-position values, honouring the market filter.
+  const visiblePositions = marketFilter === 'all' ? positions : positions.filter(p => p.market === marketFilter);
   const posVals = [];
-  positions.forEach(p => {
+  visiblePositions.forEach(p => {
     const q = prices[priceKey(p.market, p.ticker)];
     if (!q) return;
     const native = marketCurrency(p.market);
@@ -5082,25 +5185,57 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     return b.value - a.value;
   });
   let total = slices.reduce((s, sl) => s + sl.value, 0);
+  // Header: mode toggle (left) + optional market filter (right). Built once and
+  // reused in the empty state so a filter that narrows to nothing can still be
+  // cleared (otherwise the control would vanish and trap the user).
+  const toolbar = React.createElement("div", { className: "pie-toolbar" },
+    React.createElement("div", { className: "chart-ranges" },
+      modes.map(m => React.createElement("button", {
+        key: m.key, className: `chart-range-btn ${mode === m.key ? 'active' : ''}`,
+        onClick: () => { setMode(m.key); setHovered(null); setOpenSector(null); }
+      }, m.label))),
+    availMarkets.length > 1 ? React.createElement("div", { className: "pie-filter", ref: filterRef },
+      React.createElement("button", {
+        type: "button",
+        className: "pie-filter-btn" + (marketFilter !== 'all' ? " active" : ""),
+        onClick: () => setFilterOpen(o => !o),
+        "aria-haspopup": "true", "aria-expanded": filterOpen,
+        title: "Filter by market"
+      },
+        React.createElement(Icon, { name: "filter", size: 12 }),
+        React.createElement("span", { className: "pie-filter-label" },
+          marketFilter === 'all' ? 'All' : (MARKET_LABELS[marketFilter] || marketFilter))),
+      filterOpen ? React.createElement("div", { className: "pie-filter-menu" },
+        ['all', ...availMarkets].map(mk => React.createElement("button", {
+          key: mk,
+          type: "button",
+          className: "pie-filter-opt" + (marketFilter === mk ? " active" : ""),
+          onClick: () => { setMarketFilter(mk); setFilterOpen(false); }
+        },
+          React.createElement("span", null, mk === 'all' ? 'All markets' : (MARKET_LABELS[mk] || mk)),
+          marketFilter === mk ? React.createElement(Icon, { name: "check", size: 12 }) : null))
+      ) : null
+    ) : null);
   if (slices.length === 0) {
-    return React.createElement("div", { className: "chart-empty" },
-      React.createElement("div", { className: "text-dim text-sm" }, "Add positions to see allocation breakdown."));
+    return React.createElement("div", null,
+      toolbar,
+      React.createElement("div", { className: "chart-empty" },
+        React.createElement("div", { className: "text-dim text-sm" },
+          marketFilter !== 'all' ? "No holdings in this market yet." : "Add positions to see allocation breakdown.")));
   }
-  // "Grouped" style (Settings → Appearance): collapse everything past the 10
-  // largest slices into a single residual "Other" wedge so the donut stays
-  // legible, and colour the wedges with the brand indigo→blue ramp below. The
-  // centre total is unchanged because "Other" carries the folded-in value.
-  const isGrouped = donutStyle === 'grouped';
-  const TOP_N = 10;
+  // Grouping into "Other" applies to the holdings view only — sectors and
+  // markets always show in full (never absorbed). `donutTopN` (0 = show all) is
+  // the user's chosen cap from Settings → Appearance.
+  const groupN = (mode === 'ticker' && typeof donutTopN === 'number' && donutTopN > 0) ? donutTopN : 0;
   let displaySlices = slices;
-  if (isGrouped && slices.length > TOP_N) {
+  if (groupN > 0 && slices.length > groupN) {
     const keep = [];
     let otherVal = 0;
     // slices is already sorted desc with any pre-existing "Other" sunk last, so
     // indexing front-to-back keeps the genuine top holdings and folds the tail
     // (plus any residual "Other") into one wedge.
     slices.forEach((sl, i) => {
-      if (i < TOP_N && sl.label !== 'Other') keep.push(sl);
+      if (i < groupN && sl.label !== 'Other') keep.push(sl);
       else otherVal += sl.value;
     });
     if (otherVal > 0) keep.push({ label: 'Other', value: otherVal, __other: true });
@@ -5115,24 +5250,17 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     if (mode === 'ticker') onOpenDetail(a.ticker, a.market);
     else setOpenSector(a.label);
   };
-  const COLORS = [
-    'var(--blue)', 'var(--emerald)', 'var(--rose)', 'var(--amber)',
-    'var(--purple)', '#06b6d4', '#ec4899', '#84cc16',
-    '#f97316', '#6366f1', '#14b8a6', '#e879f9'
-  ];
-  // Brand indigo→blue→cyan ramp for the grouped style. Six stops are the values
-  // supplied for the design; the four interleaved (#5479E1, #4F91D6, #54A5C9,
-  // #6E84CA) were sourced to fill a smooth 10-stop ramp in the same indigo/
-  // periwinkle family as the logo. The largest holding gets the brand indigo.
-  const BRAND_RAMP = [
-    '#6E6EF0', '#5A6FE6', '#5479E1', '#4F86DC', '#4F91D6',
-    '#4F9BCF', '#54A5C9', '#5AAFC2', '#6E84CA', '#7E7AD6'
-  ];
-  const OTHER_COLOR = '#2E2E3C';
+  // Colour each non-"Other" wedge from the chosen scale, generated to the exact
+  // number shown so every holding gets a distinct colour; the grouped residual
+  // is always the neutral slate.
+  const paletteName = donutPalette === 'indigo' ? 'indigo' : 'spectrum';
+  const nColored = displaySlices.reduce((c, s) => c + (s.__other ? 0 : 1), 0);
+  const colorList = donutPaletteColors(paletteName, nColored);
   const SIZE = 154, CX = SIZE / 2, CY = SIZE / 2, R = 61, INNER_R = 39;
   const RING_R = (R + INNER_R) / 2, RING_W = R - INNER_R;
   const single = displaySlices.length === 1;
   let cumAngle = -Math.PI / 2;
+  let colorIdx = 0;
   const arcs = displaySlices.map((s, i) => {
     const angle = (s.value / total) * Math.PI * 2;
     const startAngle = cumAngle;
@@ -5148,9 +5276,9 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     // ring circle instead so it shows a clean full donut.
     const d = single ? null
       : `M${x1},${y1}A${R},${R} 0 ${largeArc},1 ${x2},${y2}L${ix1},${iy1}A${INNER_R},${INNER_R} 0 ${largeArc},0 ${ix2},${iy2}Z`;
-    const color = isGrouped
-      ? ((s.__other || s.label === 'Other') ? OTHER_COLOR : BRAND_RAMP[i % BRAND_RAMP.length])
-      : COLORS[i % COLORS.length];
+    const color = s.__other
+      ? DONUT_OTHER_COLOR
+      : (colorList[colorIdx++] || DONUT_INDIGO_ANCHORS[1]);
     return { ...s, d, color, pct: (s.value / total * 100) };
   });
   const sym = CURRENCY_SYMBOLS[displayCurrency] || '$';
@@ -5170,11 +5298,7 @@ function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpen
     }
   };
   return React.createElement("div", null,
-    React.createElement("div", { className: "chart-ranges", style: { marginBottom: 10 } },
-      modes.map(m => React.createElement("button", {
-        key: m.key, className: `chart-range-btn ${mode === m.key ? 'active' : ''}`,
-        onClick: () => { setMode(m.key); setHovered(null); setOpenSector(null); }
-      }, m.label))),
+    toolbar,
     React.createElement("div", { className: "chart-pie-wrap" },
       React.createElement("div", { className: "chart-pie-ring" },
         React.createElement("svg", { viewBox: `0 0 ${SIZE} ${SIZE}`, className: "chart-pie-svg" },
@@ -5359,7 +5483,8 @@ function DashboardView(_ref6) {
     fundamentals,
     sectorWeights,
     onSetSectorWeights,
-    donutStyle
+    donutPalette,
+    donutTopN
   } = _ref6;
   const computeStats = list => {
     let cost = 0, value = 0, hasAllPrices = true;
@@ -5503,7 +5628,7 @@ function DashboardView(_ref6) {
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutStyle })),
+        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
@@ -7599,12 +7724,16 @@ function WatchlistView(_ref8) {
   const [activeList, setActiveList] = usePersistedState('pb.watchlist.activeList.v1', 'all');
   const [search, setSearch] = useState('');
   const [filterMarket, setFilterMarket] = useState('all');
+  // Smart filter tag — an extra axis beyond market: movers, near-high, alerts.
+  // Combines with the market filter (AND) so you can narrow on both at once.
+  const [filterTag, setFilterTag] = useState('all');
   const [sortMode, setSortMode] = useState('manual');
   // Search/sort live as collapsed icon buttons in the action row; these drive
   // the iOS-style expand of the search field and the sort popover respectively.
   const [searchOpen, setSearchOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
   const searchInputRef = useRef(null);
   const [creatingList, setCreatingList] = useState(false);
   const [newListName, setNewListName] = useState('');
@@ -7618,7 +7747,7 @@ function WatchlistView(_ref8) {
   // than a single id compare. customListsOf drives the per-card list badges.
   const inList = (w, id) => watchListIds(w).includes(id);
   const customListsOf = (w) => watchListIds(w).filter(id => id !== 'default');
-  const reorderEnabled = activeList === 'all' && !search.trim() && filterMarket === 'all' && sortMode === 'manual';
+  const reorderEnabled = activeList === 'all' && !search.trim() && filterMarket === 'all' && filterTag === 'all' && sortMode === 'manual';
   const targetListId = activeList === 'all' ? 'default' : activeList;
   // Suggestion chips leave the list the instant they're added (the list is
   // derived from the watchlist), which left users unsure their tap registered.
@@ -7999,8 +8128,25 @@ function WatchlistView(_ref8) {
   const visible = useMemo(() => {
     let arr = watchlist.filter(w => activeList === 'all' ? true : inList(w, activeList));
     const s = search.trim().toLowerCase();
-    if (s) arr = arr.filter(w => w.ticker.toLowerCase().includes(s) || (w.name || '').toLowerCase().includes(s));
+    if (s) {
+      // Smarter search: every space-separated term must hit somewhere in the
+      // ticker or name, so "app tech" narrows instead of needing one substring.
+      const terms = s.split(/\s+/).filter(Boolean);
+      arr = arr.filter(w => {
+        const hay = (w.ticker + ' ' + (w.name || '')).toLowerCase();
+        return terms.every(t => hay.includes(t));
+      });
+    }
     if (filterMarket !== 'all') arr = arr.filter(w => w.market === filterMarket);
+    if (filterTag !== 'all') arr = arr.filter(w => {
+      const q = prices[priceKey(w.market, w.ticker)];
+      const ch = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+      if (filterTag === 'up') return ch != null && ch > 0;
+      if (filterTag === 'down') return ch != null && ch < 0;
+      if (filterTag === 'nearhigh') return !!q && q.yearHigh > 0 && q.price >= q.yearHigh * 0.95;
+      if (filterTag === 'alerts') return alerts.some(a => a.ticker === w.ticker && a.market === w.market);
+      return true;
+    });
     if (sortMode === 'name') arr = [...arr].sort((a, b) => (prettyName(a.name) || a.ticker).localeCompare(prettyName(b.name) || b.ticker));
     else if (sortMode === 'recent') arr = [...arr].sort((a, b) => (b.addedAt || '').localeCompare(a.addedAt || ''));
     else if (sortMode === 'today') arr = [...arr].sort((a, b) => {
@@ -8010,15 +8156,22 @@ function WatchlistView(_ref8) {
       return cb - ca;
     });
     return arr;
-  }, [watchlist, activeList, search, filterMarket, sortMode, prices]);
+  }, [watchlist, activeList, search, filterMarket, filterTag, sortMode, prices, alerts]);
   // Switching lists clears the in-list filters so you never land on a list that
   // looks empty because of a stale search / market filter.
-  useEffect(() => { setSearch(''); setFilterMarket('all'); setManagingList(false); setSearchOpen(false); setSortOpen(false); setManageOpen(false); }, [activeList]);
+  useEffect(() => { setSearch(''); setFilterMarket('all'); setFilterTag('all'); setManagingList(false); setSearchOpen(false); setSortOpen(false); setManageOpen(false); setFilterOpen(false); }, [activeList]);
   const sortOptions = [
     { id: 'manual', label: reorderEnabled ? 'Manual order' : 'Default order' },
     { id: 'today', label: "Today's move" },
     { id: 'name', label: 'Name A–Z' },
     { id: 'recent', label: 'Recently added' }
+  ];
+  const filterTagOptions = [
+    { id: 'all', label: 'All stocks' },
+    { id: 'up', label: 'Gainers today' },
+    { id: 'down', label: 'Losers today' },
+    { id: 'nearhigh', label: 'Near 52W high' },
+    { id: 'alerts', label: 'Has alerts' }
   ];
   const createList = () => {
     const id = onAddWatchGroup && onAddWatchGroup(newListName);
@@ -8044,8 +8197,8 @@ function WatchlistView(_ref8) {
         }, l.name, React.createElement("span", { className: "wl-tab-count" }, countFor(l.id)))),
         onAddWatchGroup ? React.createElement("button", {
           key: '__new', className: "wl-tab wl-tab-new",
-          onClick: () => { setCreatingList(true); setManagingList(false); }, "aria-label": "New list"
-        }, React.createElement(Icon, { name: "plus", size: 13 }), " List") : null
+          onClick: () => { setCreatingList(true); setManagingList(false); }, "aria-label": "New list", title: "New list"
+        }, React.createElement(Icon, { name: "plus", size: 13 })) : null
       )
     ),
     // Action row — interactive search/sort icons (iOS-style expand) + Add. Search
@@ -8057,7 +8210,7 @@ function WatchlistView(_ref8) {
           "aria-label": searchOpen ? "Close search" : "Search",
           onClick: () => {
             if (searchOpen) { setSearch(''); setSearchOpen(false); }
-            else { setSortOpen(false); setManageOpen(false); setSearchOpen(true); requestAnimationFrame(() => { try { searchInputRef.current && searchInputRef.current.focus(); } catch (_) {} }); }
+            else { setSortOpen(false); setManageOpen(false); setFilterOpen(false); setSearchOpen(true); requestAnimationFrame(() => { try { searchInputRef.current && searchInputRef.current.focus(); } catch (_) {} }); }
           }
         }, React.createElement(Icon, { name: searchOpen ? "x" : "search", size: 14 })),
         React.createElement("input", {
@@ -8072,7 +8225,7 @@ function WatchlistView(_ref8) {
         React.createElement("button", {
           className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
           "aria-label": "Sort", "aria-expanded": sortOpen,
-          onClick: () => { setSearchOpen(false); setManageOpen(false); setSortOpen(o => !o); }
+          onClick: () => { setSearchOpen(false); setManageOpen(false); setFilterOpen(false); setSortOpen(o => !o); }
         }, React.createElement(Icon, { name: "sort", size: 14 }),
            sortMode !== 'manual' ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null),
         sortOpen ? React.createElement(React.Fragment, null,
@@ -8086,13 +8239,45 @@ function WatchlistView(_ref8) {
                sortMode === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)))
         ) : null
       ) : null,
+      // Filter popover — a smart filter holding the market picker plus quick
+      // tags (movers, near-high, alerts). Replaces the always-on market chip row.
+      activeCount > 0 ? React.createElement("div", { className: "wl-sortwrap" },
+        React.createElement("button", {
+          className: "wl-iconbtn" + (filterOpen ? " active" : "") + ((filterMarket !== 'all' || filterTag !== 'all') ? " on" : ""),
+          "aria-label": "Filter", "aria-expanded": filterOpen,
+          onClick: () => { setSearchOpen(false); setSortOpen(false); setManageOpen(false); setFilterOpen(o => !o); }
+        }, React.createElement(Icon, { name: "filter", size: 14 }),
+           (filterMarket !== 'all' || filterTag !== 'all') ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null),
+        filterOpen ? React.createElement(React.Fragment, null,
+          React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setFilterOpen(false) }),
+          React.createElement("div", { className: "wl-sortmenu wl-filtermenu" },
+            marketsPresent.length > 1 ? React.createElement(React.Fragment, null,
+              React.createElement("div", { className: "wl-sortmenu-head" }, "Market"),
+              React.createElement("div", { className: "wl-fchips" },
+                ['all', ...marketsPresent].map(m => React.createElement("button", {
+                  key: m, className: "wl-fchip" + (filterMarket === m ? " active" : ""),
+                  onClick: () => setFilterMarket(m)
+                }, m === 'all' ? 'All' : m)))
+            ) : null,
+            React.createElement("div", { className: "wl-sortmenu-head" }, "Show"),
+            filterTagOptions.map(o => React.createElement("button", {
+              key: o.id, className: "wl-sortmenu-row" + (filterTag === o.id ? " active" : ""),
+              onClick: () => setFilterTag(o.id)
+            }, React.createElement("span", { className: "wl-sortmenu-label" }, o.label),
+               filterTag === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)),
+            (filterMarket !== 'all' || filterTag !== 'all') ? React.createElement("button", {
+              className: "wl-sortmenu-row wl-filter-clear",
+              onClick: () => { setFilterMarket('all'); setFilterTag('all'); }
+            }, React.createElement(Icon, { name: "x", size: 14 }), React.createElement("span", { className: "wl-sortmenu-label" }, "Clear filters")) : null)
+        ) : null
+      ) : null,
       // Manage the active custom list — an edit icon that opens the same animated
       // popover as sort, holding the rename/delete actions for this list.
       isCustomActive ? React.createElement("div", { className: "wl-sortwrap" },
         React.createElement("button", {
           className: "wl-iconbtn" + (manageOpen ? " active" : ""),
           "aria-label": "Edit list", "aria-expanded": manageOpen,
-          onClick: () => { setSearchOpen(false); setSortOpen(false); setManagingList(false); setManageOpen(o => !o); }
+          onClick: () => { setSearchOpen(false); setSortOpen(false); setFilterOpen(false); setManagingList(false); setManageOpen(o => !o); }
         }, React.createElement(Icon, { name: "edit", size: 13 })),
         manageOpen ? React.createElement(React.Fragment, null,
           React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => { setManageOpen(false); setManagingList(false); } }),
@@ -8131,12 +8316,6 @@ function WatchlistView(_ref8) {
       React.createElement("button", { className: "btn btn-primary btn-sm", onClick: createList, disabled: !newListName.trim(), style: { flex: '0 0 auto' } }, "Create"),
       React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => { setCreatingList(false); setNewListName(''); }, style: { flex: '0 0 auto' } }, "Cancel")
     ) : null,
-    activeCount > 0 && marketsPresent.length > 1 ? React.createElement("div", { className: "wl-market-chips mb-4" },
-      ['all', ...marketsPresent].map(m => React.createElement("button", {
-        key: m, className: "wl-mchip" + (filterMarket === m ? " active" : ""),
-        onClick: () => setFilterMarket(m)
-      }, m === 'all' ? 'All markets' : m))
-    ) : null,
     showAddForm && React.createElement("div", { className: "card mb-4 watchlist-add" },
       React.createElement("div", { className: "wl-add-hint" },
         React.createElement(Icon, { name: "search", size: 13 }),
@@ -8169,7 +8348,7 @@ function WatchlistView(_ref8) {
     : visible.length === 0 ? React.createElement("div", { className: "empty wl-empty-sm" },
       React.createElement(Icon, { name: "eye", size: 32 }),
       React.createElement("p", null,
-        (search.trim() || filterMarket !== 'all')
+        (search.trim() || filterMarket !== 'all' || filterTag !== 'all')
           ? "No stocks match this filter."
           : (activeList === 'all' ? "Your watchlist is empty." : "This list is empty. Add a stock here, or open a stock and move it into this list.")))
     : React.createElement("div", { className: "watchlist-list mb-6" },
@@ -9708,7 +9887,7 @@ function TFSABalancer({ positions, prices, onBuyPosition }) {
 }
 function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
-                   fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights }) {
+                   fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN }) {
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
     return s + (q ? p.shares * q.price : p.shares * p.costBasis);
@@ -9733,7 +9912,8 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
     React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "TFSA holdings"),
     React.createElement(PortfolioPieChart, {
       positions, prices, displayCurrency: 'ZAR', fxRates,
-      onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector']
+      onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector'],
+      donutPalette, donutTopN
     }),
     React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
@@ -12973,7 +13153,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                         perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
                         onConnectPush, onTestPush, onDisconnectPush,
                         iconTheme, onSetIconTheme, theme, onSetTheme,
-                        donutStyle, onSetDonutStyle, onClose }) {
+                        donutPalette, onSetDonutPalette, donutTopN, onSetDonutTopN, onClose }) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -13167,28 +13347,43 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               );
             })
           ),
-          React.createElement("div", { className: "settings-row", style: { marginTop: 18 } },
+          React.createElement("div", { className: "settings-section-title mb-1", style: { marginTop: 20 } }, "Allocation chart"),
+          React.createElement("div", { className: "settings-row" },
             React.createElement("div", { className: "settings-row-label" },
-              React.createElement("div", { className: "settings-row-title" }, "Allocation chart"),
+              React.createElement("div", { className: "settings-row-title" }, "Colour scale"),
               React.createElement("div", { className: "settings-row-desc" },
-                (donutStyle === 'grouped')
-                  ? "Top 10 holdings, the rest grouped into “Other”, on a brand indigo→blue ramp."
-                  : "Every holding gets its own wedge in a varied palette.")
+                (donutPalette === 'indigo')
+                  ? "Indigo — the brand's periwinkle→blue gradient, a distinct shade per holding."
+                  : "Spectrum — a distinct colour per holding across the full palette.")
             ),
             React.createElement("div", { className: "seg-toggle", style: { flex: '0 0 auto', minWidth: 168 } },
               React.createElement("button", {
                 type: "button",
-                className: "seg-opt" + (donutStyle !== 'grouped' ? " active" : ""),
-                onClick: () => onSetDonutStyle('classic'),
-                "aria-pressed": donutStyle !== 'grouped'
-              }, "Full"),
+                className: "seg-opt" + (donutPalette !== 'indigo' ? " active" : ""),
+                onClick: () => onSetDonutPalette('spectrum'),
+                "aria-pressed": donutPalette !== 'indigo'
+              }, "Spectrum"),
               React.createElement("button", {
                 type: "button",
-                className: "seg-opt" + (donutStyle === 'grouped' ? " active" : ""),
-                onClick: () => onSetDonutStyle('grouped'),
-                "aria-pressed": donutStyle === 'grouped'
-              }, "Top 10")
+                className: "seg-opt" + (donutPalette === 'indigo' ? " active" : ""),
+                onClick: () => onSetDonutPalette('indigo'),
+                "aria-pressed": donutPalette === 'indigo'
+              }, "Indigo")
             )
+          ),
+          React.createElement("div", { className: "settings-row", style: { marginTop: 14 } },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, "Holdings shown"),
+              React.createElement("div", { className: "settings-row-desc" },
+                "Show your largest holdings individually; the rest combine into “Other”. Sectors and markets are never grouped.")
+            ),
+            React.createElement("select", {
+              value: String(donutTopN),
+              onChange: e => onSetDonutTopN(parseInt(e.target.value, 10)),
+              style: { width: 'auto', minWidth: 110 }
+            },
+              React.createElement("option", { value: "0" }, "All"),
+              [5, 8, 10, 12, 15, 20, 30].map(nn => React.createElement("option", { key: nn, value: String(nn) }, "Top " + nn)))
           )
         ),
         activeSection === 'tabs' && React.createElement("div", { className: "settings-section" },
