@@ -1665,6 +1665,41 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   background: var(--bg-elev); color: var(--text);
   border-color: var(--border);
 }
+/* Allocation donut toolbar: mode toggle (left) + market filter (right) */
+.pie-toolbar {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 8px; margin-bottom: 10px;
+}
+.pie-toolbar .chart-ranges { margin-bottom: 0; }
+.pie-filter { position: relative; flex: 0 0 auto; }
+.pie-filter-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 9px; border-radius: 6px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.06em; color: var(--text-dim);
+  background: transparent; border: 1px solid var(--border);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.pie-filter-btn:hover { color: var(--text); }
+.pie-filter-btn.active {
+  background: var(--bg-elev); color: var(--text); border-color: var(--border-strong);
+}
+.pie-filter-label { text-transform: uppercase; }
+.pie-filter-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 30;
+  min-width: 152px; padding: 5px;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 10px 30px var(--shadow-strong);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.pie-filter-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 10px; border-radius: 7px;
+  font-size: 13px; color: var(--text-muted); text-align: left;
+  background: transparent; transition: background 0.12s, color 0.12s;
+}
+.pie-filter-opt:hover { background: var(--bg-elev); color: var(--text); }
+.pie-filter-opt.active { color: var(--text); font-weight: 600; }
 .chart-wrap {
   position: relative; width: 100%; height: 180px;
   user-select: none; -webkit-user-select: none;
@@ -2032,15 +2067,19 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .wl-rename-row { padding: 4px 6px 6px; display: flex; flex-direction: column; gap: 8px; }
 .wl-rename-row .wl-inline-input { width: 100%; }
 .wl-rename-actions { display: flex; gap: 8px; }
-.wl-market-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
-.wl-market-chips::-webkit-scrollbar { display: none; }
-.wl-mchip {
-  flex: 0 0 auto; padding: 5px 11px; border-radius: 999px;
+/* Filter popover — market chips + smart tag rows, opened from the toolbar. */
+.wl-filtermenu { min-width: 210px; }
+.wl-fchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 6px 8px; }
+.wl-fchip {
+  flex: 0 0 auto; padding: 5px 12px; border-radius: 999px;
   background: var(--bg-raised); border: 1px solid var(--border); color: var(--text-muted);
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em; cursor: pointer; white-space: nowrap;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.18s;
 }
-.wl-mchip.active { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); }
+.wl-fchip:active { transform: scale(0.92); }
+.wl-fchip.active { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); }
+.wl-filter-clear { color: var(--text-dim); margin-top: 2px; border-top: 1px solid var(--border); border-radius: 0 0 9px 9px; }
+.wl-filter-clear:hover { color: var(--text); }
 .wl-add-hint { display: flex; gap: 8px; align-items: flex-start; font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--text-dim); margin-bottom: 12px; }
 .wl-add-hint > svg { color: var(--blue); flex-shrink: 0; margin-top: 2px; }
 .wl-add-hint b { color: var(--text); font-weight: 600; }
