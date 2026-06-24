@@ -747,28 +747,45 @@ function buildDailyBars(result, divisor) {
   }
   return bars;
 }
+// The market-local calendar day (YYYY-MM-DD) a timestamp falls on. This is what
+// makes "today" mean each market's OWN trading day — a US bar is dated in New
+// York, a JSE bar in Johannesburg — instead of the viewer's wall clock. Without
+// this, a South-African user (UTC+2) judging a US stock's "yesterday" by their
+// local midnight gets the day boundary wrong and the previous close drifts a
+// session, which is exactly the "USA/SA days confused" symptom.
+function marketDayKey(ms, market) {
+  const tz = (MARKET_SESSIONS[market] || MARKET_SESSIONS.US).tz;
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date(ms));
+  } catch (_e) { return null; }
+}
 // Yahoo's regularMarketPreviousClose is often stale, in the wrong unit, or
-// missing — which produces an inflated %-change. Walk the daily bars
-// backwards to find the most recent bar that isn't today and isn't ~equal to
-// the live price; prefer that bar whenever its ratio to live looks sane.
-// The sanity window is intentionally wide (0.01x–100x) to accept genuine
-// extreme moves like flash crashes or halts — the only purpose is to reject
-// obviously wrong data (e.g. cents-vs-dollars unit mismatch), not real moves.
-function derivePrevClose(bars, livePrice, fallback) {
+// missing — which produces an inflated %-change. Derive it from the daily bars
+// instead, anchored to the market's OWN trading day: the last bar is the current
+// session (today's partial/closed bar, or the last completed session when the
+// market is shut), so the previous close is the most recent bar that lands on an
+// EARLIER market-local day. We deliberately key off the day, not price-equality
+// to the live tick — a <1% "flat" day (routine for ETFs/large caps) used to make
+// the old equals-live guard skip the real previous close and reach a session too
+// far back, doubling the reported "today" move.
+// The ratio guard (0.01x–100x) only rejects unit mismatches (cents vs dollars),
+// never real moves, so genuine flash crashes/halts still pass through.
+function derivePrevClose(bars, livePrice, fallback, market) {
   if (!Array.isArray(bars) || bars.length < 2 || !(livePrice > 0)) return fallback;
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const todayMs = todayStart.getTime();
+  const lastBar = bars[bars.length - 1];
+  const curDay = lastBar.t != null ? marketDayKey(lastBar.t, market) : null;
   let candidate = null;
-  for (let i = bars.length - 1; i >= 0; i--) {
+  for (let i = bars.length - 2; i >= 0; i--) {
     const b = bars[i];
-    const isToday = b.t != null && b.t >= todayMs;
-    const equalsLive = Math.abs(b.p - livePrice) / livePrice < 0.01;
-    if (isToday || equalsLive) continue;
+    // Skip any bar sharing the current session's market-local day; the first
+    // earlier-day bar carries the genuine previous close.
+    if (curDay != null && b.t != null && marketDayKey(b.t, market) === curDay) continue;
     candidate = b.p;
     break;
   }
-  if (candidate == null) candidate = bars[bars.length - 1].p;
+  if (candidate == null) candidate = bars[bars.length - 2].p;
   if (!(candidate > 0) || !isFinite(candidate)) return fallback;
   const ratio = candidate / livePrice;
   if (ratio > 0.01 && ratio < 100) return candidate;
@@ -850,7 +867,7 @@ function parseYahooQuote(result, market) {
   // occasionally render in £/€. Falls back to Yahoo's value for unknown markets.
   currency = (MARKET_CURRENCY[market] && MARKET_CURRENCY[market].code) || currency;
   try {
-    prevClose = derivePrevClose(buildDailyBars(result, divisor), price, prevClose);
+    prevClose = derivePrevClose(buildDailyBars(result, divisor), price, prevClose, market);
   } catch (_e) {}
   return {
     price,
@@ -1356,7 +1373,7 @@ async function fetchQuoteLight(ticker, market) {
     const divisor = centDivisor(market, currency);
     const price = meta.regularMarketPrice / divisor;
     const bars = buildDailyBars(result, divisor);
-    const prevClose = derivePrevClose(bars, price, meta.chartPreviousClose / divisor);
+    const prevClose = derivePrevClose(bars, price, meta.chartPreviousClose / divisor, market);
     const changePct = prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0;
     return { price, changePct, fetchedAt: Date.now() };
   } catch (_e) { return null; }
@@ -2801,17 +2818,24 @@ function usePriceFeed(tickersToFetch, toast) {
     if (loadingRef.current) { pendingForceRef.current = true; return; }
     runFetch(true);
   }, [runFetch]);
-  // Battery-aware cadence: 90s while any tracked market is open, 5 min when
-  // they're all shut (prices barely move overnight). A low-frequency meta-timer
-  // flips the rate at open/close boundaries; server push covers the closed app.
-  const [pollMs, setPollMs] = useState(() => anyMarketOpen(tickersToFetch) ? 90000 : 300000);
+  // Battery-aware cadence: 45s while any tracked market is open (incl. US pre/
+  // post hours — see MARKET_SESSIONS) so the "today" move stays close to live,
+  // 5 min when every market is shut (prices barely move overnight). A
+  // low-frequency meta-timer flips the rate at open/close boundaries; server
+  // push covers the fully-closed app.
+  const OPEN_POLL_MS = 45000;
+  const CLOSED_POLL_MS = 300000;
+  const [pollMs, setPollMs] = useState(() => anyMarketOpen(tickersToFetch) ? OPEN_POLL_MS : CLOSED_POLL_MS);
   useEffect(() => {
-    const recompute = () => setPollMs(anyMarketOpen(tickersToFetch) ? 90000 : 300000);
+    const recompute = () => setPollMs(anyMarketOpen(tickersToFetch) ? OPEN_POLL_MS : CLOSED_POLL_MS);
     recompute();
     const id = setInterval(recompute, 60000);
     return () => clearInterval(id);
   }, [tickersToFetch]);
-  usePolledRefresh(refresh, pollMs, 60000, tickersToFetch);
+  // Refetch on tab-visible whenever the cache is older than the open-market
+  // cadence, so returning to the app never shows a stale day move while waiting
+  // out the next interval tick.
+  usePolledRefresh(refresh, pollMs, OPEN_POLL_MS, tickersToFetch);
   return { prices, loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
@@ -3896,9 +3920,13 @@ function App() {
     [positions, prices]
   );
   // Whether this open was warm (cached prices ready at mount) is captured once.
-  // Warm opens dismiss the splash the instant data is ready; cold opens hold it
-  // for at least MIN_COLD_MS so the opening animation plays through and the
-  // dashboard doesn't flash in half-loaded.
+  // A warm start only lets us stop WAITING on the network early — it no longer
+  // shortens the splash. Every genuine cold/from-scratch open (a fresh page load:
+  // first launch, or relaunch after the app was swiped out of the recents list)
+  // remounts <App>, so we always hold the branded loader for the full
+  // MIN_COLD_MS — the user asked for at least 2.5s of intro on a from-scratch
+  // open, and the animation should play through rather than flash by. A PWA
+  // merely resumed from the background does NOT remount, so it stays instant.
   const bootStartRef = useRef(Date.now());
   const [warmStart] = useState(() => positionsCached);
   const MIN_COLD_MS = 2500;
@@ -3906,7 +3934,7 @@ function App() {
     if (!booting) return;
     const ready = warmStart || lastUpdate || positionsCached || failStreak >= 2 || tickersToFetch.length === 0;
     if (!ready) return;
-    const minMs = warmStart ? 0 : MIN_COLD_MS;
+    const minMs = MIN_COLD_MS;
     const elapsed = Date.now() - bootStartRef.current;
     if (elapsed >= minMs) { setBooting(false); return; }
     const t = setTimeout(() => setBooting(false), minMs - elapsed);
