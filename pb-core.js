@@ -1,9 +1,13 @@
 // ─── Playbook shared core ────────────────────────────────────────────────────
-// The ONE source of truth for the two pieces of logic that used to be copy-pasted
-// (and had drifted) between the client (app.js) and the push backend
+// The ONE source of truth for the app's pure, side-effect-free logic — no React,
+// no DOM, no network. It began as the home for the two pieces that used to be
+// copy-pasted (and had drifted) between the client (app.js) and the push backend
 // (backend/worker.js): market-hours and price-alert evaluation. An alert must
 // behave identically whether it's evaluated in the foreground app or by the
-// server while the app is closed — so both import this.
+// server while the app is closed — so both import this. It now also holds the
+// market-symbol/price-unit helpers (shared with the worker) and pure money math
+// (e.g. cost-basis averaging) that only the client uses but belongs out of the
+// 14k-line app.js where it can be tested in isolation.
 //
 // No build step on the frontend, so this is a plain classic script with a
 // dual-mode footer: CommonJS `module.exports` (so the Worker bundler and the
@@ -107,12 +111,182 @@
     return { nextSeen, newTriggers, changed };
   }
 
+  // ─── Market symbols & price units ────────────────────────────────────────────
+  // Lifted verbatim from app.js (the canonical, richer copies) so the client and
+  // the Worker build the SAME Yahoo symbol and apply the SAME cent/pence divisor.
+  // Both previously kept crude, drifted duplicates: the Worker fetched the wrong
+  // instrument for ^SPX/^VIX and mis-scaled some JSE/LSE units — which can fire an
+  // alert the foreground app never would. These are pure (only encodeURIComponent
+  // + RegExp + String), so they run unchanged in browser, Worker, and Node.
+  function centDivisor(market, currency) {
+    const raw = currency || '';
+    const c = raw.toUpperCase();
+    // Market-independent minor units Yahoo emits regardless of which market the
+    // user filed the symbol under: "GBp"/"GBX" (UK pence), "ZAc"/"ZAX" (SA cents).
+    // A trailing lowercase letter on an otherwise GB*/ZA* code is the pence/cents
+    // convention; catching it here means a London listing accidentally fetched
+    // under "US" still shows a sane magnitude instead of a 100x-inflated price.
+    if (c === 'GBX' || c === 'ZAX' || c === 'ZAC') return 100;
+    if (/[a-z]$/.test(raw) && /^(GB|ZA)/.test(c)) return 100;
+    const isJseCent = (market === 'JSE' || market === 'TFSA') && (c === 'ZAC' || c === 'ZAR' && /[cC]$/.test(raw));
+    const isLseGBX = market === 'LSE' && c === 'GBX';
+    // Yahoo sometimes returns "GBp" (mixed case) for pence-denominated LSE
+    // instruments, but also plain "GBP" for pound-denominated ones. Treat any
+    // lowercase-p suffix as pence, and conservatively treat bare "GBP" on LSE
+    // tickers that report via the .L suffix as pence too — the chart endpoint
+    // almost always returns values in pence for LSE.
+    const isLseGBp = market === 'LSE' && (c === 'GBP' && /[pP]$/.test(raw));
+    const isLseBareGBP = market === 'LSE' && raw === 'GBP';
+    return (isJseCent || isLseGBX || isLseGBp || isLseBareGBP) ? 100 : 1;
+  }
+  function yahooSymbol(ticker, market) {
+    if (market === 'JSE' || market === 'TFSA') return ticker + '.JO';
+    if (market === 'LSE') return ticker + '.L';
+    if (market === 'ASX') return ticker + '.AX';
+    if (market === 'FRA') return ticker + '.F';
+    if (market === 'PAR') return ticker + '.PA';
+    if (market === 'AMS') return ticker + '.AS';
+    // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
+    // Guard against a symbol that already carries the pair so we never double it.
+    if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
+    if (ticker === '^SPX') return '%5EGSPC';
+    if (ticker === '^VIX') return '%5EVIX';
+    if (ticker === '^GSPC') return '%5EGSPC';
+    return encodeURIComponent(ticker);
+  }
+
+  // ─── Money / FX / position valuation (pure, client-only) ─────────────────────
+  // The app's money math, moved out of the 14k-line app.js so it can be tested in
+  // isolation. MARKET_CURRENCY maps each market to its native currency (display
+  // symbol + ISO code); the helpers reason in those codes against an fx rate map
+  // ("source units per USD", with USD === 1).
+  const MARKET_CURRENCY = {
+    US:   { sym: '$',   code: 'USD', label: 'USD' },
+    JSE:  { sym: 'R',   code: 'ZAR', label: 'ZAR' },
+    TFSA: { sym: 'R',   code: 'ZAR', label: 'ZAR' },
+    LSE:  { sym: '£',  code: 'GBP', label: 'GBP' },
+    ASX:  { sym: 'A$',  code: 'AUD', label: 'AUD' },
+    FRA:  { sym: '€',  code: 'EUR', label: 'EUR' },
+    PAR:  { sym: '€',  code: 'EUR', label: 'EUR' },
+    AMS:  { sym: '€',  code: 'EUR', label: 'EUR' },
+    // Crypto is quoted against USD (Yahoo's BTC-USD pairs), so it shares the
+    // dollar for display and FX conversion just like the US market.
+    CRYPTO: { sym: '$', code: 'USD', label: 'USD' },
+  };
+  function convertCcy(amount, from, to, rates) {
+    if (amount == null || !isFinite(amount)) return null;
+    if (!from || !to || from === to) return amount;
+    if (!rates) return null;
+    const fr = rates[from];
+    const tr = rates[to];
+    if (!fr || !tr) return null;
+    return amount / fr * tr;
+  }
+  // The capital a deposit actually committed, valued in `displayCurrency`. This is
+  // the "money put in" used for overall-profit: it uses the rate locked when the
+  // deposit was made — the real achieved rate when the user recorded how much USD
+  // actually landed (fxRateAtContrib = source units ÷ USD landed), otherwise the
+  // market rate at deposit time — rather than revaluing at today's market rate. So
+  // a deposit kept in the display currency always counts at its face amount, and a
+  // cross-currency deposit counts at the dollars that genuinely entered the
+  // account. Falls back to today's conversion only when no rate was ever captured.
+  function contribInDisplay(c, displayCurrency, rates) {
+    if (!c) return 0;
+    const amt = c.amount;
+    if (!isFinite(amt)) return 0;
+    if (c.currency === displayCurrency) return amt;
+    const lockedRate = (c.fxRateAtContrib && isFinite(c.fxRateAtContrib) && c.fxRateAtContrib > 1e-6) ? c.fxRateAtContrib : null;
+    const dispRate = (rates && rates[displayCurrency] && isFinite(rates[displayCurrency]) && rates[displayCurrency] > 1e-6) ? rates[displayCurrency] : null;
+    if (lockedRate && dispRate) {
+      const usd = amt / lockedRate; // the USD that actually landed at deposit time
+      return usd * dispRate;        // revalue that committed USD into the display currency
+    }
+    const conv = convertCcy(amt, c.currency, displayCurrency, rates);
+    return conv != null ? conv : 0;
+  }
+  function marketCurrency(market) {
+    return (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code;
+  }
+  // The currency a position's cost basis is denominated in. Defaults to the
+  // market's native currency, so every holding that predates the crypto-in-ZAR
+  // feature (and any holding without an explicit costCurrency) behaves exactly as
+  // before. Crypto bought on a ZAR exchange carries costCurrency:'ZAR' even though
+  // the live price feed is in USD — letting the user keep what they actually paid.
+  function positionCostCcy(p) {
+    return (p && p.costCurrency) || marketCurrency(p ? p.market : 'US');
+  }
+  // Value a position in its own cost currency: cost is already in that currency,
+  // and the live price (quoted in the market's native currency) is converted into
+  // it. When the cost currency equals the native currency this is a no-op, so the
+  // returned figures match the pre-existing same-currency math bit-for-bit.
+  function valuePositionInCostCcy(p, quote, rates) {
+    const native = marketCurrency(p.market);
+    const ccy = positionCostCcy(p);
+    const cost = p.shares * p.costBasis;
+    let value = null;
+    if (quote && isFinite(quote.price)) {
+      value = ccy === native
+        ? p.shares * quote.price
+        : convertCcy(p.shares * quote.price, native, ccy, rates);
+    }
+    const gain = value != null ? value - cost : null;
+    const gainPct = (value != null && cost > 0) ? (value - cost) / cost * 100 : null;
+    return { ccy, native, cost, value, gain, gainPct };
+  }
+  function resolvePositionUpdates(existing, updates, ctx) {
+    const next = { ...updates };
+    if (!existing) return next;
+    const nextMarket = updates.market || existing.market;
+    const nextDate = updates.purchaseDate != null ? updates.purchaseDate : existing.purchaseDate;
+    const marketChanged = updates.market != null && updates.market !== existing.market;
+    const dateChanged = updates.purchaseDate != null && updates.purchaseDate !== existing.purchaseDate;
+    const costCcyChanged = updates.costCurrency !== undefined && (updates.costCurrency || null) !== (existing.costCurrency || null);
+    // Only touch the stored cost-basis FX rate when the date, market, or cost
+    // currency actually moved — a plain shares/cost edit must leave it untouched.
+    if (!marketChanged && !dateChanged && !costCcyChanged) return next;
+    // The rate tracks whichever currency the cost basis is denominated in.
+    const fxCode = (updates.costCurrency !== undefined ? updates.costCurrency : existing.costCurrency) || marketCurrency(nextMarket);
+    if (nextDate && nextDate !== ctx.today && ctx.historicalFx != null) {
+      next.fxRateAtCost = ctx.historicalFx;
+    } else if ((!nextDate || nextDate === ctx.today) && ctx.fxRates?.rates?.[fxCode]) {
+      next.fxRateAtCost = ctx.fxRates.rates[fxCode];
+    }
+    return next;
+  }
+
+  // ─── Cost basis (pure money math, client-only) ───────────────────────────────
+  // The one true copy of the blended-average-cost formula that app.js used to
+  // inline in THREE places (startup dedup, addPosition top-up, importPositions
+  // bulk merge). Given an existing holding (exShares @ exCost, in its own cost
+  // currency) and an incoming lot (addShares @ addCost, ALREADY converted into
+  // that same currency by the caller), returns the merged { shares, costBasis }.
+  // FX conversion of addCost and all non-numeric glue (notes/name/fxRateAtCost)
+  // stay with the caller. The shares<=0 guard (from importPositions) avoids a
+  // divide-by-zero, falling back to the existing cost.
+  function mergeCostBasis(exShares, exCost, addShares, addCost) {
+    const shares = exShares + addShares;
+    const costBasis = shares > 0
+      ? (exShares * exCost + addShares * addCost) / shares
+      : exCost;
+    return { shares, costBasis };
+  }
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
     marketOpen,
     anyMarketOpen,
-    evaluateAlerts
+    evaluateAlerts,
+    centDivisor,
+    yahooSymbol,
+    MARKET_CURRENCY,
+    convertCcy,
+    contribInDisplay,
+    marketCurrency,
+    positionCostCcy,
+    valuePositionInCostCcy,
+    resolvePositionUpdates,
+    mergeCostBasis
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the
