@@ -13,8 +13,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { sendPush } from './webpush.js';
+import PBCore from '../pb-core.js';
+// Market hours + alert evaluation are SHARED with the client (app.js) via
+// pb-core.js, so the foreground app and this always-on server can never drift on
+// "did this alert fire?". The cron path builds number-keyed prices, exactly what
+// evaluateAlerts expects.
+const { marketOpen, evaluateAlerts: evaluate, SESSIONS } = PBCore;
 
-const TRIGGER_COOLDOWN_MS = 5 * 60 * 1000;   // re-arm window after a hit clears
 const MAX_TRIGGER_HISTORY = 100;
 const ACTIVE_SUPPRESS_MS = 90 * 1000;        // skip push if app was foreground this recently
 const CLIENT_TTL_MS = 120 * 24 * 3600 * 1000; // forget devices silent for 120 days
@@ -187,62 +192,9 @@ async function fetchQuote(ticker, market) {
   return null;
 }
 
-// ─── Market hours (DST-correct via Intl time zones, supported on Workers) ────
-const SESSIONS = {
-  US:   { tz: 'America/New_York',      open: 4 * 60,  close: 20 * 60 },  // incl. pre/post-market
-  JSE:  { tz: 'Africa/Johannesburg',   open: 9 * 60,  close: 17 * 60 + 5 },
-  TFSA: { tz: 'Africa/Johannesburg',   open: 9 * 60,  close: 17 * 60 + 5 },
-  LSE:  { tz: 'Europe/London',         open: 8 * 60,  close: 16 * 60 + 35 },
-  ASX:  { tz: 'Australia/Sydney',      open: 10 * 60, close: 16 * 60 + 10 },
-  FRA:  { tz: 'Europe/Berlin',         open: 9 * 60,  close: 17 * 60 + 35 },
-  PAR:  { tz: 'Europe/Paris',          open: 9 * 60,  close: 17 * 60 + 35 },
-  AMS:  { tz: 'Europe/Amsterdam',      open: 9 * 60,  close: 17 * 60 + 35 },
-  CRYPTO: { tz: 'UTC',                 open: 0,       close: 24 * 60 }  // 24/7
-};
-function marketOpen(market, now = new Date()) {
-  if (market === 'CRYPTO') return true; // crypto trades 24/7, incl. weekends
-  const s = SESSIONS[market] || SESSIONS.US;
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: s.tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false
-  }).formatToParts(now);
-  const get = t => parts.find(p => p.type === t)?.value;
-  const wd = get('weekday');
-  if (wd === 'Sat' || wd === 'Sun') return false;
-  let hh = parseInt(get('hour'), 10);
-  if (hh === 24) hh = 0; // some ICU builds emit 24 for midnight
-  const mins = hh * 60 + parseInt(get('minute'), 10);
-  return mins >= s.open && mins <= s.close;
-}
-
-// ─── Trigger evaluation (mirrors the app + service worker engine) ────────────
-function evaluate(alerts, prices, seen) {
-  const now = Date.now();
-  const nextSeen = {};
-  const newTriggers = [];
-  let changed = false;
-  for (const a of alerts) {
-    if (!a.active) { if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id]; continue; }
-    const p = prices[a.market + ':' + a.ticker];
-    if (p == null || !isFinite(p)) { if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id]; continue; }
-    const hit = a.direction === 'above' ? p >= a.targetPrice : p <= a.targetPrice;
-    const prior = seen[a.id] !== undefined ? seen[a.id] : 'waiting';
-    if (hit) {
-      if (prior === 'waiting') {
-        nextSeen[a.id] = { status: 'hit', at: now };
-        newTriggers.push({ ...a, triggerPrice: p, triggeredAt: new Date().toISOString() });
-        changed = true;
-      } else {
-        nextSeen[a.id] = prior;
-      }
-    } else {
-      if (typeof prior === 'object' && prior !== null && (now - prior.at) < TRIGGER_COOLDOWN_MS) nextSeen[a.id] = prior;
-      else { nextSeen[a.id] = 'waiting'; if (prior !== 'waiting') changed = true; }
-    }
-  }
-  // Detect dropped keys (alerts removed) as a change so we persist the cleanup.
-  if (!changed) for (const k in seen) if (!(k in nextSeen)) { changed = true; break; }
-  return { nextSeen, newTriggers, changed };
-}
+// Market hours + trigger evaluation now live in pb-core.js (imported above) so
+// the client and this Worker share one implementation. `fetchQuote` returns
+// prices already keyed/divided, which evaluate() reads as plain numbers.
 
 function pushTo(env, subscription, payload) {
   return sendPush(subscription, payload, {
