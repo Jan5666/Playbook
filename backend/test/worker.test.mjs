@@ -56,6 +56,11 @@ ok('yahooSymbol CRYPTO no double -USD', yahooSymbol('ETH-USD', 'CRYPTO') === 'ET
 ok('marketOpen CRYPTO true on weekend', marketOpen('CRYPTO', new Date('2026-06-20T03:00:00Z')) === true);
 ok('centDivisor JSE ZAc = 100', centDivisor('JSE', 'ZAc') === 100);
 ok('centDivisor US USD = 1', centDivisor('US', 'USD') === 1);
+// These two now come from the shared core (pb-core.js) and CLOSE the old drift:
+// the worker's former local copies fetched '%5ESPX' (wrong instrument) for ^SPX
+// and divided JSE 'ZAR' by 100 (treating rand as cents). Both match the client now.
+ok('yahooSymbol ^SPX → %5EGSPC (index remap, was drifted)', yahooSymbol('^SPX', 'US') === '%5EGSPC');
+ok('centDivisor JSE ZAR = 1 (rand, not cents; was drifted)', centDivisor('JSE', 'ZAR') === 1);
 ok('sanitizeAlerts drops malformed rows', sanitizeAlerts([{ id: 'x', ticker: 'AAPL', market: 'US', targetPrice: 1 }, { ticker: 'NOID' }]).length === 1);
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);

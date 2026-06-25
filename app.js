@@ -694,42 +694,15 @@ function cacheName(market, ticker, name) {
 function cachedName(market, ticker) {
   return NAME_CACHE[market + ':' + ticker] || null;
 }
-function centDivisor(market, currency) {
-  const raw = currency || '';
-  const c = raw.toUpperCase();
-  // Market-independent minor units Yahoo emits regardless of which market the
-  // user filed the symbol under: "GBp"/"GBX" (UK pence), "ZAc"/"ZAX" (SA cents).
-  // A trailing lowercase letter on an otherwise GB*/ZA* code is the pence/cents
-  // convention; catching it here means a London listing accidentally fetched
-  // under "US" still shows a sane magnitude instead of a 100x-inflated price.
-  if (c === 'GBX' || c === 'ZAX' || c === 'ZAC') return 100;
-  if (/[a-z]$/.test(raw) && /^(GB|ZA)/.test(c)) return 100;
-  const isJseCent = (market === 'JSE' || market === 'TFSA') && (c === 'ZAC' || c === 'ZAR' && /[cC]$/.test(raw));
-  const isLseGBX = market === 'LSE' && c === 'GBX';
-  // Yahoo sometimes returns "GBp" (mixed case) for pence-denominated LSE
-  // instruments, but also plain "GBP" for pound-denominated ones. Treat any
-  // lowercase-p suffix as pence, and conservatively treat bare "GBP" on LSE
-  // tickers that report via the .L suffix as pence too — the chart endpoint
-  // almost always returns values in pence for LSE.
-  const isLseGBp = market === 'LSE' && (c === 'GBP' && /[pP]$/.test(raw));
-  const isLseBareGBP = market === 'LSE' && raw === 'GBP';
-  return (isJseCent || isLseGBX || isLseGBp || isLseBareGBP) ? 100 : 1;
-}
-function yahooSymbol(ticker, market) {
-  if (market === 'JSE' || market === 'TFSA') return ticker + '.JO';
-  if (market === 'LSE') return ticker + '.L';
-  if (market === 'ASX') return ticker + '.AX';
-  if (market === 'FRA') return ticker + '.F';
-  if (market === 'PAR') return ticker + '.PA';
-  if (market === 'AMS') return ticker + '.AS';
-  // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
-  // Guard against a symbol that already carries the pair so we never double it.
-  if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
-  if (ticker === '^SPX') return '%5EGSPC';
-  if (ticker === '^VIX') return '%5EVIX';
-  if (ticker === '^GSPC') return '%5EGSPC';
-  return encodeURIComponent(ticker);
-}
+// centDivisor + yahooSymbol now live in pb-core.js — the shared core the client
+// and the push Worker both import — so both build identical Yahoo symbols and
+// apply identical cent/pence price units. They used to be copy-pasted into each
+// and had drifted (the Worker fetched the wrong instrument for ^SPX/^VIX and
+// mis-scaled some JSE/LSE units). Bound to local names here; canonical source is
+// pb-core.js. PBCore is initialized at the top of this file (window.PBCore), well
+// before any call site below, so these const bindings are TDZ-safe.
+const centDivisor = PBCore.centDivisor;
+const yahooSymbol = PBCore.yahooSymbol;
 function stooqSymbol(ticker, market) {
   if (market === 'JSE' || market === 'TFSA') return ticker.toLowerCase() + '.jo';
   // Stooq quotes crypto as e.g. "btcusd" (no exchange suffix).
