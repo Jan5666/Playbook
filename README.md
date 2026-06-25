@@ -14,7 +14,7 @@ A static site can't wake itself to check prices when closed — so for premium, 
 
 ## Deploy
 
-This is a static site — all 9 files must be served from the **same HTTPS origin** with the service worker (`sw.js`) at the site root.
+This is a static site — all the static assets below must be served from the **same HTTPS origin** with the service worker (`sw.js`) at the site root.
 
 ### Easiest: Netlify Drop
 1. Go to https://app.netlify.com/drop
@@ -53,16 +53,15 @@ You must reopen from the home-screen icon, not Safari. iOS 16.4 or newer require
 
 | File | Purpose |
 |------|---------|
-| `index.html` | Shell with PWA meta tags |
-| `app.js` | Compiled React app (~80 KB) |
-| `data.js` | Playbook reference data (holdings, picks, hedges) |
+| `index.html` | Shell with PWA meta tags; loads React 18 from a CDN, then `data.js` + `app.js` |
+| `app.js` | The whole React app — hand-written `React.createElement` (no build step / no JSX), ~755 KB |
+| `data.js` | Playbook reference data (holdings, picks, hedges) + sector classifiers |
 | `styles.css` | iPhone-optimized styles with safe-area handling |
 | `sw.js` | **Same-origin service worker** — required for iOS push |
-| `manifest.json` | PWA manifest |
-| `icon-180.png` | Apple touch icon |
-| `icon-192.png` | Standard PWA icon |
-| `icon-512.png` | Large icon for splash |
-| `backend/` | Optional Cloudflare Worker for always-on server push (see its own README) — not part of the static deploy |
+| `manifest.json` / `manifest-light.json` | PWA manifests (dark / light home-screen tile) |
+| `icon-180/192/512.png` | App icons (Apple touch + PWA + splash) |
+| `brand/` | Favicon + light/dark home-screen icon variants |
+| `backend/` | Optional Cloudflare Worker for always-on server push **and** zero-knowledge cloud backup (see its own README) — not part of the static deploy |
 
 ## Data sources
 
