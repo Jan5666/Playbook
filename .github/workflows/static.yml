@@ -33,11 +33,37 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+      - name: Stage public site (ONLY runtime assets — never the whole repo)
+        run: |
+          # Security: the previous deploy uploaded the entire repo (path: '.'),
+          # which published backend source, tests, and secrets. We now copy only
+          # the files the PWA actually serves. Keep this list in sync with the
+          # SHELL_ASSETS precache list in sw.js.
+          set -euo pipefail
+          mkdir -p _site
+          cp index.html sw.js app.js data.js styles.css \
+             manifest.json manifest-light.json \
+             icon-180.png icon-192.png icon-512.png _site/
+          cp -r brand _site/
+          # Guard 1: fail the deploy if any expected runtime asset is missing.
+          missing=0
+          for f in index.html sw.js app.js data.js styles.css \
+                   manifest.json manifest-light.json \
+                   icon-180.png icon-192.png icon-512.png \
+                   brand/favicon.svg brand/apple-touch-icon.png; do
+            if [ ! -e "_site/$f" ]; then echo "::error::missing runtime asset $f"; missing=1; fi
+          done
+          # Guard 2: fail the deploy if any known-sensitive file leaked into _site.
+          for bad in stooq_cookies.txt settings.local.json; do
+            if [ -e "_site/$bad" ]; then echo "::error::secret leaked into deploy: $bad"; missing=1; fi
+          done
+          [ "$missing" = "0" ] || { echo "Deploy staging failed — aborting."; exit 1; }
+          echo "Staged $(find _site -type f | wc -l) files for deploy:"
+          (cd _site && find . -type f | sort)
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: '.'
+          path: '_site'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
