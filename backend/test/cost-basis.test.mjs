@@ -15,8 +15,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import PBCore from '../../pb-core.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const src = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
 
 let failures = 0;
 const ok = (name, cond) => { console.log(`${cond ? '  ok  ' : ' FAIL '} ${name}`); if (!cond) failures++; };
@@ -53,16 +55,9 @@ if (typeof PBCore.mergeCostBasis === 'function') {
   ok('total shares 0 → keeps existing cost, no NaN', r.shares === 0 && near(r.costBasis, 100));
 
   // ── Composition: addPosition's cross-currency top-up = convertCcy + merge ────
-  // Slice the REAL convertCcy out of app.js (same technique as money-math) and
-  // reproduce a top-up entered in USD against a holding whose cost basis is in ZAR.
-  const here = dirname(fileURLToPath(import.meta.url));
-  const src = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
-  const start = src.indexOf('function convertCcy(');
-  const end = src.indexOf('function fmtCcy(', start);
-  const sandbox = {};
-  vm.createContext(sandbox);
-  vm.runInContext(src.slice(start, end) + '\nglobalThis.__c = convertCcy;', sandbox);
-  const convertCcy = sandbox.__c;
+  // Reproduce a top-up entered in USD against a holding whose cost basis is in ZAR
+  // using the shared convertCcy (also in pb-core) then mergeCostBasis.
+  const { convertCcy } = PBCore;
   const rates = { USD: 1, ZAR: 18.5 };
   // Existing 10 shares @ R100; top-up 5 shares @ $8 → $8 = R148 → blended:
   // (10·100 + 5·148)/15 = 1740/15 = 116.
