@@ -703,6 +703,10 @@ function cachedName(market, ticker) {
 // before any call site below, so these const bindings are TDZ-safe.
 const centDivisor = PBCore.centDivisor;
 const yahooSymbol = PBCore.yahooSymbol;
+// Blended-average-cost merge (the one true copy of the formula three call sites
+// below — startup dedup, addPosition, importPositions — used to inline). Pure
+// arithmetic; FX conversion of the incoming lot stays at the call site.
+const mergeCostBasis = PBCore.mergeCostBasis;
 function stooqSymbol(ticker, market) {
   if (market === 'JSE' || market === 'TFSA') return ticker.toLowerCase() + '.jo';
   // Stooq quotes crypto as e.g. "btcusd" (no exchange suffix).
@@ -3117,9 +3121,8 @@ function usePortfolio(fxRates, toast) {
         const key = p.ticker + ':' + p.market;
         if (seen[key] != null) {
           const e = merged[seen[key]];
-          const totalShares = e.shares + p.shares;
-          const avgCost = (e.shares * e.costBasis + p.shares * p.costBasis) / totalShares;
-          merged[seen[key]] = { ...e, shares: totalShares, costBasis: avgCost,
+          const { shares, costBasis } = mergeCostBasis(e.shares, e.costBasis, p.shares, p.costBasis);
+          merged[seen[key]] = { ...e, shares, costBasis,
             notes: p.notes ? (e.notes ? e.notes + '; ' + p.notes : p.notes) : e.notes };
         } else {
           seen[key] = merged.length;
@@ -3161,10 +3164,9 @@ function usePortfolio(fxRates, toast) {
         // so the blended avg cost stays in one coherent currency.
         const addCost = addCcy === exCcy ? newCost
           : (convertCcy(newCost, addCcy, exCcy, fxRates?.rates || null) ?? newCost);
-        const totalShares = existing.shares + newShares;
-        const avgCost = (existing.shares * existing.costBasis + newShares * addCost) / totalShares;
+        const { shares, costBasis } = mergeCostBasis(existing.shares, existing.costBasis, newShares, addCost);
         return prev.map(p => p.id === existing.id ? {
-          ...p, shares: totalShares, costBasis: avgCost,
+          ...p, shares, costBasis,
           notes: notes ? (p.notes ? p.notes + '; ' + notes : notes) : p.notes,
           fxRateAtCost: rateAtCost || p.fxRateAtCost
         } : p);
@@ -3216,9 +3218,8 @@ function usePortfolio(fxRates, toast) {
         const idx = next.findIndex(p => p.ticker === tickerUp && p.market === r.market);
         if (idx >= 0) {
           const ex = next[idx];
-          const totalShares = ex.shares + r.shares;
-          const avgCost = totalShares > 0 ? (ex.shares * ex.costBasis + r.shares * r.costBasis) / totalShares : ex.costBasis;
-          next[idx] = { ...ex, shares: totalShares, costBasis: avgCost, name: ex.name || r.name || null, fxRateAtCost: r.rateAtCost || ex.fxRateAtCost };
+          const { shares, costBasis } = mergeCostBasis(ex.shares, ex.costBasis, r.shares, r.costBasis);
+          next[idx] = { ...ex, shares, costBasis, name: ex.name || r.name || null, fxRateAtCost: r.rateAtCost || ex.fxRateAtCost };
           merged++;
         } else {
           next.push({
