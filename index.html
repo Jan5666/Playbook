@@ -69,6 +69,9 @@
 <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 
 <!-- App -->
+<!-- pb-core.js MUST load before app.js: app.js reads window.PBCore (shared
+     market-hours + alert evaluation, also used by backend/worker.js). -->
+<script src="./pb-core.js"></script>
 <script src="./data.js"></script>
 <script src="./app.js"></script>
 

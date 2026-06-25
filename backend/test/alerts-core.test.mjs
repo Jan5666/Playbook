@@ -58,13 +58,18 @@ ok('US closed — Saturday', marketOpen('US', new Date('2026-06-20T14:00:00Z')) 
 ok('JSE open  — Wed 10:00 UTC (12:00 SAST)', marketOpen('JSE', new Date('2026-06-17T10:00:00Z')) === true);
 ok('CRYPTO open on weekend', marketOpen('CRYPTO', new Date('2026-06-20T03:00:00Z')) === true);
 
-// ── 3. EQUIVALENCE vs the client's current evaluateTriggers (from app.js) ─────
+// ── 3. The client's evaluateTriggers DELEGATES to the shared core ────────────
+// app.js's evaluateTriggers is now a thin adapter around PBCore.evaluateAlerts:
+// it converts { price, fetchedAt } quote objects into the number map the core
+// expects, dropping stale quotes. Slice it out (injecting the real PBCore) and
+// confirm (a) it passes fresh prices through to the core unchanged, and (b) it
+// still drops stale quotes — the guard that had to survive the refactor.
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
 const start = src.indexOf('function evaluateTriggers(');
 const end = src.indexOf('const Icon', start);
 if (start < 0 || end < 0) { console.error('FAIL: could not locate evaluateTriggers in app.js'); process.exit(1); }
-const sandbox = { priceKey: (m, t) => m + ':' + t, TRIGGER_COOLDOWN_MS: 5 * 60 * 1000 };
+const sandbox = { priceKey: (m, t) => m + ':' + t, PBCore };
 vm.createContext(sandbox);
 vm.runInContext(src.slice(start, end) + '\nglobalThis.__ev = evaluateTriggers;', sandbox);
 const appEvaluate = sandbox.__ev;
@@ -91,6 +96,13 @@ assertEquivalent('below after cooldown: both re-arm', [A], { 'US:AAPL': 199 }, {
 assertEquivalent('below-direction cross fires identically', [B], { 'US:AAPL': 149 }, {});
 assertEquivalent('inactive ignored by both', [{ ...A, active: false }], { 'US:AAPL': 999 }, {});
 assertEquivalent('missing price: neither fires', [A], {}, {});
+
+// The stale-price guard must survive: a crossing price older than the cooldown
+// must NOT fire (the client never has fresh server data the way the worker does).
+const staleRes = appEvaluate([A], { 'US:AAPL': { price: 250, fetchedAt: Date.now() - 10 * 60 * 1000 } }, {});
+ok('client drops stale quotes (no fire on >cooldown-old crossing price)', staleRes.newTriggers.length === 0 && !staleRes.seenChanged);
+const freshRes = appEvaluate([A], { 'US:AAPL': { price: 250, fetchedAt: Date.now() } }, {});
+ok('client fires on a fresh crossing price', freshRes.newTriggers.length === 1 && freshRes.seenChanged);
 
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll alerts-core tests passed');
 process.exit(failures ? 1 : 0);

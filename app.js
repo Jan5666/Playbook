@@ -9,6 +9,11 @@ const {
   useCallback
 } = React;
 const DATA = window.PB_DATA;
+// Shared market-hours + alert evaluation (pb-core.js, loaded before this script
+// in index.html). One implementation, shared with backend/worker.js, so the
+// foreground app and the always-on push server can never disagree on whether an
+// alert fired. If this is undefined the script tag is missing/failed to load.
+const PBCore = window.PBCore;
 // ─── Backup namespace ────────────────────────────────────────────────────────
 // Every piece of user data the app persists lives under the `pb.` prefix in
 // localStorage. A backup is therefore just the full set of those keys — new
@@ -2350,62 +2355,28 @@ const TRIGGER_COOLDOWN_MS = 5 * 60 * 1000; // 5-minute cooldown per alert
 // if price oscillates at the boundary. Stale ids (alerts that were removed)
 // are dropped from the returned map. seenChanged lets the caller skip a
 // redundant setState when nothing moved.
+// Adapter over the shared evaluator in pb-core.js (the same one backend/worker.js
+// runs, so foreground and server-push verdicts can't drift). The client holds
+// quotes as { price, fetchedAt } objects and must not fire on stale data, so we
+// build the number-keyed price map the core expects, dropping any quote older
+// than the cooldown (the server skips this — it fetches fresh each run). The
+// trigger state machine itself lives in PBCore.evaluateAlerts.
 function evaluateTriggers(alerts, prices, seen) {
   const now = Date.now();
-  const presentIds = new Set();
-  const nextSeen = {};
-  const newTriggers = [];
+  const nums = {};
   for (const a of alerts) {
-    presentIds.add(a.id);
-    if (!a.active) {
-      if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id];
-      continue;
-    }
-    const p = prices[priceKey(a.market, a.ticker)];
-    if (!p || typeof p.price !== 'number' || !isFinite(p.price)) {
-      if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id];
-      continue;
-    }
-    // Skip stale prices (>5 min old) — triggers should not fire on outdated
+    const key = priceKey(a.market, a.ticker);
+    const p = prices[key];
+    if (!p || typeof p.price !== 'number' || !isFinite(p.price)) continue;
+    // Skip stale prices (>cooldown old) — triggers must not fire on outdated
     // data that may no longer reflect the market.
-    if (typeof p.fetchedAt === 'number' && (now - p.fetchedAt) > TRIGGER_COOLDOWN_MS) {
-      if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id];
-      continue;
-    }
-    if (typeof a.targetPrice !== 'number' || !isFinite(a.targetPrice)) {
-      if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id];
-      continue;
-    }
-    const hit = a.direction === 'above' ? p.price >= a.targetPrice : p.price <= a.targetPrice;
-    // Alerts with no prior state get initialized to 'waiting' so they can
-    // fire immediately if the condition is already met. This avoids the bug
-    // where a new alert on an already-hit price would silently never trigger.
-    const prior = seen[a.id] !== undefined ? seen[a.id] : 'waiting';
-    if (hit) {
-      // Determine if we're still within the cooldown window from a prior fire
-      const priorHitAt = typeof prior === 'object' && prior !== null ? prior.at : 0;
-      const inCooldown = typeof prior === 'object' && prior !== null && (now - priorHitAt) < TRIGGER_COOLDOWN_MS;
-      const wasPreviouslyWaiting = prior === 'waiting';
-      if (wasPreviouslyWaiting) {
-        nextSeen[a.id] = { status: 'hit', at: now };
-        newTriggers.push({
-          ...a,
-          triggeredAt: new Date().toISOString(),
-          triggerPrice: p.price
-        });
-      } else if (typeof prior === 'object' && prior !== null) {
-        // Already hit — preserve the existing hit timestamp (no re-fire)
-        nextSeen[a.id] = prior;
-      }
-    } else {
-      // Price is below/above target — only return to 'waiting' after cooldown
-      if (typeof prior === 'object' && prior !== null && (now - prior.at) < TRIGGER_COOLDOWN_MS) {
-        nextSeen[a.id] = prior; // keep in cooldown
-      } else {
-        nextSeen[a.id] = 'waiting';
-      }
-    }
+    if (typeof p.fetchedAt === 'number' && (now - p.fetchedAt) > PBCore.TRIGGER_COOLDOWN_MS) continue;
+    nums[key] = p.price;
   }
+  const { nextSeen, newTriggers } = PBCore.evaluateAlerts(alerts, nums, seen, { now });
+  // Preserve the prior "did the persisted seen-map change?" semantics exactly
+  // (length, per-key value, and dropped-alert detection) so persistence cadence
+  // is unchanged from before the shared-core swap.
   let seenChanged = Object.keys(nextSeen).length !== Object.keys(seen).length;
   if (!seenChanged) {
     for (const k of Object.keys(nextSeen)) {
@@ -2417,7 +2388,7 @@ function evaluateTriggers(alerts, prices, seen) {
   }
   if (!seenChanged) {
     for (const k of Object.keys(seen)) {
-      if (!presentIds.has(k)) { seenChanged = true; break; }
+      if (!(k in nextSeen)) { seenChanged = true; break; }
     }
   }
   return { nextSeen, newTriggers, seenChanged };
@@ -2696,47 +2667,14 @@ const Icon = _ref => {
 // calls (visibility + interval) both read loading=false and double-fetch.
 const PRICES_LS_KEY = 'pb.prices.v1';
 const PRICES_MAX_AGE_MS = 3 * 24 * 3600 * 1000; // drop quotes older than 3 days
-// ─── Market hours (DST-correct via Intl) ─────────────────────────────────────
-// Used to slow the foreground poll when every tracked market is shut, so the app
-// isn't hammering the network every 90s overnight. Mirrors backend/worker.js.
-const MARKET_SESSIONS = {
-  US:   { tz: 'America/New_York',    open: 4 * 60,  close: 20 * 60 },     // incl. pre/post
-  JSE:  { tz: 'Africa/Johannesburg', open: 9 * 60,  close: 17 * 60 + 5 },
-  TFSA: { tz: 'Africa/Johannesburg', open: 9 * 60,  close: 17 * 60 + 5 },
-  LSE:  { tz: 'Europe/London',       open: 8 * 60,  close: 16 * 60 + 35 },
-  ASX:  { tz: 'Australia/Sydney',    open: 10 * 60, close: 16 * 60 + 10 },
-  FRA:  { tz: 'Europe/Berlin',       open: 9 * 60,  close: 17 * 60 + 35 },
-  PAR:  { tz: 'Europe/Paris',        open: 9 * 60,  close: 17 * 60 + 35 },
-  AMS:  { tz: 'Europe/Amsterdam',    open: 9 * 60,  close: 17 * 60 + 35 },
-  CRYPTO: { tz: 'UTC',               open: 0,       close: 24 * 60, alwaysOpen: true }
-};
-function marketOpen(market, now = new Date()) {
-  // Crypto never closes — trades 24/7 including weekends — so always poll it.
-  if (market === 'CRYPTO') return true;
-  const s = MARKET_SESSIONS[market] || MARKET_SESSIONS.US;
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: s.tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false
-    }).formatToParts(now);
-    const get = t => parts.find(p => p.type === t)?.value;
-    const wd = get('weekday');
-    if (wd === 'Sat' || wd === 'Sun') return false;
-    let hh = parseInt(get('hour'), 10);
-    if (hh === 24) hh = 0;
-    const mins = hh * 60 + parseInt(get('minute'), 10);
-    return mins >= s.open && mins <= s.close;
-  } catch (_e) { return true; } // if Intl tz fails, assume open (poll normally)
-}
-function anyMarketOpen(items) {
-  if (!items || items.length === 0) return true; // nothing tracked yet → poll normally
-  const seen = new Set();
-  for (const it of items) {
-    if (seen.has(it.market)) continue;
-    seen.add(it.market);
-    if (marketOpen(it.market)) return true;
-  }
-  return false;
-}
+// ─── Market hours ────────────────────────────────────────────────────────────
+// Sessions table + marketOpen/anyMarketOpen now live in pb-core.js (loaded before
+// this script), shared with backend/worker.js so the poll cadence and the push
+// server agree on what's open. These bindings keep the existing call sites
+// (marketOpen / anyMarketOpen / MARKET_SESSIONS) working unchanged.
+const MARKET_SESSIONS = PBCore.SESSIONS;
+const marketOpen = PBCore.marketOpen;
+const anyMarketOpen = PBCore.anyMarketOpen;
 function usePriceFeed(tickersToFetch, toast) {
   // Rehydrate last-known prices instantly so the app paints real numbers on
   // open instead of em-dashes — the single biggest "premium fintech" perception
