@@ -155,6 +155,105 @@
     return encodeURIComponent(ticker);
   }
 
+  // ─── Money / FX / position valuation (pure, client-only) ─────────────────────
+  // The app's money math, moved out of the 14k-line app.js so it can be tested in
+  // isolation. MARKET_CURRENCY maps each market to its native currency (display
+  // symbol + ISO code); the helpers reason in those codes against an fx rate map
+  // ("source units per USD", with USD === 1).
+  const MARKET_CURRENCY = {
+    US:   { sym: '$',   code: 'USD', label: 'USD' },
+    JSE:  { sym: 'R',   code: 'ZAR', label: 'ZAR' },
+    TFSA: { sym: 'R',   code: 'ZAR', label: 'ZAR' },
+    LSE:  { sym: '£',  code: 'GBP', label: 'GBP' },
+    ASX:  { sym: 'A$',  code: 'AUD', label: 'AUD' },
+    FRA:  { sym: '€',  code: 'EUR', label: 'EUR' },
+    PAR:  { sym: '€',  code: 'EUR', label: 'EUR' },
+    AMS:  { sym: '€',  code: 'EUR', label: 'EUR' },
+    // Crypto is quoted against USD (Yahoo's BTC-USD pairs), so it shares the
+    // dollar for display and FX conversion just like the US market.
+    CRYPTO: { sym: '$', code: 'USD', label: 'USD' },
+  };
+  function convertCcy(amount, from, to, rates) {
+    if (amount == null || !isFinite(amount)) return null;
+    if (!from || !to || from === to) return amount;
+    if (!rates) return null;
+    const fr = rates[from];
+    const tr = rates[to];
+    if (!fr || !tr) return null;
+    return amount / fr * tr;
+  }
+  // The capital a deposit actually committed, valued in `displayCurrency`. This is
+  // the "money put in" used for overall-profit: it uses the rate locked when the
+  // deposit was made — the real achieved rate when the user recorded how much USD
+  // actually landed (fxRateAtContrib = source units ÷ USD landed), otherwise the
+  // market rate at deposit time — rather than revaluing at today's market rate. So
+  // a deposit kept in the display currency always counts at its face amount, and a
+  // cross-currency deposit counts at the dollars that genuinely entered the
+  // account. Falls back to today's conversion only when no rate was ever captured.
+  function contribInDisplay(c, displayCurrency, rates) {
+    if (!c) return 0;
+    const amt = c.amount;
+    if (!isFinite(amt)) return 0;
+    if (c.currency === displayCurrency) return amt;
+    const lockedRate = (c.fxRateAtContrib && isFinite(c.fxRateAtContrib) && c.fxRateAtContrib > 1e-6) ? c.fxRateAtContrib : null;
+    const dispRate = (rates && rates[displayCurrency] && isFinite(rates[displayCurrency]) && rates[displayCurrency] > 1e-6) ? rates[displayCurrency] : null;
+    if (lockedRate && dispRate) {
+      const usd = amt / lockedRate; // the USD that actually landed at deposit time
+      return usd * dispRate;        // revalue that committed USD into the display currency
+    }
+    const conv = convertCcy(amt, c.currency, displayCurrency, rates);
+    return conv != null ? conv : 0;
+  }
+  function marketCurrency(market) {
+    return (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code;
+  }
+  // The currency a position's cost basis is denominated in. Defaults to the
+  // market's native currency, so every holding that predates the crypto-in-ZAR
+  // feature (and any holding without an explicit costCurrency) behaves exactly as
+  // before. Crypto bought on a ZAR exchange carries costCurrency:'ZAR' even though
+  // the live price feed is in USD — letting the user keep what they actually paid.
+  function positionCostCcy(p) {
+    return (p && p.costCurrency) || marketCurrency(p ? p.market : 'US');
+  }
+  // Value a position in its own cost currency: cost is already in that currency,
+  // and the live price (quoted in the market's native currency) is converted into
+  // it. When the cost currency equals the native currency this is a no-op, so the
+  // returned figures match the pre-existing same-currency math bit-for-bit.
+  function valuePositionInCostCcy(p, quote, rates) {
+    const native = marketCurrency(p.market);
+    const ccy = positionCostCcy(p);
+    const cost = p.shares * p.costBasis;
+    let value = null;
+    if (quote && isFinite(quote.price)) {
+      value = ccy === native
+        ? p.shares * quote.price
+        : convertCcy(p.shares * quote.price, native, ccy, rates);
+    }
+    const gain = value != null ? value - cost : null;
+    const gainPct = (value != null && cost > 0) ? (value - cost) / cost * 100 : null;
+    return { ccy, native, cost, value, gain, gainPct };
+  }
+  function resolvePositionUpdates(existing, updates, ctx) {
+    const next = { ...updates };
+    if (!existing) return next;
+    const nextMarket = updates.market || existing.market;
+    const nextDate = updates.purchaseDate != null ? updates.purchaseDate : existing.purchaseDate;
+    const marketChanged = updates.market != null && updates.market !== existing.market;
+    const dateChanged = updates.purchaseDate != null && updates.purchaseDate !== existing.purchaseDate;
+    const costCcyChanged = updates.costCurrency !== undefined && (updates.costCurrency || null) !== (existing.costCurrency || null);
+    // Only touch the stored cost-basis FX rate when the date, market, or cost
+    // currency actually moved — a plain shares/cost edit must leave it untouched.
+    if (!marketChanged && !dateChanged && !costCcyChanged) return next;
+    // The rate tracks whichever currency the cost basis is denominated in.
+    const fxCode = (updates.costCurrency !== undefined ? updates.costCurrency : existing.costCurrency) || marketCurrency(nextMarket);
+    if (nextDate && nextDate !== ctx.today && ctx.historicalFx != null) {
+      next.fxRateAtCost = ctx.historicalFx;
+    } else if ((!nextDate || nextDate === ctx.today) && ctx.fxRates?.rates?.[fxCode]) {
+      next.fxRateAtCost = ctx.fxRates.rates[fxCode];
+    }
+    return next;
+  }
+
   // ─── Cost basis (pure money math, client-only) ───────────────────────────────
   // The one true copy of the blended-average-cost formula that app.js used to
   // inline in THREE places (startup dedup, addPosition top-up, importPositions
@@ -180,6 +279,13 @@
     evaluateAlerts,
     centDivisor,
     yahooSymbol,
+    MARKET_CURRENCY,
+    convertCcy,
+    contribInDisplay,
+    marketCurrency,
+    positionCostCcy,
+    valuePositionInCostCcy,
+    resolvePositionUpdates,
     mergeCostBasis
   };
 
