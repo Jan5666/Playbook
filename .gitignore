@@ -1,0 +1,18 @@
+# Secrets & local-only files — NEVER commit.
+# The GitHub Pages deploy uploads the whole repo, so anything tracked is PUBLIC.
+# (.gitignore does NOT support inline comments — keep patterns on their own line.)
+stooq_cookies.txt
+settings.local.json
+.env
+.env.*
+*.local
+*.pem
+*.key
+
+# Build output & tooling
+dist/
+node_modules/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
