@@ -1,9 +1,13 @@
 // ─── Playbook shared core ────────────────────────────────────────────────────
-// The ONE source of truth for the two pieces of logic that used to be copy-pasted
-// (and had drifted) between the client (app.js) and the push backend
+// The ONE source of truth for the app's pure, side-effect-free logic — no React,
+// no DOM, no network. It began as the home for the two pieces that used to be
+// copy-pasted (and had drifted) between the client (app.js) and the push backend
 // (backend/worker.js): market-hours and price-alert evaluation. An alert must
 // behave identically whether it's evaluated in the foreground app or by the
-// server while the app is closed — so both import this.
+// server while the app is closed — so both import this. It now also holds the
+// market-symbol/price-unit helpers (shared with the worker) and pure money math
+// (e.g. cost-basis averaging) that only the client uses but belongs out of the
+// 14k-line app.js where it can be tested in isolation.
 //
 // No build step on the frontend, so this is a plain classic script with a
 // dual-mode footer: CommonJS `module.exports` (so the Worker bundler and the
@@ -151,6 +155,23 @@
     return encodeURIComponent(ticker);
   }
 
+  // ─── Cost basis (pure money math, client-only) ───────────────────────────────
+  // The one true copy of the blended-average-cost formula that app.js used to
+  // inline in THREE places (startup dedup, addPosition top-up, importPositions
+  // bulk merge). Given an existing holding (exShares @ exCost, in its own cost
+  // currency) and an incoming lot (addShares @ addCost, ALREADY converted into
+  // that same currency by the caller), returns the merged { shares, costBasis }.
+  // FX conversion of addCost and all non-numeric glue (notes/name/fxRateAtCost)
+  // stay with the caller. The shares<=0 guard (from importPositions) avoids a
+  // divide-by-zero, falling back to the existing cost.
+  function mergeCostBasis(exShares, exCost, addShares, addCost) {
+    const shares = exShares + addShares;
+    const costBasis = shares > 0
+      ? (exShares * exCost + addShares * addCost) / shares
+      : exCost;
+    return { shares, costBasis };
+  }
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
@@ -158,7 +179,8 @@
     anyMarketOpen,
     evaluateAlerts,
     centDivisor,
-    yahooSymbol
+    yahooSymbol,
+    mergeCostBasis
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the
