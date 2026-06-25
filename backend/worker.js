@@ -14,11 +14,11 @@
 
 import { sendPush } from './webpush.js';
 import PBCore from '../pb-core.js';
-// Market hours + alert evaluation are SHARED with the client (app.js) via
-// pb-core.js, so the foreground app and this always-on server can never drift on
-// "did this alert fire?". The cron path builds number-keyed prices, exactly what
-// evaluateAlerts expects.
-const { marketOpen, evaluateAlerts: evaluate, SESSIONS } = PBCore;
+// Market hours, alert evaluation, AND symbol/price-unit helpers are SHARED with
+// the client (app.js) via pb-core.js, so the foreground app and this always-on
+// server can never drift on "did this alert fire?" or "which instrument/units?".
+// The cron path builds number-keyed prices, exactly what evaluateAlerts expects.
+const { marketOpen, evaluateAlerts: evaluate, SESSIONS, yahooSymbol, centDivisor } = PBCore;
 
 const MAX_TRIGGER_HISTORY = 100;
 const ACTIVE_SUPPRESS_MS = 90 * 1000;        // skip push if app was foreground this recently
@@ -146,26 +146,8 @@ async function kvPut(env, key, val) {
 }
 
 // ─── Quote fetching (server-side: direct, with proxy fallback) ───────────────
-function yahooSymbol(ticker, market) {
-  if (market === 'JSE' || market === 'TFSA') return ticker + '.JO';
-  if (market === 'LSE') return ticker + '.L';
-  if (market === 'ASX') return ticker + '.AX';
-  if (market === 'FRA') return ticker + '.F';
-  if (market === 'PAR') return ticker + '.PA';
-  if (market === 'AMS') return ticker + '.AS';
-  // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
-  // Without this we fetch the wrong instrument (e.g. an equity also tickered
-  // "BTC") and fire triggers off a price that isn't the live crypto market —
-  // mirror app.js's yahooSymbol exactly.
-  if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
-  return encodeURIComponent(ticker);
-}
-function centDivisor(market, currency) {
-  const c = (currency || '').toUpperCase();
-  if ((market === 'JSE' || market === 'TFSA') && (c === 'ZAC' || c === 'ZAR')) return 100;
-  if (market === 'LSE' && (c === 'GBX' || c === 'GBP')) return 100; // Yahoo reports LSE in pence
-  return 1;
-}
+// yahooSymbol + centDivisor are imported from pb-core.js (destructured above) —
+// the worker no longer keeps its own drifted copies.
 const PROXIES = [
   u => u,
   u => `https://corsmirror.com/v1?url=${encodeURIComponent(u)}`,
