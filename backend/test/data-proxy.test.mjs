@@ -58,6 +58,37 @@ globalThis.fetch = async () => ({ ok: false, text: async () => '' });
 body = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/y');
 ok('fetchViaProxies all-fail → null', body === null);
 
+// ── in-flight de-dupe: two concurrent same-url calls → one underlying fetch ──
+PBData._setLastGoodProxy(null);
+let hits = 0;
+globalThis.fetch = async () => { hits++; await new Promise(r => setTimeout(r, 15)); return { ok: true, text: async () => '{"x":1,"padding":"aaaaaaaaaaaaaaaaaaaa"}' }; };
+let [a, b] = await Promise.all([
+  PBData.fetchViaProxies('https://query1.finance.yahoo.com/dedupe'),
+  PBData.fetchViaProxies('https://query1.finance.yahoo.com/dedupe')
+]);
+ok('de-dupe: both callers get the same body', a === b && a === '{"x":1,"padding":"aaaaaaaaaaaaaaaaaaaa"}');
+ok('de-dupe: only one underlying fetch', hits === 1);
+
+// different urls (e.g. cacheBust) are NOT de-duped
+hits = 0;
+await Promise.all([
+  PBData.fetchViaProxies('https://query1.finance.yahoo.com/x?_=1'),
+  PBData.fetchViaProxies('https://query1.finance.yahoo.com/x?_=2')
+]);
+ok('de-dupe: distinct urls each fetch', hits === 2);
+
+// after settle the entry is freed (a later call refetches)
+hits = 0;
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/again');
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/again');
+ok('de-dupe: map cleared after settle', hits === 2);
+
+// ── limiter: peak concurrent fetch() never exceeds the cap ───────────────────
+let active = 0, peak = 0;
+globalThis.fetch = async () => { active++; peak = Math.max(peak, active); await new Promise(r => setTimeout(r, 10)); active--; return { ok: true, text: async () => '{"ok":1,"padding":"aaaaaaaaaaaaaaaaaaaa"}' }; };
+await Promise.all(Array.from({ length: 20 }, (_, i) => PBData.fetchViaProxies('https://query1.finance.yahoo.com/cap' + i)));
+ok('limiter: peak concurrent fetch ≤ 8', peak <= 8 && peak > 0);
+
 // Anti-drift guard
 ok('app.js binds fetchViaProxies from PBData', /const\s+fetchViaProxies\s*=\s*PBData\.fetchViaProxies/.test(appSrc));
 ok('app.js has no local function fetchViaProxies', !/function\s+fetchViaProxies\s*\(/.test(appSrc));

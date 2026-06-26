@@ -17,7 +17,7 @@
   // the destructure is established once. (priceKey is the only one the proxy
   // ladder itself could need; the rest are forward-looking.)
   const { yahooSymbol, centDivisor, parseYahooQuote, buildDailyBars, derivePrevClose,
-          deriveIntradayExt, MARKET_CURRENCY, priceKey } = PBCore;
+          deriveIntradayExt, MARKET_CURRENCY, priceKey, pLimit } = PBCore;
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
   // pb-data never reaches into app.js globals (which would break the Node tests).
@@ -64,25 +64,37 @@
     if (/Too Many Requests|Rate limit exceeded|Server-side requests are not allowed|Free usage is limited|domain_not_registered|"error"\s*:/i.test(head)) return true;
     return false;
   }
-  // Fetch `url` through the proxy chain and return the upstream body as text.
-  // Returns null if every proxy fails. Updates `lastGoodProxy` so subsequent
-  // calls start with the working proxy.
-  async function fetchViaProxies(url, { timeoutMs = 8000 } = {}) {
-    for (const px of orderedProxies()) {
-      try {
-        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
-        const res = await fetch(px.build(url), { cache: 'no-store', signal: ctrl?.signal });
-        if (t) clearTimeout(t);
-        if (!res.ok) continue;
-        const text = await res.text();
-        const body = px.unwrap(text);
-        if (looksLikeProxyError(body)) continue;
-        lastGoodProxy = px.name;
-        return body;
-      } catch (e) {}
-    }
-    return null;
+  // Collapse concurrent identical upstream requests, and cap total simultaneous
+  // fetch() calls across every provider, so an auto-poll + a manual refresh + a
+  // detail view don't stack into one proxy-tripping burst. cacheBust appends a
+  // unique &_=<ts> so manual refreshes are distinct urls and bypass de-dupe.
+  const _inflight = new Map();
+  const _fetchLimit = pLimit(8);
+  function fetchViaProxies(url, { timeoutMs = 8000 } = {}) {
+    const existing = _inflight.get(url);
+    if (existing) return existing;
+    const run = (async () => {
+      for (const px of orderedProxies()) {
+        try {
+          const res = await _fetchLimit(async () => {
+            const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+            try { return await fetch(px.build(url), { cache: 'no-store', signal: ctrl?.signal }); }
+            finally { if (t) clearTimeout(t); }
+          });
+          if (!res.ok) continue;
+          const text = await res.text();
+          const body = px.unwrap(text);
+          if (looksLikeProxyError(body)) continue;
+          lastGoodProxy = px.name;
+          return body;
+        } catch (e) {}
+      }
+      return null;
+    })();
+    _inflight.set(url, run);
+    run.finally(() => _inflight.delete(url));
+    return run;
   }
 
   // Test seams (Node only; harmless in browser).
