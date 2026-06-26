@@ -76,6 +76,10 @@
     const run = (async () => {
       for (const px of orderedProxies()) {
         try {
+          // The abort timeout starts when the limiter ADMITS the fetch (inside the
+          // limited fn), not while the request is still queued for a slot — a request
+          // shouldn't time out merely waiting its turn. Under heavy concurrency this
+          // means wall-clock-to-failure can exceed timeoutMs by the queue wait.
           const res = await _fetchLimit(async () => {
             const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
             const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
