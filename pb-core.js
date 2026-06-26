@@ -158,6 +158,28 @@
     return encodeURIComponent(ticker);
   }
 
+  // ─── Concurrency limiter ─────────────────────────────────────────────────────
+  // Minimal promise concurrency limiter: returns limited(fn) that runs at most
+  // `concurrency` fns at once. Pure (no globals) — pb-data uses it to cap
+  // simultaneous fetch() calls across all proxied requests.
+  function pLimit(concurrency) {
+    const queue = [];
+    let active = 0;
+    const next = () => {
+      while (active < concurrency && queue.length) {
+        active++;
+        const { fn, resolve, reject } = queue.shift();
+        Promise.resolve().then(fn).then(
+          (v) => { active--; resolve(v); next(); },
+          (e) => { active--; reject(e); next(); }
+        );
+      }
+    };
+    return function limited(fn) {
+      return new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
+    };
+  }
+
   // ─── Money / FX / position valuation (pure, client-only) ─────────────────────
   // The app's money math, moved out of the 14k-line app.js so it can be tested in
   // isolation. MARKET_CURRENCY maps each market to its native currency (display
@@ -451,6 +473,7 @@
     evaluateAlerts,
     centDivisor,
     yahooSymbol,
+    pLimit,
     MARKET_CURRENCY,
     convertCcy,
     contribInDisplay,
