@@ -83,5 +83,12 @@ ok('worker.js destructures yahooSymbol from PBCore', /const\s*\{[^}]*\byahooSymb
 ok('worker.js has no local centDivisor definition', !/function\s+centDivisor\s*\(/.test(workerSrc));
 ok('worker.js has no local yahooSymbol definition', !/function\s+yahooSymbol\s*\(/.test(workerSrc));
 
+// ── priceKey: single-sourced market:ticker key (Phase 2 carve) ───────────────
+ok('PBCore exports priceKey', typeof PBCore.priceKey === 'function');
+ok("priceKey('US','AAPL')", PBCore.priceKey('US', 'AAPL') === 'US:AAPL');
+ok("priceKey('JSE','NPN')", PBCore.priceKey('JSE', 'NPN') === 'JSE:NPN');
+ok('app.js binds priceKey from PBCore', /const\s+priceKey\s*=\s*PBCore\.priceKey/.test(appSrc));
+ok('app.js has no local function priceKey', !/function\s+priceKey\s*\(/.test(appSrc));
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll markets-core tests passed');
 process.exit(failures ? 1 : 0);

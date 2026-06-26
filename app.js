@@ -620,9 +620,7 @@ const FX_PROXIES = [
 // instruments. Values reported in those units must be divided by 100 to get
 // the natural unit (rand, pound). Matching is case-insensitive and accepts
 // the pence-suffix forms because Yahoo isn't perfectly consistent.
-function priceKey(market, ticker) {
-  return market + ':' + ticker;
-}
+const priceKey = PBCore.priceKey;
 // ─────────────────────────────────────────────────────────────────────────
 // Company-name resolution. Heatmap constituents (and many Yahoo-searched
 // tickers) ship without a curated name, so a bare ticker like AVGO would
