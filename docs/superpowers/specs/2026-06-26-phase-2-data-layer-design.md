@@ -10,7 +10,7 @@ Companion to the refactor memory `playbook-refactor-priorities` (Phase 2 = P1 "c
 
 Extract the client-side price/quote network layer out of the 14k-line `app.js` monolith into a single headless, independently-testable module (`pb-data.js`), mirroring the Phase-1 `pb-core.js` carve-out. Then make the fetch path gentler on the shared CORS proxies (concurrency cap + collapse duplicate in-flight requests) without changing the data the UI sees.
 
-Non-goals this round: reducing the fetch fan-out (the `tickersToFetch` universe), moving providers to per-file modules, or introducing a build step. Those are later increments/phases.
+Non-goals this round: reducing the fetch fan-out (the `tickersToFetch` universe), moving providers to per-file modules, introducing a build step, or moving the **FX rate fetchers** (`fetchHistoricalFx`/`fetchFxRates` — they use a distinct `FX_PROXIES` ladder, call `fetch()` directly so they gain nothing from the new de-dupe/limiter, and `fetchFxRates` depends on the app-level `DISPLAY_CURRENCIES` table). FX folds in cheaply later; it stays in `app.js` this round. Those are later increments/phases.
 
 ## Constraints (inherited)
 
@@ -27,7 +27,7 @@ New file `pb-data.js` at repo root. Dual-mode, same pattern as `pb-core.js`:
 
 ### Moves to `pb-data.js` (from `app.js` ~lines 560–1330)
 
-- **Proxy ladder:** `CORS_PROXIES`, `orderedProxies`, `lastGoodProxy`, `looksLikeProxyError`, `fetchViaProxies`, `FX_PROXIES` and the FX-rate fetcher.
+- **Proxy ladder:** `CORS_PROXIES`, `orderedProxies`, `lastGoodProxy`, `looksLikeProxyError`, `fetchViaProxies`. (The separate `FX_PROXIES` ladder + `fetchHistoricalFx`/`fetchFxRates` stay in `app.js` this round — see Goal/non-goals.)
 - **Yahoo provider:** `fetchQuote`, `fetchQuoteLight`, `fetchHistory`, `parseHistoryResult`.
 - **Stooq provider:** `stooqSymbol`, `parseStooqCsv`.
 - **Morningstar unit-trust provider:** `MORNINGSTAR_KEY`, `MORNINGSTAR_UNIVERSE`, `isUnitTrustId`, `unitTrustSearchTerm`, `fetchMorningstarRows`, `searchUnitTrusts`, `morningstarRowToQuote`, `fetchUnitTrustQuote`, `unitTrustRangeStart`, `fetchUnitTrustHistory`.
