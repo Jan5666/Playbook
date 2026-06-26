@@ -21,7 +21,7 @@ async function peakUnder(cap, total) {
   return peak;
 }
 ok('cap=1 serializes (peak 1)', (await peakUnder(1, 5)) === 1);
-ok('cap=3 over 9 tasks → peak ≤ 3', (await peakUnder(3, 9)) <= 3);
+ok('cap=3 over 9 tasks → peak === 3', (await peakUnder(3, 9)) === 3);
 
 // All results resolve in order of completion with correct values.
 const limit = pLimit(2);
