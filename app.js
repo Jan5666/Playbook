@@ -1186,7 +1186,7 @@ async function buildHotTopics(apiKey, userSymbols, fundamentals, heldTickers) {
     seenEarn.add(ticker);
     earnings.push({
       ticker,
-      company: e.company || NAME_CACHE[(e.market || 'US') + ':' + ticker] || '',
+      company: e.company || cachedName(e.market || 'US', ticker) || '',
       market: e.market || 'US',
       date: hotDateKey(e.date),
       when: e.when || 'TBD',
