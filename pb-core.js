@@ -271,6 +271,174 @@
     return { shares, costBasis };
   }
 
+  // ─── Yahoo chart parsers (pure, client-only) ─────────────────────────────────
+  // Normalize Yahoo's v8 chart payloads into the app's quote shape. Pure given the
+  // core helpers above (MARKET_CURRENCY, centDivisor, SESSIONS); the worker keeps
+  // its own tiny inline parse, so these are client-only. deriveIntradayExt takes an
+  // optional `now` (ms) so its pre/post-session classification is testable.
+  function buildDailyBars(result, divisor) {
+    const ts = Array.isArray(result?.timestamp) ? result.timestamp : [];
+    const closes = result?.indicators?.quote?.[0]?.close || [];
+    const bars = [];
+    for (let i = 0; i < closes.length; i++) {
+      const c = closes[i];
+      if (typeof c !== 'number' || !isFinite(c) || c <= 0) continue;
+      const tsec = ts[i];
+      bars.push({ t: typeof tsec === 'number' ? tsec * 1000 : null, p: c / divisor });
+    }
+    return bars;
+  }
+  // The market-local calendar day (YYYY-MM-DD) a timestamp falls on. This is what
+  // makes "today" mean each market's OWN trading day — a US bar is dated in New
+  // York, a JSE bar in Johannesburg — instead of the viewer's wall clock. Without
+  // this, a South-African user (UTC+2) judging a US stock's "yesterday" by their
+  // local midnight gets the day boundary wrong and the previous close drifts a
+  // session, which is exactly the "USA/SA days confused" symptom.
+  function marketDayKey(ms, market) {
+    const tz = (SESSIONS[market] || SESSIONS.US).tz;
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(new Date(ms));
+    } catch (_e) { return null; }
+  }
+  // Yahoo's regularMarketPreviousClose is often stale, in the wrong unit, or
+  // missing — which produces an inflated %-change. Derive it from the daily bars
+  // instead, anchored to the market's OWN trading day: the last bar is the current
+  // session (today's partial/closed bar, or the last completed session when the
+  // market is shut), so the previous close is the most recent bar that lands on an
+  // EARLIER market-local day. We deliberately key off the day, not price-equality
+  // to the live tick — a <1% "flat" day (routine for ETFs/large caps) used to make
+  // the old equals-live guard skip the real previous close and reach a session too
+  // far back, doubling the reported "today" move.
+  // The ratio guard (0.01x–100x) only rejects unit mismatches (cents vs dollars),
+  // never real moves, so genuine flash crashes/halts still pass through.
+  function derivePrevClose(bars, livePrice, fallback, market) {
+    if (!Array.isArray(bars) || bars.length < 2 || !(livePrice > 0)) return fallback;
+    const lastBar = bars[bars.length - 1];
+    const curDay = lastBar.t != null ? marketDayKey(lastBar.t, market) : null;
+    let candidate = null;
+    for (let i = bars.length - 2; i >= 0; i--) {
+      const b = bars[i];
+      // Skip any bar sharing the current session's market-local day; the first
+      // earlier-day bar carries the genuine previous close.
+      if (curDay != null && b.t != null && marketDayKey(b.t, market) === curDay) continue;
+      candidate = b.p;
+      break;
+    }
+    if (candidate == null) candidate = bars[bars.length - 2].p;
+    if (!(candidate > 0) || !isFinite(candidate)) return fallback;
+    const ratio = candidate / livePrice;
+    if (ratio > 0.01 && ratio < 100) return candidate;
+    return fallback;
+  }
+  // Derive the live extended-hours (pre/post) quote from an intraday chart result.
+  // Yahoo's chart `meta` no longer carries preMarketPrice/postMarketPrice and the
+  // v7 quote endpoint that did is now blocked — so the only reliable source is the
+  // intraday bars themselves (fetched with includePrePost). We classify "now"
+  // against the day's trading periods and, when we're actually in pre- or
+  // post-market, take the latest traded close in that session and measure it
+  // against the regular close — exactly the figure Google shows as
+  // "Pre-market" / "After hours". Returns null outside extended hours so the UI
+  // shows nothing during the regular session or when the market is fully closed.
+  function deriveIntradayExt(result, market, now = Date.now()) {
+    const meta = result?.meta;
+    const ctp = meta?.currentTradingPeriod;
+    const ts = result?.timestamp;
+    const closes = result?.indicators?.quote?.[0]?.close;
+    if (!meta || !ctp || !ctp.regular || !Array.isArray(ts) || !Array.isArray(closes)) return null;
+    if (typeof meta.regularMarketPrice !== 'number') return null;
+    const nowSec = now / 1000;
+    let kind = null, sess = null;
+    if (ctp.post && nowSec >= ctp.post.start && nowSec < ctp.post.end) { kind = 'post'; sess = ctp.post; }
+    else if (ctp.pre && nowSec >= ctp.pre.start && nowSec < ctp.pre.end) { kind = 'pre'; sess = ctp.pre; }
+    else return null;
+    // Latest non-null close that falls inside the active extended session.
+    let raw = null;
+    for (let i = ts.length - 1; i >= 0; i--) {
+      const c = closes[i];
+      if (c == null || !isFinite(c)) continue;
+      if (ts[i] >= sess.start && ts[i] < sess.end) { raw = c; break; }
+    }
+    if (raw == null) return null;
+    const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+    const divisor = centDivisor(market, currency);
+    const extPrice = raw / divisor;
+    const regularPrice = meta.regularMarketPrice / divisor;
+    if (!(regularPrice > 0) || !(extPrice > 0)) return null;
+    // No move yet (first ext bar equals the close) → nothing meaningful to show.
+    if (Math.abs(extPrice - regularPrice) < 0.0005 * regularPrice) return null;
+    return {
+      extPrice,
+      extChange: extPrice - regularPrice,
+      extChangePct: (extPrice - regularPrice) / regularPrice * 100,
+      extKind: kind,
+      marketState: kind === 'post' ? 'POST' : 'PRE'
+    };
+  }
+  // Convert one Yahoo chart result into the app's normalized quote shape.
+  // Returns null if the response shape is unusable so the caller can fall
+  // through to the next proxy or data source.
+  function parseYahooQuote(result, market) {
+    const meta = result?.meta;
+    if (!meta || typeof meta.regularMarketPrice !== 'number') return null;
+    let currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+    const divisor = centDivisor(market, currency);
+    let price = meta.regularMarketPrice;
+    let prevClose = meta.regularMarketPreviousClose != null ? meta.regularMarketPreviousClose
+      : (meta.previousClose != null ? meta.previousClose
+      : (meta.chartPreviousClose != null ? meta.chartPreviousClose : price));
+    let yearHigh = meta.fiftyTwoWeekHigh || null;
+    let yearLow = meta.fiftyTwoWeekLow || null;
+    let dayHigh = meta.regularMarketDayHigh || null;
+    let dayLow = meta.regularMarketDayLow || null;
+    const volume = meta.regularMarketVolume || null;
+    if (divisor !== 1) {
+      price = price / divisor;
+      prevClose = prevClose / divisor;
+      if (yearHigh) yearHigh = yearHigh / divisor;
+      if (yearLow) yearLow = yearLow / divisor;
+      if (dayHigh) dayHigh = dayHigh / divisor;
+      if (dayLow) dayLow = dayLow / divisor;
+    }
+    // The market the user filed this symbol under is authoritative for the display
+    // currency. Normalise to it so every surface (price, fundamentals, P/L, chart)
+    // shows one consistent symbol instead of trusting whatever listing Yahoo
+    // resolved a bare ticker to — that mismatch is what made US holdings
+    // occasionally render in £/€. Falls back to Yahoo's value for unknown markets.
+    currency = (MARKET_CURRENCY[market] && MARKET_CURRENCY[market].code) || currency;
+    try {
+      prevClose = derivePrevClose(buildDailyBars(result, divisor), price, prevClose, market);
+    } catch (_e) {}
+    return {
+      price,
+      prevClose,
+      change: price - prevClose,
+      changePct: prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0,
+      yearHigh,
+      yearLow,
+      dayHigh,
+      dayLow,
+      volume,
+      // Extended-hours (pre/post) is derived from intraday bars by the caller via
+      // deriveIntradayExt — the daily chart meta carries no pre/post fields.
+      extPrice: null,
+      extChange: null,
+      extChangePct: null,
+      extKind: null,
+      currency,
+      marketState: meta.marketState || 'UNKNOWN',
+      shortName: meta.shortName || meta.longName || null,
+      longName: meta.longName || meta.shortName || null,
+      // Upstream timestamp (in ms) of the most recent price tick. Callers use
+      // this to detect stale data — fetchedAt only tracks when WE saw it, which
+      // can drift far from the actual market clock when an upstream feed lags.
+      regularMarketTime: typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null,
+      fetchedAt: Date.now(),
+      source: 'yahoo'
+    };
+  }
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
@@ -286,7 +454,12 @@
     positionCostCcy,
     valuePositionInCostCcy,
     resolvePositionUpdates,
-    mergeCostBasis
+    mergeCostBasis,
+    buildDailyBars,
+    marketDayKey,
+    derivePrevClose,
+    deriveIntradayExt,
+    parseYahooQuote
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the
