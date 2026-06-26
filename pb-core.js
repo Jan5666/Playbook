@@ -61,6 +61,9 @@
     return false;
   }
 
+  // market:ticker price-map key — shared so app.js and pb-data.js can't drift.
+  function priceKey(market, ticker) { return market + ':' + ticker; }
+
   // ─── Price-alert evaluation ──────────────────────────────────────────────────
   // Pure state machine, identical to what both engines already ran:
   //   waiting → (price crosses target) → fire once, record { status:'hit', at }.
@@ -444,6 +447,7 @@
     SESSIONS,
     marketOpen,
     anyMarketOpen,
+    priceKey,
     evaluateAlerts,
     centDivisor,
     yahooSymbol,
