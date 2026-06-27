@@ -112,6 +112,37 @@
     }
   }
 
+  // Relative "time since" for the freshness chip; coarsens as it ages so the
+  // user always sees movement within a few seconds of a refresh.
+  function fmtAgo(fromMs, nowMs = Date.now()) {
+    if (typeof fromMs !== 'number' || !isFinite(fromMs)) return '';
+    const sec = Math.max(0, Math.floor((nowMs - fromMs) / 1000));
+    if (sec < 5) return 'just now';
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    return `${Math.floor(hr / 24)}d ago`;
+  }
+
+  // The status chip's display state, resolved from the price feed's existing
+  // signals plus a small ack/flash. Priority: in-flight/just-pressed (Updating…)
+  // beats a failure, which beats the brief success flash, which beats the steady
+  // "Updated Ns ago", which beats the cold-start "Loading…". A MANUAL failure
+  // shows immediately (the user just asked); a background-poll failure waits for
+  // failStreak ≥ 2 so a single transient blip doesn't cry wolf.
+  function refreshChipState({ loading = false, lastUpdateMs = null, failStreak = 0, pendingAck = false, lastManual = false, justSucceeded = false, nowMs = Date.now() } = {}) {
+    if (loading || pendingAck) return { phase: 'updating', text: 'Updating…', dot: 'loading' };
+    const failed = lastManual ? failStreak >= 1 : failStreak >= 2;
+    if (failed) return { phase: 'error', text: "Couldn't refresh — tap to retry", dot: 'stale' };
+    if (justSucceeded) return { phase: 'success', text: 'Updated ✓', dot: 'live' };
+    if (typeof lastUpdateMs === 'number' && isFinite(lastUpdateMs)) {
+      return { phase: 'idle', text: `Updated ${fmtAgo(lastUpdateMs, nowMs)}`, dot: 'live' };
+    }
+    return { phase: 'loading', text: 'Loading…', dot: 'loading' };
+  }
+
   // market:ticker price-map key — shared so app.js and pb-data.js can't drift.
   function priceKey(market, ticker) { return market + ':' + ticker; }
 
@@ -550,6 +581,8 @@
     marketOpen,
     anyMarketOpen,
     marketSession,
+    fmtAgo,
+    refreshChipState,
     priceKey,
     buildFetchPlan,
     evaluateAlerts,
