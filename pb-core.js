@@ -64,6 +64,35 @@
   // market:ticker price-map key — shared so app.js and pb-data.js can't drift.
   function priceKey(market, ticker) { return market + ':' + ticker; }
 
+  // Two-tier price-fetch planner (Phase 2 inc 3). Given the user's own tiers (in
+  // priority order), the lazy per-view lists, the set of already-visited (warmed)
+  // lazy views, and the active view, returns:
+  //   order — the de-duped fetch list as {market,ticker}, with the ACTIVE lazy
+  //           list floated to the front so what's on screen refreshes first,
+  //           then the fast tiers, then any other warmed lazy lists.
+  //   key   — the FAST-TIER membership signature (sorted, joined). It excludes the
+  //           lazy lists on purpose, so reordering (a tab switch) or warming a new
+  //           lazy list never changes it — only a change to the user's own universe
+  //           does. Callers use it as the "refetch when this changes" key.
+  function buildFetchPlan({ fastTiers = [], lazyLists = {}, warmed, activeView } = {}) {
+    const warmedSet = warmed instanceof Set ? warmed : new Set(warmed || []);
+    const seen = new Set();
+    const orderedKeys = [];
+    const push = (k) => { if (k && !seen.has(k)) { seen.add(k); orderedKeys.push(k); } };
+    // 1. Active lazy list first (only if the active view actually is a lazy list).
+    if (activeView && lazyLists[activeView]) lazyLists[activeView].forEach(push);
+    // 2. Fast tiers in their given priority order.
+    fastTiers.forEach(tier => (tier || []).forEach(push));
+    // 3. Remaining warmed lazy lists (the active one is already in).
+    warmedSet.forEach(v => { if (v !== activeView && lazyLists[v]) lazyLists[v].forEach(push); });
+    // key: fast-tier price-keys only, de-duped + sorted so it is order-independent.
+    const fastSeen = new Set();
+    fastTiers.forEach(tier => (tier || []).forEach(k => { if (k) fastSeen.add(k); }));
+    const key = Array.from(fastSeen).sort().join(',');
+    const order = orderedKeys.map(k => { const i = k.indexOf(':'); return { market: k.slice(0, i), ticker: k.slice(i + 1) }; });
+    return { order, key };
+  }
+
   // ─── Price-alert evaluation ──────────────────────────────────────────────────
   // Pure state machine, identical to what both engines already ran:
   //   waiting → (price crosses target) → fire once, record { status:'hit', at }.
@@ -470,6 +499,7 @@
     marketOpen,
     anyMarketOpen,
     priceKey,
+    buildFetchPlan,
     evaluateAlerts,
     centDivisor,
     yahooSymbol,
