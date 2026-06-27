@@ -135,6 +135,13 @@ try {
   ok('auto-poll fetched the positions', autoLog.some(e => e.sym === 'AAPL') && autoLog.some(e => e.sym === 'GOOGL'));
   ok('auto-poll does NOT cache-bust', autoLog.length > 0 && autoLog.every(e => e.cb === false));
 
+  // Phase 2 inc 3: the routine cold-start poll must NOT include the static
+  // recommendation lists (DATA.NEW_PICKS / DATA.HEDGES) or the dead VOO benchmark
+  // — they are now lazy/on-view. This is the regression that proves fan-out dropped.
+  const lazySyms = JSON.parse(await evals(ws, `return JSON.stringify([...DATA.NEW_PICKS, ...DATA.HEDGES].map(x => x.ticker).concat('VOO'));`));
+  const polledLazy = [...new Set(autoLog.filter(e => lazySyms.includes(e.sym)).map(e => e.sym))];
+  ok('cold start excludes static lists (picks/hedges/VOO)', polledLazy.length === 0, polledLazy.join(',') || 'none');
+
   // Ordering: the user's positions must be requested before VOO (now last).
   const firstPos = Math.min(
     autoLog.findIndex(e => e.sym === 'AAPL'),
@@ -158,6 +165,18 @@ try {
   ok('refresh button is NOT a no-op (issues a fresh sweep)', manualLog.length > 0);
   ok('manual refresh fetched the positions', manualLog.some(e => e.sym === 'AAPL') && manualLog.some(e => e.sym === 'GOOGL'));
   ok('manual refresh cache-busts every request (&_=)', manualLog.length > 0 && manualLog.every(e => e.cb === true));
+
+  // ---- LAZY TAB ACTIVATION: opening Picks warms its list AND floats it to front ----
+  await evals(ws, `window.__log = []; return true;`);
+  const wentPicks = await evals(ws, `const b=document.querySelector('button[data-tab="picks"]'); if(!b) return false; b.click(); return true;`);
+  ok('picks tab nav button exists & clickable', wentPicks === true);
+  await sleep(2500);
+  const picksLog = JSON.parse(await evals(ws, `return JSON.stringify(window.__log);`));
+  const picksSyms = JSON.parse(await evals(ws, `return JSON.stringify(DATA.NEW_PICKS.map(p => p.ticker));`));
+  const firstPickIdx = picksLog.findIndex(e => picksSyms.includes(e.sym));
+  ok('opening Picks fetches its list (lazy warm)', firstPickIdx >= 0);
+  const firstPosIdx2 = Math.min(...['AAPL', 'GOOGL'].map(s => { const i = picksLog.findIndex(e => e.sym === s); return i < 0 ? Infinity : i; }));
+  ok('active Picks list floats to the front of the sweep', firstPickIdx >= 0 && firstPickIdx < firstPosIdx2, `pick=${firstPickIdx} pos=${firstPosIdx2}`);
 
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);
