@@ -1,6 +1,10 @@
 // Unit tests for the pure buildFetchPlan kernel in pb-core.js (Phase 2 inc 3).
 //   cd backend/test && node fetch-plan.test.mjs
 import PBCore from '../../pb-core.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const appSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'app.js'), 'utf8');
 
 let failures = 0;
 const ok = (name, cond) => { console.log(`${cond ? '  ok  ' : ' FAIL '} ${name}`); if (!cond) failures++; };
@@ -44,8 +48,9 @@ ok('key changes when fast-tier membership changes', kMore !== kPicks);
 let p3 = PBCore.buildFetchPlan({ fastTiers: [['US:AAPL']], lazyLists: {}, warmed: ['picks'], activeView: 'dashboard' });
 ok('array warmed + empty lazyLists is safe', keys(p3.order).join(',') === 'US:AAPL' && p3.key === 'US:AAPL');
 
-// (The anti-drift guard rows are added in Task 3, once app.js is wired — keeping
-// this suite fully green at its own commit.)
+// Anti-drift guard: app.js binds buildFetchPlan from PBCore and has no local copy.
+ok('app.js binds buildFetchPlan from PBCore', /const\s+buildFetchPlan\s*=\s*PBCore\.buildFetchPlan/.test(appSrc));
+ok('app.js has no local function buildFetchPlan', !/function\s+buildFetchPlan\s*\(/.test(appSrc));
 
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll fetch-plan tests passed');
 process.exit(failures ? 1 : 0);

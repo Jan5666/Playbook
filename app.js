@@ -565,6 +565,7 @@ const FX_PROXIES = [
 // the natural unit (rand, pound). Matching is case-insensitive and accepts
 // the pence-suffix forms because Yahoo isn't perfectly consistent.
 const priceKey = PBCore.priceKey;
+const buildFetchPlan = PBCore.buildFetchPlan;
 // The quote/price/history providers, batchers, and ticker→name cache now live in
 // pb-data.js (client-only network layer). Bound here so app.js call sites are
 // unchanged; the indicator catalog (UI/content config) is injected once.
@@ -1732,7 +1733,7 @@ const PRICES_MAX_AGE_MS = 3 * 24 * 3600 * 1000; // drop quotes older than 3 days
 const MARKET_SESSIONS = PBCore.SESSIONS;
 const marketOpen = PBCore.marketOpen;
 const anyMarketOpen = PBCore.anyMarketOpen;
-function usePriceFeed(tickersToFetch, toast) {
+function usePriceFeed(order, fetchKey, toast) {
   // Rehydrate last-known prices instantly so the app paints real numbers on
   // open instead of em-dashes — the single biggest "premium fintech" perception
   // win. Stale entries (>3d) are dropped so we never show ancient data as live.
@@ -1749,6 +1750,11 @@ function usePriceFeed(tickersToFetch, toast) {
   });
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
+  // Latest fetch order, read by runFetch so a queued follow-up sweep (e.g. one
+  // forced after a tab switch floats the active list to the front) uses the newest
+  // order, not the order captured when the in-flight sweep began.
+  const orderRef = useRef(order);
+  orderRef.current = order;
   const [lastUpdate, setLastUpdate] = useState(null);
   const [failStreak, setFailStreak] = useState(0);
   // Debounced persist so a burst of merges writes once.
@@ -1775,7 +1781,7 @@ function usePriceFeed(tickersToFetch, toast) {
       do {
         const force = cacheBust || pendingForceRef.current;
         pendingForceRef.current = false;
-        const newPrices = await fetchQuoteBatch(tickersToFetch, {
+        const newPrices = await fetchQuoteBatch(orderRef.current, {
           cacheBust: force,
           // Merge each batch as it lands so holdings paint progressively.
           onBatch: (partial) => setPrices(prev => {
@@ -1785,7 +1791,7 @@ function usePriceFeed(tickersToFetch, toast) {
         if (Object.keys(newPrices).length > 0) {
           setLastUpdate(new Date());
           setFailStreak(0);
-        } else if (tickersToFetch.length > 0) {
+        } else if (orderRef.current.length > 0) {
           setFailStreak(prev => {
             const next = prev + 1;
             if (next === 2 && toast) toast('Price feed unreachable — using last known prices');
@@ -1800,7 +1806,7 @@ function usePriceFeed(tickersToFetch, toast) {
     }
     loadingRef.current = false;
     setLoading(false);
-  }, [tickersToFetch, toast, persistPrices]);
+  }, [toast, persistPrices]);
   // Auto-poll: skip if a fetch is already running (no point double-polling).
   const refresh = useCallback(() => {
     if (loadingRef.current) return;
@@ -1820,17 +1826,17 @@ function usePriceFeed(tickersToFetch, toast) {
   // push covers the fully-closed app.
   const OPEN_POLL_MS = 45000;
   const CLOSED_POLL_MS = 300000;
-  const [pollMs, setPollMs] = useState(() => anyMarketOpen(tickersToFetch) ? OPEN_POLL_MS : CLOSED_POLL_MS);
+  const [pollMs, setPollMs] = useState(() => anyMarketOpen(order) ? OPEN_POLL_MS : CLOSED_POLL_MS);
   useEffect(() => {
-    const recompute = () => setPollMs(anyMarketOpen(tickersToFetch) ? OPEN_POLL_MS : CLOSED_POLL_MS);
+    const recompute = () => setPollMs(anyMarketOpen(order) ? OPEN_POLL_MS : CLOSED_POLL_MS);
     recompute();
     const id = setInterval(recompute, 60000);
     return () => clearInterval(id);
-  }, [tickersToFetch]);
+  }, [order]);
   // Refetch on tab-visible whenever the cache is older than the open-market
   // cadence, so returning to the app never shows a stale day move while waiting
   // out the next interval tick.
-  usePolledRefresh(refresh, pollMs, OPEN_POLL_MS, tickersToFetch);
+  usePolledRefresh(refresh, pollMs, OPEN_POLL_MS, fetchKey);
   return { prices, loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
@@ -2626,6 +2632,17 @@ const TAB_LABELS = Object.fromEntries(ALL_TABS);
 const DEFAULT_TAB_ORDER = ALL_TAB_KEYS.slice();
 // Dashboard always stays available so the nav can never be emptied entirely.
 const TAB_ALWAYS_VISIBLE = 'dashboard';
+// Static recommendation lists are fetched lazily — only once their tab has been
+// visited (Phase 2 inc 3) — instead of on every 45s poll. THESIS_SNAPSHOT is the
+// handful of names the Thesis (overview) tab shows live; shared with OverviewView
+// so the snapshot and the poll list can't drift. DATA is a data.js global,
+// available at module-eval time (data.js loads before app.js).
+const THESIS_SNAPSHOT = ['NVDA', 'GOOGL', 'C', 'ASML'];
+const LAZY_LISTS = {
+  picks:    DATA.NEW_PICKS.map(p => 'US:' + p.ticker),
+  hedges:   DATA.HEDGES.map(h => 'US:' + h.ticker),
+  overview: THESIS_SNAPSHOT.map(t => 'US:' + t),
+};
 function reconcileTabOrder(stored) {
   const arr = Array.isArray(stored) ? stored : [];
   const known = arr.filter((k, i) => ALL_TAB_KEYS.includes(k) && arr.indexOf(k) === i);
@@ -2715,6 +2732,9 @@ function App() {
     [orderedKeys, hiddenTabs]
   );
   const [view, setView] = useState('dashboard');
+  // Lazy price lists (picks/hedges/thesis) the user has visited this session.
+  // Once a tab is opened its list stays in the poll set until reload (kept warm).
+  const [warmedLists, setWarmedLists] = useState(() => new Set());
   const visibleKeysStr = TAB_LIST.map(t => t[0]).join(',');
   // If the active tab gets hidden, fall back to the first visible tab.
   useEffect(() => {
@@ -2871,29 +2891,36 @@ function App() {
     document.addEventListener('contextmenu', block);
     return () => document.removeEventListener('contextmenu', block);
   }, []);
-  const tickersToFetch = useMemo(() => {
-    // Order matters: the batch fetcher works front-to-back and paints each batch
-    // as it lands, so the user's own positions go first — that's what drives the
-    // portfolio's "today" move and should refresh before the watchlist, ribbon
-    // indices, or the static recommendation lists.
-    const set = new Set();
-    positions.forEach(p => set.add(priceKey(p.market, p.ticker)));
-    watchlist.forEach(w => set.add(priceKey(w.market, w.ticker)));
-    alerts.forEach(a => set.add(priceKey(a.market, a.ticker)));
-    ribbonItems.forEach(k => set.add(k));
-    DATA.HOLDINGS.forEach(h => set.add('US:' + h.ticker));
-    DATA.NEW_PICKS.forEach(p => set.add('US:' + p.ticker));
-    DATA.HEDGES.forEach(h => set.add('US:' + h.ticker));
-    set.add('US:VOO');
-    return Array.from(set).map(k => {
-      const [m, ...rest] = k.split(':');
-      return {
-        market: m,
-        ticker: rest.join(':')
-      };
-    });
-  }, [positions, watchlist, alerts, ribbonItems]);
-  const { prices, loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(tickersToFetch, toast);
+  // Two-tier fetch plan (Phase 2 inc 3). Fast tier = the user's own universe,
+  // always polled, positions first (they drive the portfolio "today" move). The
+  // static recommendation lists are appended only once their tab is warmed, and
+  // the ACTIVE lazy tab floats to the front so what's on screen refreshes first.
+  // `order` drives the batch fetch + paint order; `fetchKey` (fast-tier membership
+  // only) drives the auto-refetch-on-change so a mere tab switch never re-sweeps.
+  const { order: fetchOrder, key: fetchKey } = useMemo(() => buildFetchPlan({
+    fastTiers: [
+      positions.map(p => priceKey(p.market, p.ticker)),
+      watchlist.map(w => priceKey(w.market, w.ticker)),
+      alerts.map(a => priceKey(a.market, a.ticker)),
+      ribbonItems,
+    ],
+    lazyLists: LAZY_LISTS,
+    warmed: warmedLists,
+    activeView: view,
+  }), [positions, watchlist, alerts, ribbonItems, warmedLists, view]);
+  const { prices, loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey, toast);
+  // Entering a lazy tab: warm its list on first visit (so it joins the poll set)
+  // and force an immediate, prioritized refresh so its prices are fresh within a
+  // tick (the rehydrated cache paints last-known meanwhile). refreshPricesNow never
+  // restarts an in-flight sweep — it lets the current one finish then runs once
+  // more, and the float-to-front order is picked up via the feed's order ref. Deps
+  // are [view] only: warmedLists/refreshPricesNow are read but we react solely to
+  // tab changes (refreshPricesNow is stable; warmedLists only changes via this effect).
+  useEffect(() => {
+    if (!LAZY_LISTS[view]) return;
+    if (!warmedLists.has(view)) setWarmedLists(prev => { const next = new Set(prev); next.add(view); return next; });
+    refreshPricesNow();
+  }, [view]);
   // Startup splash gate. Keep the branded loader up until the first quotes land
   // (lastUpdate set), the feed gives up (failStreak), or there's simply nothing
   // to fetch — so the dashboard never flashes empty/placeholder numbers on a cold
@@ -2924,14 +2951,14 @@ function App() {
   const MIN_COLD_MS = 2500;
   useEffect(() => {
     if (!booting) return;
-    const ready = warmStart || lastUpdate || positionsCached || failStreak >= 2 || tickersToFetch.length === 0;
+    const ready = warmStart || lastUpdate || positionsCached || failStreak >= 2 || fetchOrder.length === 0;
     if (!ready) return;
     const minMs = MIN_COLD_MS;
     const elapsed = Date.now() - bootStartRef.current;
     if (elapsed >= minMs) { setBooting(false); return; }
     const t = setTimeout(() => setBooting(false), minMs - elapsed);
     return () => clearTimeout(t);
-  }, [booting, warmStart, lastUpdate, positionsCached, failStreak, tickersToFetch.length]);
+  }, [booting, warmStart, lastUpdate, positionsCached, failStreak, fetchOrder.length]);
   // Absolute fail-safe so a slow/unreachable feed never traps the user behind
   // the splash, even on a cold open.
   useEffect(() => {
@@ -9250,7 +9277,7 @@ function OverviewView(_ref1) {
     className: "eyebrow"
   }, "Live snapshot \u2014 key names"), React.createElement("div", {
     className: "grid grid-4"
-  }, ['NVDA', 'GOOGL', 'C', 'ASML'].map(t => {
+  }, THESIS_SNAPSHOT.map(t => {
     const q = prices['US:' + t];
     const h = DATA.HOLDINGS.find(x => x.ticker === t);
     return React.createElement("div", {
