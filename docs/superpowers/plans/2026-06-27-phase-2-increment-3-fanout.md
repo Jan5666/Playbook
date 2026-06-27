@@ -45,13 +45,7 @@ The set-union + float-to-front ordering + fast-tier membership key is the only g
 ```js
 // Unit tests for the pure buildFetchPlan kernel in pb-core.js (Phase 2 inc 3).
 //   cd backend/test && node fetch-plan.test.mjs
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 import PBCore from '../../pb-core.js';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const appSrc = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
 
 let failures = 0;
 const ok = (name, cond) => { console.log(`${cond ? '  ok  ' : ' FAIL '} ${name}`); if (!cond) failures++; };
@@ -95,9 +89,8 @@ ok('key changes when fast-tier membership changes', kMore !== kPicks);
 let p3 = PBCore.buildFetchPlan({ fastTiers: [['US:AAPL']], lazyLists: {}, warmed: ['picks'], activeView: 'dashboard' });
 ok('array warmed + empty lazyLists is safe', keys(p3.order).join(',') === 'US:AAPL' && p3.key === 'US:AAPL');
 
-// Anti-drift guard.
-ok('app.js binds buildFetchPlan from PBCore', /const\s+buildFetchPlan\s*=\s*PBCore\.buildFetchPlan/.test(appSrc));
-ok('app.js has no local function buildFetchPlan', !/function\s+buildFetchPlan\s*\(/.test(appSrc));
+// (The anti-drift guard rows are added in Task 3, once app.js is wired — keeping
+// this suite fully green at its own commit.)
 
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll fetch-plan tests passed');
 process.exit(failures ? 1 : 0);
@@ -152,9 +145,7 @@ Expected: FAIL — `PBCore exports buildFetchPlan` is false (and the `app.js` bi
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `cd backend/test && node fetch-plan.test.mjs`
-Expected: PASS — `All fetch-plan tests passed`. (The two anti-drift rows still FAIL here — `app.js` isn't wired yet. That's expected; they go green in Task 3. If you want a fully-green Task 1, temporarily skip the two anti-drift rows and re-enable in Task 3 — but simplest is to accept those two reds until Task 3 and verify only the logic rows pass now.)
-
-> NOTE: To keep Task 1 self-contained and fully green, the two anti-drift rows are the ONLY ones that depend on `app.js`. Confirm every other row passes now; they will all pass together after Task 3.
+Expected: PASS — `All fetch-plan tests passed` (exit 0). The anti-drift guard rows are deliberately deferred to Task 3 (they assert `app.js` wiring that doesn't exist yet), so this suite is fully green at this commit.
 
 - [ ] **Step 6: Sanity-check the module parses**
 
@@ -237,6 +228,7 @@ Rework the universe/feed to consume `{order, key}`, add the lazy-list config + w
 - Modify: `pb-core.js` — none (done in Task 1).
 - Modify: `app.js` — add `THESIS_SNAPSHOT`+`LAZY_LISTS` (after line 2628); bind `buildFetchPlan` (next to the other `PBCore.x` binds); add `warmedLists` state (near `view`, line 2717); rework the `tickersToFetch` memo (2874-2895); update the `usePriceFeed` call (2896); update the splash-gate refs (2927, 2934); add the view effect (after 2896); rework `usePriceFeed` internals (1735-1834); route `OverviewView` (9253).
 - Modify: `sw.js:2` — cache version v33 → v34.
+- Test: `backend/test/fetch-plan.test.mjs` — append the two anti-drift guard rows (Step 13).
 
 **Interfaces:**
 - Consumes: `PBCore.buildFetchPlan` (Task 1), the bound `priceKey`, the static `DATA.NEW_PICKS`/`DATA.HEDGES`, and the existing `usePolledRefresh`/`fetchQuoteBatch`/`anyMarketOpen`.
@@ -405,7 +397,24 @@ to:
 const CACHE_NAME   = 'playbook-shell-v34';
 ```
 
-- [ ] **Step 13: Parse-check + confirm no stragglers**
+- [ ] **Step 13: Add the anti-drift guard rows to the fetch-plan suite.** Now that `app.js` is wired, append these rows to `backend/test/fetch-plan.test.mjs` immediately before the final `console.log(failures ? ...)` line. They need `app.js` source, so also add the three `node:` imports + `appSrc` at the top of the file (just under `import PBCore ...`):
+
+At the top, under `import PBCore from '../../pb-core.js';`, add:
+```js
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const appSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'app.js'), 'utf8');
+```
+
+Before the final `console.log`, add:
+```js
+// Anti-drift guard: app.js binds buildFetchPlan from PBCore and has no local copy.
+ok('app.js binds buildFetchPlan from PBCore', /const\s+buildFetchPlan\s*=\s*PBCore\.buildFetchPlan/.test(appSrc));
+ok('app.js has no local function buildFetchPlan', !/function\s+buildFetchPlan\s*\(/.test(appSrc));
+```
+
+- [ ] **Step 14: Parse-check + confirm no stragglers**
 
 Run:
 ```bash
@@ -414,7 +423,7 @@ grep -nE "\btickersToFetch\b" app.js   # expect: NO matches (every ref renamed)
 ```
 Expected: parses clean; the grep returns nothing.
 
-- [ ] **Step 14: Run the full node suite + the fetch-plan anti-drift rows**
+- [ ] **Step 15: Run the full node suite (incl. the now-complete fetch-plan suite)**
 
 Run:
 ```bash
@@ -422,15 +431,15 @@ cd backend/test && for t in *.test.mjs; do echo "== $t =="; node "$t" || break; 
 ```
 Expected: every suite ends with `All ... passed` / `tests passed`; in particular `fetch-plan.test.mjs` is now FULLY green (the two anti-drift rows pass).
 
-- [ ] **Step 15: Run the browser smoke (now GREEN)**
+- [ ] **Step 16: Run the browser smoke (now GREEN)**
 
 Run: `node backend/test/verify-refresh-behavior.mjs`
 Expected: `ALL PASSED` — including `cold start excludes static lists (picks/hedges/VOO)` and `active Picks list floats to the front of the sweep`. The cold-start auto-poll request count should now be small (positions + ribbon), not ~36.
 
-- [ ] **Step 16: Commit**
+- [ ] **Step 17: Commit**
 
 ```bash
-git add app.js pb-core.js sw.js
+git add app.js pb-core.js sw.js backend/test/fetch-plan.test.mjs
 git commit -m "Split fetch fan-out: lazy/on-view static lists, drop HOLDINGS-bulk + VOO (Phase 2 inc 3)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
