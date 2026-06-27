@@ -13,6 +13,9 @@ settings.local.json
 dist/
 node_modules/
 
+# Subagent-driven-development scratch (progress ledger, briefs, review packages)
+.superpowers/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
