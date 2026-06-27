@@ -22,7 +22,7 @@
 
   // ─── Market hours (DST-correct via Intl time zones) ──────────────────────────
   const SESSIONS = {
-    US:   { tz: 'America/New_York',    open: 4 * 60,  close: 20 * 60 },     // incl. pre/post
+    US:   { tz: 'America/New_York',    open: 4 * 60,  close: 20 * 60, regOpen: 9 * 60 + 30, regClose: 16 * 60 }, // open/close incl. pre/post; regOpen/regClose = regular session
     JSE:  { tz: 'Africa/Johannesburg', open: 9 * 60,  close: 17 * 60 + 5 },
     TFSA: { tz: 'Africa/Johannesburg', open: 9 * 60,  close: 17 * 60 + 5 },
     LSE:  { tz: 'Europe/London',       open: 8 * 60,  close: 16 * 60 + 35 },
@@ -59,6 +59,58 @@
       if (marketOpen(it.market)) return true;
     }
     return false;
+  }
+
+  // Market-local { weekday short, minutes-since-midnight } for an instant, via
+  // Intl (DST-correct). Same parse shape marketOpen uses inline.
+  function localWeekdayMins(tz, now) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false
+    }).formatToParts(now);
+    const get = t => parts.find(p => p.type === t)?.value;
+    let hh = parseInt(get('hour'), 10);
+    if (hh === 24) hh = 0;
+    return { wd: get('weekday'), mins: hh * 60 + parseInt(get('minute'), 10) };
+  }
+
+  // "09:30 EDT" — the regular-open minute formatted with the market's CURRENT tz
+  // abbreviation (DST-correct at `now`). Used for the "Closed · opens …" badge.
+  function fmtOpenLabel(tz, openMins, now) {
+    const hh = String(Math.floor(openMins / 60)).padStart(2, '0');
+    const mm = String(openMins % 60).padStart(2, '0');
+    let abbr = '';
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date(now));
+      abbr = parts.find(p => p.type === 'timeZoneName')?.value || '';
+    } catch (_e) {}
+    return abbr ? `${hh}:${mm} ${abbr}` : `${hh}:${mm}`;
+  }
+
+  // Per-symbol market-session phase + the regular-open label, clock-derived (no
+  // holiday calendar — same limitation as marketOpen). phase ∈
+  // 'pre'|'open'|'post'|'closed'. Markets without regOpen/regClose have no
+  // extended hours, so their whole [open,close] window is 'open'.
+  function marketSession(market, now = Date.now()) {
+    if (market === 'CRYPTO') return { phase: 'open', nextOpen: null };
+    const s = SESSIONS[market] || SESSIONS.US;
+    try {
+      const { wd, mins } = localWeekdayMins(s.tz, now);
+      const weekend = wd === 'Sat' || wd === 'Sun';
+      let phase;
+      if (weekend || mins < s.open || mins >= s.close) {
+        phase = 'closed';
+      } else {
+        const regOpen = typeof s.regOpen === 'number' ? s.regOpen : s.open;
+        const regClose = typeof s.regClose === 'number' ? s.regClose : s.close;
+        if (mins < regOpen) phase = 'pre';
+        else if (mins >= regClose) phase = 'post';
+        else phase = 'open';
+      }
+      const regOpen = typeof s.regOpen === 'number' ? s.regOpen : s.open;
+      return { phase, nextOpen: phase === 'closed' ? fmtOpenLabel(s.tz, regOpen, now) : null };
+    } catch (_e) {
+      return { phase: 'open', nextOpen: null }; // Intl failure → assume open (don't show a false "Closed")
+    }
   }
 
   // market:ticker price-map key — shared so app.js and pb-data.js can't drift.
@@ -498,6 +550,7 @@
     SESSIONS,
     marketOpen,
     anyMarketOpen,
+    marketSession,
     priceKey,
     buildFetchPlan,
     evaluateAlerts,
