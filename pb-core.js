@@ -96,17 +96,16 @@
     try {
       const { wd, mins } = localWeekdayMins(s.tz, now);
       const weekend = wd === 'Sat' || wd === 'Sun';
+      const regOpen = typeof s.regOpen === 'number' ? s.regOpen : s.open;
+      const regClose = typeof s.regClose === 'number' ? s.regClose : s.close;
       let phase;
       if (weekend || mins < s.open || mins >= s.close) {
         phase = 'closed';
       } else {
-        const regOpen = typeof s.regOpen === 'number' ? s.regOpen : s.open;
-        const regClose = typeof s.regClose === 'number' ? s.regClose : s.close;
         if (mins < regOpen) phase = 'pre';
         else if (mins >= regClose) phase = 'post';
         else phase = 'open';
       }
-      const regOpen = typeof s.regOpen === 'number' ? s.regOpen : s.open;
       return { phase, nextOpen: phase === 'closed' ? fmtOpenLabel(s.tz, regOpen, now) : null };
     } catch (_e) {
       return { phase: 'open', nextOpen: null }; // Intl failure → assume open (don't show a false "Closed")
