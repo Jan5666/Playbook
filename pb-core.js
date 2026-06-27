@@ -61,6 +61,9 @@
     return false;
   }
 
+  // market:ticker price-map key — shared so app.js and pb-data.js can't drift.
+  function priceKey(market, ticker) { return market + ':' + ticker; }
+
   // ─── Price-alert evaluation ──────────────────────────────────────────────────
   // Pure state machine, identical to what both engines already ran:
   //   waiting → (price crosses target) → fire once, record { status:'hit', at }.
@@ -153,6 +156,28 @@
     if (ticker === '^VIX') return '%5EVIX';
     if (ticker === '^GSPC') return '%5EGSPC';
     return encodeURIComponent(ticker);
+  }
+
+  // ─── Concurrency limiter ─────────────────────────────────────────────────────
+  // Minimal promise concurrency limiter: returns limited(fn) that runs at most
+  // `concurrency` fns at once. Pure (no globals) — pb-data uses it to cap
+  // simultaneous fetch() calls across all proxied requests.
+  function pLimit(concurrency) {
+    const queue = [];
+    let active = 0;
+    const next = () => {
+      while (active < concurrency && queue.length) {
+        active++;
+        const { fn, resolve, reject } = queue.shift();
+        Promise.resolve().then(fn).then(
+          (v) => { active--; resolve(v); next(); },
+          (e) => { active--; reject(e); next(); }
+        );
+      }
+    };
+    return function limited(fn) {
+      return new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
+    };
   }
 
   // ─── Money / FX / position valuation (pure, client-only) ─────────────────────
@@ -444,9 +469,11 @@
     SESSIONS,
     marketOpen,
     anyMarketOpen,
+    priceKey,
     evaluateAlerts,
     centDivisor,
     yahooSymbol,
+    pLimit,
     MARKET_CURRENCY,
     convertCcy,
     contribInDisplay,
