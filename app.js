@@ -4934,10 +4934,7 @@ function HoldingRow(_refHR) {
       React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmtCcy(marketValue, rowCcy) : "—"),
       dayPct != null ? React.createElement("div", {
         className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
-      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null,
-      // Per-symbol session badge so the user's own holdings read as Open/Closed/
-      // Pre/After (the holdings row uses a custom renderer, not PriceBlock).
-      React.createElement(SessionBadge, { market: market, quote: q })),
+      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
     // ACTIONS — full-width strip beneath the three zones: the Buy/Sell/Edit cluster
     // on the left (identically sized on every card), with Avg cost on the right.
     React.createElement("div", { className: "row-actions" },

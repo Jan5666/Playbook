@@ -487,7 +487,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .mkt-badge {
   flex-shrink: 0; font-family: var(--mono); font-size: 9.5px; font-weight: 600;
-  line-height: 1; text-transform: lowercase; letter-spacing: 0.02em;
+  line-height: 1; text-transform: uppercase; letter-spacing: 0.02em;
   color: var(--text-muted); background: var(--bg-elev);
   border: 1px solid var(--border); border-radius: 5px; padding: 2px 5px;
 }

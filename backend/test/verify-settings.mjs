@@ -58,6 +58,8 @@ const VERIFY_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 </script>
 <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="/pb-core.js"></script>
+<script src="/pb-data.js"></script>
 <script src="/data.js"></script>
 <script src="/app.js"></script>
 </body></html>`;
