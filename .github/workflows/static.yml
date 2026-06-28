@@ -41,13 +41,13 @@ jobs:
           # SHELL_ASSETS precache list in sw.js.
           set -euo pipefail
           mkdir -p _site
-          cp index.html sw.js app.js data.js pb-core.js pb-data.js styles.css \
+          cp index.html sw.js app.js data.js pb-core.js pb-data.js pb-store.js styles.css \
              manifest.json manifest-light.json \
              icon-180.png icon-192.png icon-512.png _site/
           cp -r brand _site/
           # Guard 1: fail the deploy if any expected runtime asset is missing.
           missing=0
-          for f in index.html sw.js app.js data.js pb-core.js pb-data.js styles.css \
+          for f in index.html sw.js app.js data.js pb-core.js pb-data.js pb-store.js styles.css \
                    manifest.json manifest-light.json \
                    icon-180.png icon-192.png icon-512.png \
                    brand/favicon.svg brand/apple-touch-icon.png; do
