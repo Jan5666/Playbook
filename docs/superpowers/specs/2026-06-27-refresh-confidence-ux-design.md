@@ -59,7 +59,7 @@ For each rendered quote: `phase = quote.extKind` (`'pre'`/`'post'`, when Yahoo r
 ## Section 2 — Architecture
 
 **Pure kernel — `pb-core.js` (`marketSession`):**
-- Signature: `marketSession(market, now = Date.now()) → { phase, nextOpenMs }`, `phase ∈ 'pre' | 'open' | 'post' | 'closed'`.
+- Signature: `marketSession(market, now = Date.now()) → { phase, nextOpen }`, `phase ∈ 'pre' | 'open' | 'post' | 'closed'`. (Implementation note: `nextOpen` is the regular open as a **pre-formatted market-local label string**, e.g. `"09:30 EDT"` — not epoch ms; the badge only needs the label, so the simpler string avoids the epoch/DST round-trip. The `nextOpenMs` mentions elsewhere in this doc predate that simplification.)
 - Implementation mirrors `marketOpen`: read the market-local weekday + minutes-of-day via `Intl.DateTimeFormat` in `SESSIONS[market].tz`. Classify against per-market boundaries. `SESSIONS` is extended with an optional regular window so pre/post can be distinguished from regular:
   - US gains `regOpen: 9*60+30, regClose: 16*60` (existing `open:4*60`/`close:20*60` already bound the pre/post envelope). `pre = [open, regOpen)`, `post = [regClose, close)`.
   - Markets with no real extended hours (JSE/LSE/ASX/FRA/PAR/AMS/TFSA) omit `regOpen/regClose` ⇒ the whole `[open, close]` window is `open`, and pre/post never occur. Behavior-preserving for `marketOpen` (it ignores the new fields).
