@@ -191,7 +191,7 @@ try {
 
 
   // ---- PER-SYMBOL SESSION BADGE: a closed/quiet market reads as state, not blank ----
-  await evals(ws, `const d=document.querySelector('button[data-tab="dashboard"]'); if(d) d.click(); return true;`);
+  await evals(ws, `const d=document.querySelector('button[data-tab="picks"]'); if(d) d.click(); return true;`);
   await sleep(800);
   const badge = await evals(ws, `const b=document.querySelector('.session-badge'); return b ? b.innerText : null;`);
   ok('a session badge renders (Open/Closed/Pre-market/After-hours)', !!badge && /Open|Closed|Pre-market|After-hours/i.test(badge), JSON.stringify(badge));
