@@ -4926,7 +4926,10 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
       React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmtCcy(marketValue, rowCcy) : "—"),
       dayPct != null ? React.createElement("div", {
         className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
-      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
+      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null,
+      // Per-symbol session badge so the user's own holdings read as Open/Closed/
+      // Pre/After (the holdings row uses a custom renderer, not PriceBlock).
+      React.createElement(SessionBadge, { market: market, quote: q })),
     // ACTIONS — full-width strip beneath the three zones: the Buy/Sell/Edit cluster
     // on the left (identically sized on every card), with Avg cost on the right.
     React.createElement("div", { className: "row-actions" },
@@ -9355,7 +9358,7 @@ function OverviewView(_ref1) {
   }))));
 }
 function PriceChart(_refChart) {
-  let { history, loading, range, onRangeChange, currency, quote, indicator, rangeKeys } = _refChart;
+  let { history, loading, range, onRangeChange, currency, quote, indicator, rangeKeys, onRetry } = _refChart;
   const [hover, setHover] = useState(null);
   const [sel, setSel] = useState(null);
   const svgRef = useRef(null);
@@ -9442,8 +9445,14 @@ function PriceChart(_refChart) {
   if (!ready) {
     const dataMissing = history && history.data === null && !loading;
     if (dataMissing) {
+      // Both fetch sweeps came back empty (a flaky-proxy moment). Offer a one-tap
+      // retry so the user isn't stuck toggling ranges to force a refetch.
       return React.createElement("div", { className: "chart-block" }, rangeBar,
-        React.createElement("div", { className: "chart-empty" }, 'Chart data unavailable'));
+        React.createElement("div", { className: "chart-empty chart-empty-fail" },
+          React.createElement("span", null, 'Chart data unavailable'),
+          onRetry ? React.createElement("button", {
+            className: "chart-retry-btn", onClick: onRetry
+          }, "Retry") : null));
     }
     // Shimmer skeleton while the series loads \u2014 reads as a premium fintech app
     // instead of a bare "Loading\u2026" string.
@@ -10302,7 +10311,8 @@ function DetailModal(_ref10) {
       currency: quote?.currency || ccy,
       quote: quote,
       indicator: indicator,
-      rangeKeys: isIndicator ? indicator.chartRanges : null
+      rangeKeys: isIndicator ? indicator.chartRanges : null,
+      onRetry: () => { if (onLoadHistory) onLoadHistory(range); }
     }),
     !isIndicator && React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market, fxRates: fxRates }),
 
