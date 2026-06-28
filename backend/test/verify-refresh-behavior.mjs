@@ -198,11 +198,14 @@ try {
   ok('a session badge renders (Open/Closed/Pre-market/After-hours)', !!badge && /Open|Closed|Pre-market|After-hours/i.test(badge), JSON.stringify(badge));
 
 
-  // Session badge ALSO on the Holdings list rows (HoldingRow, a custom renderer).
+  // Holdings list rows DELIBERATELY omit the per-symbol session badge — Jan removed
+  // it from the holdings boxes on purpose (cfed272). Pin the absence so it isn't
+  // "fixed" back in: there must be holding rows, but none may carry a session badge.
   await evals(ws, `const c=document.querySelector('button[data-tab="current"]'); if(c) c.click(); return true;`);
   await sleep(800);
+  const holdRows = await evals(ws, `return document.querySelectorAll('.holding-row').length;`);
   const holdBadge = await evals(ws, `const b=document.querySelector('.holding-row .session-badge'); return b ? b.innerText : null;`);
-  ok('holdings rows show a session badge', !!holdBadge && /Open|Closed|Pre-market|After-hours/i.test(holdBadge), JSON.stringify(holdBadge));
+  ok('holdings rows deliberately have NO session badge', holdRows > 0 && holdBadge === null, JSON.stringify({ holdRows, holdBadge }));
 
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);
