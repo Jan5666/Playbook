@@ -3606,7 +3606,7 @@ function Hero(_ref4) {
 // move, quote.extKind ('pre'/'post') is authoritative; otherwise fall back to the
 // clock kernel (which also catches a pre session with no move yet, and weekends/
 // overnight as 'closed'). Renders nothing for CRYPTO (always open).
-function SessionBadge({ market, quote }) {
+const SessionBadge = React.memo(function SessionBadge({ market, quote }) {
   if (market === 'CRYPTO') return null;
   const ext = quote && (quote.extKind === 'pre' || quote.extKind === 'post') ? quote.extKind : null;
   const { phase, nextOpen } = ext ? { phase: ext, nextOpen: null } : marketSession(market);
@@ -3617,8 +3617,8 @@ function SessionBadge({ market, quote }) {
   return React.createElement("div", { className: `session-badge session-${phase}` },
     React.createElement("span", { className: "session-dot" }),
     React.createElement("span", { className: "session-label" }, label));
-}
-function PriceBlock(_ref5) {
+});
+const PriceBlock = React.memo(function PriceBlock(_ref5) {
   let {
     quote,
     size = 'md',
@@ -3713,7 +3713,7 @@ function PriceBlock(_ref5) {
     className: `ext-chg mono ${extUp ? 'up' : 'down'}`
   }, (extUp ? '+' : '') + quote.extChangePct.toFixed(2) + '%' +
      (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + sym + fmtNum(Math.abs(extChgAbs)) : ''))));
-}
+});
 // SVG-based line chart for portfolio growth over time
 function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates }) {
   const prices = PBStore.usePricesMap();
@@ -4875,7 +4875,7 @@ function HoldingsListHead() {
     React.createElement("span", { className: "hlh-gl" }, "P/L"),
     React.createElement("span", { className: "hlh-val" }, "Current value"));
 }
-function HoldingRow(_refHR) {
+const HoldingRow = React.memo(function HoldingRow(_refHR) {
   let { position: p, market, quote: q, rates, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
   // Heading is the company/instrument name. Resolve it from every source — the
   // name saved on the holding, the live quote's company name, the curated lists,
@@ -4944,7 +4944,7 @@ function HoldingRow(_refHR) {
           onClick: e => { e.stopPropagation(); onEditPosition(p); }
         }, "Edit") : null),
       React.createElement("span", { className: "hold-avg" }, "Avg cost ", fmtCcy(p.costBasis, rowCcy))));
-}
+});
 function CurrentView(_ref7) {
   let {
     positions,
