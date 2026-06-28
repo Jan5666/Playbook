@@ -196,6 +196,13 @@ try {
   const badge = await evals(ws, `const b=document.querySelector('.session-badge'); return b ? b.innerText : null;`);
   ok('a session badge renders (Open/Closed/Pre-market/After-hours)', !!badge && /Open|Closed|Pre-market|After-hours/i.test(badge), JSON.stringify(badge));
 
+
+  // Session badge ALSO on the Holdings list rows (HoldingRow, a custom renderer).
+  await evals(ws, `const c=document.querySelector('button[data-tab="current"]'); if(c) c.click(); return true;`);
+  await sleep(800);
+  const holdBadge = await evals(ws, `const b=document.querySelector('.holding-row .session-badge'); return b ? b.innerText : null;`);
+  ok('holdings rows show a session badge', !!holdBadge && /Open|Closed|Pre-market|After-hours/i.test(holdBadge), JSON.stringify(holdBadge));
+
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);
 } catch (e) {
