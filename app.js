@@ -2649,6 +2649,24 @@ const ALL_TABS = [
 const ALL_TAB_KEYS = ALL_TABS.map(t => t[0]);
 const TAB_LABELS = Object.fromEntries(ALL_TABS);
 const DEFAULT_TAB_ORDER = ALL_TAB_KEYS.slice();
+// ─── Settings registry (Increment 2: migrated from per-key usePersistedState) ──
+// Each entry { name, key, default } is seeded from localStorage via the injected LS
+// adapter and write-through on change, so every setting keeps its own pb.* key and
+// cloud backup/restore stays byte-compatible. fxRates is intentionally NOT here.
+const SETTINGS_SCHEMA = [
+  { name: 'theme',           key: 'pb.theme.v2',           default: 'dark' },
+  { name: 'iconTheme',       key: 'pb.iconTheme.v1',       default: (typeof window !== 'undefined' && window.__pbIconTheme) || 'dark' },
+  { name: 'perplexityKey',   key: 'pb.perplexityKey.v1',   default: '' },
+  { name: 'pushBackend',     key: 'pb.pushBackend.v1',     default: '' },
+  { name: 'displayCurrency', key: 'pb.displayCurrency.v1', default: 'USD' },
+  { name: 'donutPalette',    key: 'pb.donutPalette.v1',    default: 'spectrum' },
+  { name: 'donutTopN',       key: 'pb.donutTopN.v1',       default: 10 },
+  { name: 'ribbonItems',     key: 'pb.ribbonItems.v1',     default: DEFAULT_RIBBON_ITEMS },
+  { name: 'ribbonMode',      key: 'pb.ribbonMode.v1',      default: 'rows' },
+  { name: 'tabOrder',        key: 'pb.tabOrder.v2',        default: DEFAULT_TAB_ORDER },
+  { name: 'hiddenTabs',      key: 'pb.hiddenTabs.v1',      default: [] },
+];
+PBStore.configureSettings({ schema: SETTINGS_SCHEMA, storage: LS });
 // Dashboard always stays available so the nav can never be emptied entirely.
 const TAB_ALWAYS_VISIBLE = 'dashboard';
 // Static recommendation lists are fetched lazily — only once their tab has been
@@ -2719,31 +2737,41 @@ function LoadingScreen({ visible }) {
     React.createElement("div", { className: "pb-word" }, "Playbook"));
 }
 function App() {
-  const [theme, setTheme] = usePersistedState('pb.theme.v2', 'dark');
+  const theme = PBStore.useSetting('theme');
+  const setTheme = useCallback((v) => PBStore.setSetting('theme', v), []);
   // Home-screen / favicon icon tile. Synced to the bootstrap in index.html via
   // window.applyIconTheme so the apple-touch-icon + manifest swap to match.
-  const [iconTheme, setIconTheme] = usePersistedState('pb.iconTheme.v1',
-    (typeof window !== 'undefined' && window.__pbIconTheme) || 'dark');
+  const iconTheme = PBStore.useSetting('iconTheme');
+  const setIconTheme = useCallback((v) => PBStore.setSetting('iconTheme', v), []);
   useEffect(() => {
     if (typeof window !== 'undefined' && window.applyIconTheme) window.applyIconTheme(iconTheme);
   }, [iconTheme]);
-  const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
-  const [pushBackend, setPushBackend] = usePersistedState('pb.pushBackend.v1', '');
-  const [displayCurrency, setDisplayCurrency] = usePersistedState('pb.displayCurrency.v1', 'USD');
+  const perplexityKey = PBStore.useSetting('perplexityKey');
+  const setPerplexityKey = useCallback((v) => PBStore.setSetting('perplexityKey', v), []);
+  const pushBackend = PBStore.useSetting('pushBackend');
+  const setPushBackend = useCallback((v) => PBStore.setSetting('pushBackend', v), []);
+  const displayCurrency = PBStore.useSetting('displayCurrency');
+  const setDisplayCurrency = useCallback((v) => PBStore.setSetting('displayCurrency', v), []);
   // Allocation donut appearance (Settings → Appearance), two independent knobs:
   //  • palette — 'spectrum' (a distinct multi-hue colour per holding) or 'indigo'
   //    (the brand's periwinkle→blue gradient). Both scale to any holding count.
   //  • topN — how many of the largest holdings to show individually before the
   //    rest fold into one "Other" wedge (0 = show all). Holdings view only;
   //    sectors and markets are never grouped.
-  const [donutPalette, setDonutPalette] = usePersistedState('pb.donutPalette.v1', 'spectrum');
-  const [donutTopN, setDonutTopN] = usePersistedState('pb.donutTopN.v1', 10);
+  const donutPalette = PBStore.useSetting('donutPalette');
+  const setDonutPalette = useCallback((v) => PBStore.setSetting('donutPalette', v), []);
+  const donutTopN = PBStore.useSetting('donutTopN');
+  const setDonutTopN = useCallback((v) => PBStore.setSetting('donutTopN', v), []);
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
-  const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
-  const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
+  const ribbonItems = PBStore.useSetting('ribbonItems');
+  const setRibbonItems = useCallback((v) => PBStore.setSetting('ribbonItems', v), []);
+  const ribbonMode = PBStore.useSetting('ribbonMode');
+  const setRibbonMode = useCallback((v) => PBStore.setSetting('ribbonMode', v), []);
   const [showSettings, setShowSettings] = useState(false);
-  const [tabOrder, setTabOrder] = usePersistedState('pb.tabOrder.v2', DEFAULT_TAB_ORDER);
-  const [hiddenTabs, setHiddenTabs] = usePersistedState('pb.hiddenTabs.v1', []);
+  const tabOrder = PBStore.useSetting('tabOrder');
+  const setTabOrder = useCallback((v) => PBStore.setSetting('tabOrder', v), []);
+  const hiddenTabs = PBStore.useSetting('hiddenTabs');
+  const setHiddenTabs = useCallback((v) => PBStore.setSetting('hiddenTabs', v), []);
   const orderedKeys = useMemo(() => reconcileTabOrder(tabOrder), [tabOrder]);
   // The visible nav: ordered keys minus hidden ones. Dashboard is never hidden.
   const TAB_LIST = useMemo(

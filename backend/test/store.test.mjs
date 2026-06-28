@@ -144,3 +144,22 @@ test('setSetting: unknown name is a safe no-op', () => {
   assert.strictEqual(PBStore.getSetting('nope'), undefined);
   assert.strictEqual(storage._writes.length, 0, 'no write for unknown setting');
 });
+
+test('anti-drift: migrated settings no longer use usePersistedState', () => {
+  for (const k of ['pb.theme.v2','pb.iconTheme.v1','pb.perplexityKey.v1','pb.pushBackend.v1',
+    'pb.displayCurrency.v1','pb.donutPalette.v1','pb.donutTopN.v1','pb.ribbonItems.v1',
+    'pb.ribbonMode.v1','pb.tabOrder.v2','pb.hiddenTabs.v1']) {
+    const re = new RegExp("usePersistedState\\('" + k.replace(/\./g, '\\.') + "'");
+    assert.ok(!re.test(appSrc), `${k} should be migrated off usePersistedState into PBStore`);
+  }
+});
+
+test('anti-drift: app.js configures PBStore settings with the LS adapter', () => {
+  assert.ok(/PBStore\.configureSettings\(\{\s*schema:\s*SETTINGS_SCHEMA,\s*storage:\s*LS\s*\}\)/.test(appSrc),
+    'app.js should call PBStore.configureSettings({ schema: SETTINGS_SCHEMA, storage: LS })');
+});
+
+test('anti-drift: fxRates stays usePersistedState (out of scope)', () => {
+  assert.ok(/usePersistedState\('pb\.fxRates\.v1'/.test(appSrc),
+    'fxRates must remain usePersistedState this increment');
+});
