@@ -73,3 +73,8 @@ test('anti-drift: usePriceFeed does not return a prices field', () => {
   const m = appSrc.match(/return \{ loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices \};/);
   assert.ok(m, 'usePriceFeed return bundle should omit prices');
 });
+
+test('anti-drift: useAlertEngine no longer takes a prices param', () => {
+  assert.ok(/function useAlertEngine\(alerts, fireNotification\)/.test(appSrc),
+    'useAlertEngine signature should be (alerts, fireNotification)');
+});

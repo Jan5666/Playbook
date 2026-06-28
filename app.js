@@ -1859,19 +1859,23 @@ function usePriceFeed(order, fetchKey, toast) {
 // SW registration) lives in the parent. setTriggered is exposed for importData.
 // alertSeenMap is read via a ref to avoid a feedback loop: updating the seen
 // map would otherwise re-trigger this effect and risk double-firing.
-function useAlertEngine(alerts, prices, fireNotification) {
+function useAlertEngine(alerts, fireNotification) {
   const [triggered, setTriggered] = usePersistedState('pb.triggered.v2', []);
   const [alertSeenMap, setAlertSeenMap] = usePersistedState('pb.alertSeen.v1', {});
   const seenRef = useRef(alertSeenMap);
   useEffect(() => { seenRef.current = alertSeenMap; }, [alertSeenMap]);
   useEffect(() => {
-    const { nextSeen, newTriggers, seenChanged } = evaluateTriggers(alerts, prices, seenRef.current);
-    if (seenChanged) setAlertSeenMap(nextSeen);
-    if (newTriggers.length) {
-      setTriggered(prev => [...newTriggers, ...prev].slice(0, MAX_TRIGGER_HISTORY));
-      newTriggers.forEach(t => fireNotification(t));
-    }
-  }, [prices, alerts, fireNotification, setAlertSeenMap, setTriggered]);
+    const run = () => {
+      const { nextSeen, newTriggers, seenChanged } = evaluateTriggers(alerts, PBStore.getPrices(), seenRef.current);
+      if (seenChanged) setAlertSeenMap(nextSeen);
+      if (newTriggers.length) {
+        setTriggered(prev => [...newTriggers, ...prev].slice(0, MAX_TRIGGER_HISTORY));
+        newTriggers.forEach(t => fireNotification(t));
+      }
+    };
+    run();                              // evaluate immediately on alerts change
+    return PBStore.subscribe(run);      // and on every subsequent price change
+  }, [alerts, fireNotification, setAlertSeenMap, setTriggered]);
   return { triggered, setTriggered, alertSeenMap, setAlertSeenMap };
 }
 // ─── Background price alerts ────────────────────────────────────────────────
@@ -2924,10 +2928,6 @@ function App() {
     activeView: view,
   }), [positions, watchlist, alerts, ribbonItems, warmedLists, view]);
   const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey, toast);
-  // TEMPORARY Phase-3-inc-1 bridge: App still reads the whole map so the existing
-  // prop-drilled consumers keep working unchanged. Removed in the next task, where
-  // each consumer subscribes to the store directly and App leaves the tick path.
-  const prices = PBStore.usePricesMap();
   // Entering a lazy tab: warm its list on first visit (so it joins the poll set)
   // and force an immediate, prioritized refresh so its prices are fresh within a
   // tick (the rehydrated cache paints last-known meanwhile). refreshPricesNow never
@@ -2975,13 +2975,13 @@ function App() {
   // user's own holdings the dashboard can paint real numbers immediately — no
   // reason to sit on the splash waiting for the network round-trip. Only a true
   // cold open (no cached prices) falls through to wait for the first fetch.
-  const positionsCached = useMemo(
-    () => positions.length > 0 && positions.every(p => {
-      const q = prices[priceKey(p.market, p.ticker)];
+  const computePositionsCached = useCallback(() => {
+    const pr = PBStore.getPrices();
+    return positions.length > 0 && positions.every(p => {
+      const q = pr[priceKey(p.market, p.ticker)];
       return q && typeof q.price === 'number';
-    }),
-    [positions, prices]
-  );
+    });
+  }, [positions]);
   // Whether this open was warm (cached prices ready at mount) is captured once.
   // A warm start only lets us stop WAITING on the network early — it no longer
   // shortens the splash. Every genuine cold/from-scratch open (a fresh page load:
@@ -2991,18 +2991,18 @@ function App() {
   // open, and the animation should play through rather than flash by. A PWA
   // merely resumed from the background does NOT remount, so it stays instant.
   const bootStartRef = useRef(Date.now());
-  const [warmStart] = useState(() => positionsCached);
+  const [warmStart] = useState(() => computePositionsCached());
   const MIN_COLD_MS = 2500;
   useEffect(() => {
     if (!booting) return;
-    const ready = warmStart || lastUpdate || positionsCached || failStreak >= 2 || fetchOrder.length === 0;
+    const ready = warmStart || lastUpdate || computePositionsCached() || failStreak >= 2 || fetchOrder.length === 0;
     if (!ready) return;
     const minMs = MIN_COLD_MS;
     const elapsed = Date.now() - bootStartRef.current;
     if (elapsed >= minMs) { setBooting(false); return; }
     const t = setTimeout(() => setBooting(false), minMs - elapsed);
     return () => clearTimeout(t);
-  }, [booting, warmStart, lastUpdate, positionsCached, failStreak, fetchOrder.length]);
+  }, [booting, warmStart, lastUpdate, computePositionsCached, failStreak, fetchOrder.length]);
   // Absolute fail-safe so a slow/unreachable feed never traps the user behind
   // the splash, even on a cold open.
   useEffect(() => {
@@ -3057,7 +3057,7 @@ function App() {
     } catch (e) {}
     toast(`${title}: ${body}`);
   }, [toast]);
-  const { triggered, setTriggered, alertSeenMap, setAlertSeenMap } = useAlertEngine(alerts, prices, fireNotification);
+  const { triggered, setTriggered, alertSeenMap, setAlertSeenMap } = useAlertEngine(alerts, fireNotification);
   // Background price-alert delivery: mirror config to the SW, register periodic
   // sync, and reconcile anything fired while the app was closed.
   useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered, notifPerm);
@@ -3178,7 +3178,7 @@ function App() {
     };
     reader.readAsText(file);
   };
-  const getPrice = (ticker, market) => prices[priceKey(market || 'US', ticker)];
+  const getPrice = (ticker, market) => PBStore.getPrices()[priceKey(market || 'US', ticker)];
   const loadFundamentals = useCallback((ticker, market) => {
     const info = DATA.findInfo(ticker, market);
     return loadFundamentalsRaw(`${market}:${ticker}`, () => fetchFundamentals(ticker, market, info?.name, perplexityKey));
@@ -3205,7 +3205,6 @@ function App() {
   const views = {
     dashboard: React.createElement(DashboardView, {
       positions: positions,
-      prices: prices,
       onOpenDetail: openDetail,
       contributions: contributions,
       onAddContribution: addContribution,
@@ -3223,7 +3222,6 @@ function App() {
       donutTopN: donutTopN
     }),
     current: React.createElement(CurrentView, {
-      prices: prices,
       positions: positions,
       marketFilter: marketFilter,
       setMarketFilter: setMarketFilter,
@@ -3244,7 +3242,6 @@ function App() {
     watchlist: React.createElement(WatchlistView, {
       watchlist: watchlist,
       watchlistGroups: watchlistGroups,
-      prices: prices,
       alerts: alerts,
       onAdd: addWatch,
       onRemove: removeWatch,
@@ -3260,22 +3257,18 @@ function App() {
     }),
     heatmap: React.createElement(HeatmapView, {
       positions: positions,
-      prices: prices,
       onOpenDetail: openDetail,
       displayCurrency: displayCurrency,
       fxRates: fxRates
     }),
     picks: React.createElement(PicksView, {
-      prices: prices,
       onOpenDetail: openDetail
     }),
     hedges: React.createElement(HedgesView, {
-      prices: prices,
       onOpenDetail: openDetail
     }),
     tfsa: React.createElement(TFSAView, {
       positions: positions.filter(p => p.market === 'TFSA'),
-      prices: prices,
       onOpenDetail: openDetail,
       onAddPosition: () => { setPosModalEditId(null); setPosModalDefaultMarket('TFSA'); setPosModalOpen(true); },
       onEditPosition: pos => { setPosModalEditId(pos.id); setPosModalOpen(true); },
@@ -3297,16 +3290,13 @@ function App() {
     hot: React.createElement(HotTopicsView, {
       hot: hotTopicsCache['hot'],
       onLoad: loadHotTopics,
-      prices: prices,
       onOpenDetail: openDetail,
       perplexityKey: perplexityKey,
       onOpenAlerts: () => setShowAlerts(true),
       toast: toast
     }),
     rules: React.createElement(RulesView, null),
-    overview: React.createElement(OverviewView, {
-      prices: prices
-    })
+    overview: React.createElement(OverviewView, null)
   };
   const recentTriggered24h = triggered.filter(t => Date.now() - new Date(t.triggeredAt).getTime() < 24 * 3600 * 1000).length;
   return React.createElement("div", {
@@ -3356,7 +3346,6 @@ function App() {
   }, React.createElement(Icon, {
     name: "settings"
   })))), React.createElement(Hero, {
-    prices: prices,
     ribbonItems: ribbonItems,
     ribbonMode: ribbonMode,
     onOpenDetail: openDetail
@@ -3382,7 +3371,6 @@ function App() {
     className: viewTransDir ? `view-slide-${viewTransDir}` : ''
   }, views[view]), selected && React.createElement(DetailModal, {
     selected: selected,
-    prices: prices,
     positions: positions,
     watchlist: watchlist,
     watchlistGroups: watchlistGroups,
@@ -3408,7 +3396,6 @@ function App() {
     onRefreshFx: refreshFx,
     positions: positions,
     contributions: contributions,
-    prices: prices,
     onExport: exportData,
     onImport: importData,
     cloudBackup: cloudBackup,
@@ -3491,7 +3478,6 @@ function App() {
     }
   })), sellModalPos && React.createElement(SellModal, {
     position: sellModalPos,
-    prices: prices,
     onClose: () => setSellModalPos(null),
     onSell: (ticker, market, shares, price, date, notes) => {
       sellPosition(ticker, market, shares, price, date, notes);
@@ -3499,7 +3485,6 @@ function App() {
     }
   }), buyModalPos && React.createElement(BuyModal, {
     position: buyModalPos,
-    prices: prices,
     fxRates: fxRates,
     onClose: () => setBuyModalPos(null),
     onBuy: (ticker, market, shares, price, date, notes, costCurrency) => {
@@ -3515,11 +3500,11 @@ function App() {
 }
 function Hero(_ref4) {
   let {
-    prices,
     ribbonItems,
     ribbonMode,
     onOpenDetail
   } = _ref4;
+  const prices = PBStore.usePricesMap();
   const ribbonScrollRef = useRef(null);
   const ribbonAnimRef = useRef(null);
   const ribbonOffsetRef = useRef(0);
@@ -3730,7 +3715,8 @@ function PriceBlock(_ref5) {
      (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + sym + fmtNum(Math.abs(extChgAbs)) : ''))));
 }
 // SVG-based line chart for portfolio growth over time
-function PortfolioLineChart({ positions, prices, contributions, displayCurrency, fxRates }) {
+function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates }) {
+  const prices = PBStore.usePricesMap();
   const [range, setRange] = useState('1y');
   const [historyCache, setHistoryCache] = useState({});
   const [loading, setLoading] = useState(false);
@@ -4201,7 +4187,8 @@ function donutPaletteColors(palette, n) {
 const DONUT_OTHER_COLOR = '#2E2E3C';
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR', CRYPTO: 'Crypto' };
-function PortfolioPieChart({ positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes, donutPalette, donutTopN }) {
+function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes, donutPalette, donutTopN }) {
+  const prices = PBStore.usePricesMap();
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
@@ -4582,7 +4569,6 @@ function SectorHoldingsPopup({ sectorName, members, sectorValue, portfolioTotal,
 function DashboardView(_ref6) {
   let {
     positions,
-    prices,
     onOpenDetail,
     contributions,
     onAddContribution,
@@ -4599,6 +4585,7 @@ function DashboardView(_ref6) {
     donutPalette,
     donutTopN
   } = _ref6;
+  const prices = PBStore.usePricesMap();
   const computeStats = list => {
     let cost = 0, value = 0, hasAllPrices = true;
     list.forEach(p => {
@@ -4737,11 +4724,11 @@ function DashboardView(_ref6) {
       // Portfolio growth chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Portfolio Growth"),
-        React.createElement(PortfolioLineChart, { positions, prices, contributions, displayCurrency, fxRates })),
+        React.createElement(PortfolioLineChart, { positions, contributions, displayCurrency, fxRates })),
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, prices, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN })),
+        React.createElement(PortfolioPieChart, { positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
@@ -4960,7 +4947,6 @@ function HoldingRow(_refHR) {
 }
 function CurrentView(_ref7) {
   let {
-    prices,
     positions,
     marketFilter,
     setMarketFilter,
@@ -4972,6 +4958,7 @@ function CurrentView(_ref7) {
     onBuyPosition,
     onSellPosition
   } = _ref7;
+  const prices = PBStore.usePricesMap();
   // Always offer the three primary US/SA tabs, then surface any other market
   // the user actually holds (LSE, ASX, FRA, PAR, AMS…) so imported non-US
   // holdings don't silently disappear from the Holdings view.
@@ -6810,7 +6797,6 @@ function WatchlistView(_ref8) {
   let {
     watchlist,
     watchlistGroups,
-    prices,
     alerts,
     onAdd,
     onRemove,
@@ -6824,6 +6810,7 @@ function WatchlistView(_ref8) {
     onRemoveAlert,
     childSwipeLockRef
   } = _ref8;
+  const prices = PBStore.usePricesMap();
   const [newTicker, setNewTicker] = useState('');
   const [newMarket, setNewMarket] = useState('US');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -8228,7 +8215,8 @@ function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDet
             : React.createElement("div", { className: "text-dim text-sm" }, "No live data for this sector yet.")))));
 }
 function HeatmapView(_ref8b) {
-  let { positions, prices, onOpenDetail, displayCurrency, fxRates } = _ref8b;
+  let { positions, onOpenDetail, displayCurrency, fxRates } = _ref8b;
+  const prices = PBStore.usePricesMap();
   const exchanges = DATA.HEATMAPS;
   const [mode, setMode] = usePersistedState('pb.heatmap.mode.v1', 'market');
   const [selectedId, setSelectedId] = usePersistedState('pb.heatmap.exchange.v1', exchanges[0].id);
@@ -8488,9 +8476,9 @@ function HeatmapView(_ref8b) {
 }
 function PicksView(_ref9) {
   let {
-    prices,
     onOpenDetail
   } = _ref9;
+  const prices = PBStore.usePricesMap();
   return React.createElement("div", null, React.createElement("div", {
     className: "grid grid-2"
   }, DATA.NEW_PICKS.map(p => {
@@ -8550,9 +8538,9 @@ function PicksView(_ref9) {
 }
 function HedgesView(_ref0) {
   let {
-    prices,
     onOpenDetail
   } = _ref0;
+  const prices = PBStore.usePricesMap();
   return React.createElement("div", null, React.createElement("div", {
     className: "grid grid-2"
   }, DATA.HEDGES.map(h => {
@@ -8850,7 +8838,8 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove, onRemoveMany }
 // — using only the new contribution, never selling. The split fills the most
 // underweight holdings first; any surplus beyond what's needed to reach target
 // is spread across holdings by target weight so the structure keeps holding.
-function TFSABalancer({ positions, prices, onBuyPosition }) {
+function TFSABalancer({ positions, onBuyPosition }) {
+  const prices = PBStore.usePricesMap();
   const [targets, setTargets] = usePersistedState('pb.tfsa.targets.v1', {});
   const [contribution, setContribution] = usePersistedState('pb.tfsa.contribution.v1', '');
   const [editing, setEditing] = useState(false);
@@ -9002,9 +8991,10 @@ function TFSABalancer({ positions, prices, onBuyPosition }) {
 
   return React.createElement("div", { className: "tfsa-bal-inner" }, header, editor, contribInput, planBody);
 }
-function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
+function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
                    fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN }) {
+  const prices = PBStore.usePricesMap();
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
     return s + (q ? p.shares * q.price : p.shares * p.costBasis);
@@ -9028,7 +9018,7 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
   const holdingsCard = hasPositions ? React.createElement("div", { className: "card mb-4" },
     React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "TFSA holdings"),
     React.createElement(PortfolioPieChart, {
-      positions, prices, displayCurrency: 'ZAR', fxRates,
+      positions, displayCurrency: 'ZAR', fxRates,
       onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector'],
       donutPalette, donutTopN
     }),
@@ -9099,7 +9089,7 @@ function TFSAView({ positions, prices, onOpenDetail, onAddPosition, onEditPositi
     hasPositions ? React.createElement("div", { style: { marginTop: 16 } },
       React.createElement(Collapsible, {
         title: "Contribution planner", subtitle: "What to buy each month to hold your structure", icon: "gauge"
-      }, React.createElement(TFSABalancer, { positions: positions, prices: prices, onBuyPosition: onBuyPosition }))
+      }, React.createElement(TFSABalancer, { positions: positions, onBuyPosition: onBuyPosition }))
     ) : null,
     // ── 4. Contribution room — annual + lifetime bars + deposit log, now a
     //    collapsible dropdown sitting under the planner ──
@@ -9130,7 +9120,8 @@ function hotCountdown(diff) {
   return `in ${diff}d`;
 }
 function HotTopicsView(_refHT) {
-  let { hot, onLoad, prices, onOpenDetail, perplexityKey, onOpenAlerts, toast } = _refHT;
+  let { hot, onLoad, onOpenDetail, perplexityKey, onOpenAlerts, toast } = _refHT;
+  const prices = PBStore.usePricesMap();
   const onLoadRef = useRef(onLoad);
   useEffect(() => { onLoadRef.current = onLoad; }, [onLoad]);
   useEffect(() => { onLoadRef.current && onLoadRef.current(); }, []);
@@ -9309,9 +9300,7 @@ function RulesView() {
   }, React.createElement("li", null, React.createElement("span", null, "Tax year ends 28 February. Split disposals across 28 Feb + 1 March for two annual R40k CGT exclusions.")), React.createElement("li", null, React.createElement("span", null, "Combined shelter: up to R80k of gains untaxed per year.")), React.createElement("li", null, React.createElement("span", null, "At 40% marginal rate with 40% inclusion, each exclusion = ~R12,800 saved.")), React.createElement("li", null, React.createElement("span", null, "Keep broker IT3(c) certificates for each tax year.")))));
 }
 function OverviewView(_ref1) {
-  let {
-    prices
-  } = _ref1;
+  const prices = PBStore.usePricesMap();
   return React.createElement("div", null, React.createElement("div", {
     className: "grid grid-3"
   }, DATA.PILLARS.map(p => React.createElement("div", {
@@ -10108,7 +10097,6 @@ function IndicatorAbout(_refIA) {
 function DetailModal(_ref10) {
   let {
     selected,
-    prices,
     positions,
     watchlist,
     watchlistGroups,
@@ -10128,6 +10116,7 @@ function DetailModal(_ref10) {
     onLoadNews,
     onLoadHistory
   } = _ref10;
+  const prices = PBStore.usePricesMap();
   const {
     ticker,
     market
@@ -11767,7 +11756,8 @@ function PositionModal(_ref12) {
             }, "Save changes")))),
       document.body) : null);
 }
-function SellModal({ position, prices, onClose, onSell }) {
+function SellModal({ position, onClose, onSell }) {
+  const prices = PBStore.usePricesMap();
   const [shares, setShares] = useState('');
   const [pctStr, setPctStr] = useState('');
   const [sellPrice, setSellPrice] = useState('');
@@ -11907,7 +11897,8 @@ function SellModal({ position, prices, onClose, onSell }) {
 // Buy more of an existing holding. Adds shares at a new cost/share and lets the
 // shared addPosition merge + re-average the position. Previews the resulting
 // share count and blended average cost before committing.
-function BuyModal({ position, prices, fxRates, onClose, onBuy }) {
+function BuyModal({ position, fxRates, onClose, onBuy }) {
+  const prices = PBStore.usePricesMap();
   const [shares, setShares] = useState('');
   const [buyPrice, setBuyPrice] = useState('');
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -12055,7 +12046,8 @@ function computeFxSnapshot({ positions, contributions, prices, fxRates, displayC
   };
 }
 
-function FxSummary({ positions, contributions, prices, fxRates, displayCurrency, onSetDisplayCurrency }) {
+function FxSummary({ positions, contributions, fxRates, displayCurrency, onSetDisplayCurrency }) {
+  const prices = PBStore.usePricesMap();
   const hasRates = !!fxRates?.rates;
   const snap = useMemo(
     () => computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency }),
@@ -12264,13 +12256,14 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
 }
 
 function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
-                        positions, contributions, prices, onExport, onImport, cloudBackup, onDeleteHoldings,
+                        positions, contributions, onExport, onImport, cloudBackup, onDeleteHoldings,
                         ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode,
                         tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
                         perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
                         onConnectPush, onTestPush, onDisconnectPush,
                         iconTheme, onSetIconTheme, theme, onSetTheme,
                         donutPalette, onSetDonutPalette, donutTopN, onSetDonutTopN, onClose }) {
+  const prices = PBStore.usePricesMap();
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
