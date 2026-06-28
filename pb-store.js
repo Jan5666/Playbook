@@ -25,8 +25,8 @@
     };
   }
 
-  // The single app store. Holds only { prices } this increment (room to grow).
-  const appStore = createStore({ prices: {} });
+  // The single app store. Holds prices (Increment 1) + settings (Increment 2).
+  const appStore = createStore({ prices: {}, settings: {} });
 
   function getPrices() { return appStore.getState().prices; }
   // Shallow-merge: unchanged symbols keep their existing quote object reference
@@ -37,6 +37,36 @@
   }
   function setPricesMap(map) { appStore.setState({ prices: map || {} }); }
 
+  // ─── Settings slice (Increment 2) ───────────────────────────────────────────
+  // App-agnostic: app.js injects the schema (name→localStorage key + default) and
+  // a storage adapter ({get,set}) at startup via configureSettings. The store
+  // seeds from storage on configure and write-throughs on every setSetting, so each
+  // setting keeps its own pb.* key (cloud backup/restore stays byte-compatible).
+  let _settingsSchema = [];       // [{ name, key, default }]
+  let _settingsKeyByName = {};    // name -> localStorage key
+  let _settingsStorage = null;    // { get(key, default), set(key, value) }
+
+  function configureSettings(cfg) {
+    _settingsSchema = (cfg && cfg.schema) || [];
+    _settingsStorage = (cfg && cfg.storage) || null;
+    _settingsKeyByName = {};
+    const seeded = {};
+    for (const e of _settingsSchema) {
+      _settingsKeyByName[e.name] = e.key;
+      seeded[e.name] = _settingsStorage ? _settingsStorage.get(e.key, e.default) : e.default;
+    }
+    appStore.setState({ settings: seeded });
+  }
+  function getSettings() { return appStore.getState().settings; }
+  function getSetting(name) { return appStore.getState().settings[name]; }
+  // Replace only the changed key (selector-stability contract: siblings keep refs).
+  function setSetting(name, value) {
+    const key = _settingsKeyByName[name];
+    if (!key) return;             // unknown setting: no-op
+    if (_settingsStorage) _settingsStorage.set(key, value);
+    appStore.setState(prev => ({ settings: Object.assign({}, prev.settings, { [name]: value }) }));
+  }
+
   // ─── React bindings (browser-only) ──────────────────────────────────────────
   // Resolved lazily inside each hook so requiring this file under Node (where
   // there is no React) never throws — the hooks are simply never called there.
@@ -44,12 +74,19 @@
   function usePricesMap() {
     return R().useSyncExternalStore(appStore.subscribe, getPrices);
   }
+  function useSettings() {
+    return R().useSyncExternalStore(appStore.subscribe, getSettings);
+  }
+  function useSetting(name) {
+    return R().useSyncExternalStore(appStore.subscribe, () => appStore.getState().settings[name]);
+  }
 
   const PBStore = {
     createStore,
     getPrices, mergePrices, setPricesMap,
+    configureSettings, getSettings, getSetting, setSetting,
     subscribe: appStore.subscribe,
-    usePricesMap
+    usePricesMap, useSettings, useSetting
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = PBStore;
