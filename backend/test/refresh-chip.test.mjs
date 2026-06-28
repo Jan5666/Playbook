@@ -1,6 +1,10 @@
 // Unit tests for the pure fmtAgo + refreshChipState helpers in pb-core.js
 // (refresh-confidence UX).   cd backend/test && node refresh-chip.test.mjs
 import PBCore from '../../pb-core.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const appSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'app.js'), 'utf8');
 
 let failures = 0;
 const ok = (name, cond, extra) => { console.log(`${cond ? '  ok  ' : ' FAIL '} ${name}${extra ? ' — ' + extra : ''}`); if (!cond) failures++; };
@@ -30,5 +34,8 @@ ok('steady state → Updated Ns ago', refreshChipState({ lastUpdateMs: 0, nowMs:
 ok('error dot is stale', refreshChipState({ failStreak: 2, lastUpdateMs: 1 }).dot === 'stale');
 ok('idle dot is live', refreshChipState({ lastUpdateMs: 0, nowMs: 1000 }).dot === 'live');
 
+ok('app.js binds fmtAgo from PBCore', /const\s+fmtAgo\s*=\s*PBCore\.fmtAgo/.test(appSrc));
+ok('app.js binds refreshChipState from PBCore', /const\s+refreshChipState\s*=\s*PBCore\.refreshChipState/.test(appSrc));
+ok('app.js has no local function fmtAgo / refreshChipState', !/function\s+fmtAgo\s*\(/.test(appSrc) && !/function\s+refreshChipState\s*\(/.test(appSrc));
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll refresh-chip tests passed');
 process.exit(failures ? 1 : 0);

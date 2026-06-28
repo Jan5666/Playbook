@@ -1,6 +1,10 @@
 // Unit tests for the pure marketSession kernel in pb-core.js (refresh-confidence UX).
 //   cd backend/test && node market-session.test.mjs
 import PBCore from '../../pb-core.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const appSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'app.js'), 'utf8');
 
 let failures = 0;
 const ok = (name, cond, extra) => { console.log(`${cond ? '  ok  ' : ' FAIL '} ${name}${extra ? ' — ' + extra : ''}`); if (!cond) failures++; };
@@ -39,5 +43,7 @@ ok('CRYPTO nextOpen null', marketSession('CRYPTO').nextOpen === null);
 ok('marketOpen US regular still true', marketOpen('US', new Date(Date.UTC(2026, 5, 30, 14, 0))) === true);  // 10:00 EDT
 ok('marketOpen US night still false',  marketOpen('US', new Date(Date.UTC(2026, 5, 30, 7, 0)))  === false); // 03:00 EDT
 
+ok('app.js binds marketSession from PBCore', /const\s+marketSession\s*=\s*PBCore\.marketSession/.test(appSrc));
+ok('app.js has no local function marketSession', !/function\s+marketSession\s*\(/.test(appSrc));
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll market-session tests passed');
 process.exit(failures ? 1 : 0);

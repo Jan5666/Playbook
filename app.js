@@ -1733,6 +1733,20 @@ const PRICES_MAX_AGE_MS = 3 * 24 * 3600 * 1000; // drop quotes older than 3 days
 const MARKET_SESSIONS = PBCore.SESSIONS;
 const marketOpen = PBCore.marketOpen;
 const anyMarketOpen = PBCore.anyMarketOpen;
+const marketSession = PBCore.marketSession;
+const fmtAgo = PBCore.fmtAgo;
+const refreshChipState = PBCore.refreshChipState;
+// One shared ticking clock so the freshness chip can re-render "Updated Ns ago"
+// without touching the price feed. ~5s cadence is plenty (the chip never needs
+// sub-5s precision); this is the only timer the refresh-confidence UX adds.
+function useNow(intervalMs = 5000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
 function usePriceFeed(order, fetchKey, toast) {
   // Rehydrate last-known prices instantly so the app paints real numbers on
   // open instead of em-dashes — the single biggest "premium fintech" perception
@@ -2921,6 +2935,31 @@ function App() {
     if (!warmedLists.has(view)) setWarmedLists(prev => { const next = new Set(prev); next.add(view); return next; });
     refreshPricesNow();
   }, [view]);
+  // ---- Refresh-confidence chip state (presentational; derived from the feed) ----
+  const nowTick = useNow(5000);
+  const [pendingAck, setPendingAck] = useState(false);     // a press we haven't resolved yet
+  const [lastManual, setLastManual] = useState(false);     // most recent trigger was a user tap
+  const [justSucceeded, setJustSucceeded] = useState(false); // brief "Updated ✓" flash
+  const lastUpdateMs = lastUpdate ? lastUpdate.getTime() : null;
+  // A tap acknowledges instantly (chip → Updating…) even if a sweep is mid-flight
+  // and the press is queued; routes both the chip and the header refresh button.
+  const onChipRefresh = () => { setPendingAck(true); setLastManual(true); refreshPricesNow(); };
+  // lastUpdate only moves on SUCCESS (a failed sweep leaves it unchanged), so a
+  // change here means fresh data landed: flash ✓ for 2s and clear ack/manual.
+  useEffect(() => {
+    if (lastUpdateMs == null) return;
+    setJustSucceeded(true);
+    setPendingAck(false);
+    setLastManual(false);
+    const t = setTimeout(() => setJustSucceeded(false), 2000);
+    return () => clearTimeout(t);
+  }, [lastUpdateMs]);
+  // A failed sweep bumps failStreak without moving lastUpdate — clear the ack so
+  // the chip doesn't sit on "Updating…" forever; the error state takes over.
+  useEffect(() => {
+    if (failStreak > 0) setPendingAck(false);
+  }, [failStreak]);
+  const chipState = refreshChipState({ loading, lastUpdateMs, failStreak, pendingAck, lastManual, justSucceeded, nowMs: nowTick });
   // Startup splash gate. Keep the branded loader up until the first quotes land
   // (lastUpdate set), the feed gives up (failStreak), or there's simply nothing
   // to fetch — so the dashboard never flashes empty/placeholder numbers on a cold
@@ -3279,17 +3318,19 @@ function App() {
     className: "brand-title"
   }, "Playbook")), React.createElement("div", {
     className: "status-chip",
-    title: failStreak >= 2
-      ? 'Price feed failing — last successful update shown'
-      : (lastUpdate ? 'Last refresh ' + lastUpdate.toLocaleTimeString() : 'Loading…')
+    role: "button",
+    tabIndex: 0,
+    onClick: onChipRefresh,
+    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChipRefresh(); } },
+    title: chipState.phase === 'error'
+      ? 'Price feed failing — tap to retry'
+      : (lastUpdate ? 'Last refresh ' + lastUpdate.toLocaleTimeString() : 'Loading…'),
+    "aria-label": chipState.text
   }, React.createElement("span", {
-    className: `dot ${loading ? 'loading' : failStreak >= 2 ? 'stale' : lastUpdate ? 'live' : 'loading'}`
-  }), React.createElement("span", null, lastUpdate ? lastUpdate.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit'
-  }) : '…')), React.createElement("button", {
+    className: `dot ${chipState.dot}`
+  }), React.createElement("span", null, chipState.text)), React.createElement("button", {
     className: `icon-btn ${loading ? 'spin' : ''}`,
-    onClick: refreshPricesNow,
+    onClick: onChipRefresh,
     "aria-label": "Refresh"
   }, React.createElement(Icon, {
     name: "refresh"

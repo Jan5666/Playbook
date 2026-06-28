@@ -178,6 +178,17 @@ try {
   const firstPosIdx2 = Math.min(...['AAPL', 'GOOGL'].map(s => { const i = picksLog.findIndex(e => e.sym === s); return i < 0 ? Infinity : i; }));
   ok('active Picks list floats to the front of the sweep', firstPickIdx >= 0 && firstPickIdx < firstPosIdx2, `pick=${firstPickIdx} pos=${firstPosIdx2}`);
 
+
+  // ---- REFRESH-CONFIDENCE CHIP: live relative time + instant tap ack ----
+  const chipText0 = await evals(ws, `return document.querySelector('.status-chip')?.innerText || '';`);
+  ok('status chip shows relative/state text (not bare HH:MM)', /ago|just now|Updating|Updated|Loading/i.test(chipText0), JSON.stringify(chipText0));
+  await evals(ws, `const c=document.querySelector('.status-chip'); if(c) c.click(); return true;`);
+  const chipText1 = await evals(ws, `return document.querySelector('.status-chip')?.innerText || '';`);
+  ok('tapping the chip flips to Updating… instantly', /Updating/i.test(chipText1), JSON.stringify(chipText1));
+  await sleep(3000);
+  const chipText2 = await evals(ws, `return document.querySelector('.status-chip')?.innerText || '';`);
+  ok('chip settles to Updated/relative after the sweep', /Updated|ago/i.test(chipText2), JSON.stringify(chipText2));
+
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);
 } catch (e) {
