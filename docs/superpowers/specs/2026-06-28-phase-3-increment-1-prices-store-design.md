@@ -4,6 +4,14 @@
 **Branch (planned):** `refactor/phase-3-increment-1-prices-store`
 **Companion:** [playbook-refactor-priorities] Phase 3; builds on Phase 2 (pb-core.js, pb-data.js).
 
+> **IMPLEMENTATION NOTE (post-merge):** the single-symbol leaves (PriceBlock, HoldingRow,
+> SessionBadge) keep receiving `quote` as a prop and are wrapped in `React.memo`; the
+> per-symbol re-render skip is delivered by `React.memo` + the `mergePrices`
+> reference-stability contract (an unchanged symbol keeps its quote object reference, plus
+> App being off the tick path keeps the other props stable), NOT by a per-leaf
+> `PBStore.usePrice(key)` subscription. The `usePrice` hook described below was therefore
+> never wired and was removed as dead code. `usePricesMap()` is the hook actually used.
+
 ## Goal
 
 Introduce a tiny hand-rolled state store and migrate the **prices map** into it, so a
