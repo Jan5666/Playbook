@@ -1894,6 +1894,22 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .ext-chg.up { color: var(--emerald); }
 .ext-chg.down { color: var(--rose); }
 
+/* Per-symbol market-session badge (refresh-confidence UX). Mirrors .ext-label
+   sizing; the dot colour encodes the session phase. */
+.session-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 9px;
+  letter-spacing: 0.12em; text-transform: uppercase; font-weight: 700;
+  color: var(--text-dim);
+}
+.session-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+.session-open   .session-dot { background: var(--emerald); }
+.session-pre    .session-dot,
+.session-post   .session-dot { background: var(--amber); }
+.session-closed .session-dot { background: var(--text-dim); }
+.session-open { color: var(--emerald); }
+.session-pre, .session-post { color: var(--amber); }
+
 /* Dashboard page spacing */
 .dashboard-page .section-title { margin-bottom: 6px; }
 .dashboard-page .section-desc { line-height: 1.5; }

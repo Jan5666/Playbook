@@ -3612,6 +3612,22 @@ function Hero(_ref4) {
     className: "hero"
   }, ribbonEl);
 }
+// Per-symbol market-session badge. When Yahoo reports a live ext session with a
+// move, quote.extKind ('pre'/'post') is authoritative; otherwise fall back to the
+// clock kernel (which also catches a pre session with no move yet, and weekends/
+// overnight as 'closed'). Renders nothing for CRYPTO (always open).
+function SessionBadge({ market, quote }) {
+  if (market === 'CRYPTO') return null;
+  const ext = quote && (quote.extKind === 'pre' || quote.extKind === 'post') ? quote.extKind : null;
+  const { phase, nextOpen } = ext ? { phase: ext, nextOpen: null } : marketSession(market);
+  const label = phase === 'pre' ? 'Pre-market'
+    : phase === 'post' ? 'After-hours'
+    : phase === 'open' ? 'Open'
+    : (nextOpen ? `Closed · opens ${nextOpen}` : 'Closed');
+  return React.createElement("div", { className: `session-badge session-${phase}` },
+    React.createElement("span", { className: "session-dot" }),
+    React.createElement("span", { className: "session-label" }, label));
+}
 function PriceBlock(_ref5) {
   let {
     quote,
@@ -3689,6 +3705,10 @@ function PriceBlock(_ref5) {
       )
     )
   ),
+  // Per-symbol session badge — fills the gap when there's no ext-price chip
+  // (regular/closed hours, or a pre/post session with no move yet) so a quiet
+  // quote still shows its market state. hideExt callers (watchlist) render their own.
+  !hasExt && !hideExt && React.createElement(SessionBadge, { market: market, quote: quote }),
   // Outside the detail card (rows/lists): compact ext-hours chip — label, live
   // pre/post price, then the signed % (with cash move) vs the regular close.
   // hideExt lets a caller (e.g. the watchlist card) lift the chip out of the
@@ -7511,6 +7531,10 @@ function WatchlistView(_ref8) {
                     React.createElement("div", { className: "watch-today-pct mono" },
                       (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
                 : React.createElement("div", { className: "watch-today" })),
+            // Session badge (Open/Closed/Pre/After) so a quiet card reads as
+            // market state, not blank. Shown only when the ext-price chip isn't.
+            !hasExt && React.createElement("div", { className: "watch-ext" },
+              React.createElement(SessionBadge, { market: w.market, quote: q })),
             // Pre/after-hours readout on its own centered line at the foot of the
             // card so it reads as a secondary detail without crowding the name.
             hasExt && React.createElement("div", { className: "watch-ext ext-hours" },

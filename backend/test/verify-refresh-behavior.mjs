@@ -189,6 +189,13 @@ try {
   const chipText2 = await evals(ws, `return document.querySelector('.status-chip')?.innerText || '';`);
   ok('chip settles to Updated/relative after the sweep', /Updated|ago/i.test(chipText2), JSON.stringify(chipText2));
 
+
+  // ---- PER-SYMBOL SESSION BADGE: a closed/quiet market reads as state, not blank ----
+  await evals(ws, `const d=document.querySelector('button[data-tab="dashboard"]'); if(d) d.click(); return true;`);
+  await sleep(800);
+  const badge = await evals(ws, `const b=document.querySelector('.session-badge'); return b ? b.innerText : null;`);
+  ok('a session badge renders (Open/Closed/Pre-market/After-hours)', !!badge && /Open|Closed|Pre-market|After-hours/i.test(badge), JSON.stringify(badge));
+
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);
 } catch (e) {
