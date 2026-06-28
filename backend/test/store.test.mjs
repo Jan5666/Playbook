@@ -56,3 +56,20 @@ test('setPricesMap: replaces the whole prices slice', () => {
 
 // helper: expose createStore via the public API
 function createStoreOf(init) { return PBStore.createStore(init); }
+
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const __dir = dirname(fileURLToPath(import.meta.url));
+const appSrc = readFileSync(join(__dir, '..', '..', 'app.js'), 'utf8');
+
+test('anti-drift: usePriceFeed no longer owns prices in React state', () => {
+  // The prices map must live in PBStore, not a useState inside usePriceFeed.
+  assert.ok(!/const \[prices, setPrices\] = useState/.test(appSrc),
+    'usePriceFeed should not hold prices in useState anymore');
+});
+
+test('anti-drift: usePriceFeed does not return a prices field', () => {
+  const m = appSrc.match(/return \{ loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices \};/);
+  assert.ok(m, 'usePriceFeed return bundle should omit prices');
+});

@@ -1748,19 +1748,21 @@ function useNow(intervalMs = 5000) {
   return now;
 }
 function usePriceFeed(order, fetchKey, toast) {
-  // Rehydrate last-known prices instantly so the app paints real numbers on
-  // open instead of em-dashes — the single biggest "premium fintech" perception
-  // win. Stale entries (>3d) are dropped so we never show ancient data as live.
-  const [prices, setPrices] = useState(() => {
+  // Seed the store's prices slice once from the rehydrated localStorage cache so
+  // the app paints real numbers on open. The map now lives in PBStore, not React
+  // state — so a batch merge re-renders only store subscribers, not all of App.
+  useState(() => {
     const saved = LS.get(PRICES_LS_KEY, null);
-    if (!saved || typeof saved !== 'object') return {};
     const now = Date.now();
     const fresh = {};
-    for (const k in saved) {
-      const q = saved[k];
-      if (q && typeof q.price === 'number' && (!q.fetchedAt || now - q.fetchedAt < PRICES_MAX_AGE_MS)) fresh[k] = q;
+    if (saved && typeof saved === 'object') {
+      for (const k in saved) {
+        const q = saved[k];
+        if (q && typeof q.price === 'number' && (!q.fetchedAt || now - q.fetchedAt < PRICES_MAX_AGE_MS)) fresh[k] = q;
+      }
     }
-    return fresh;
+    PBStore.setPricesMap(fresh);
+    return null;
   });
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
@@ -1782,7 +1784,8 @@ function usePriceFeed(order, fetchKey, toast) {
   // for the next 90s poll to cycle through every ticker.
   const mergePrices = useCallback((obj) => {
     if (!obj || !Object.keys(obj).length) return;
-    setPrices(prev => { const next = { ...prev, ...obj }; persistPrices(next); return next; });
+    PBStore.mergePrices(obj);
+    persistPrices(PBStore.getPrices());
   }, [persistPrices]);
   // A manual tap that arrives mid-fetch sets this so the in-flight run loops
   // once more (with cache-bust) the moment it finishes — the press always ends
@@ -1798,9 +1801,7 @@ function usePriceFeed(order, fetchKey, toast) {
         const newPrices = await fetchQuoteBatch(orderRef.current, {
           cacheBust: force,
           // Merge each batch as it lands so holdings paint progressively.
-          onBatch: (partial) => setPrices(prev => {
-            const next = { ...prev, ...partial }; persistPrices(next); return next;
-          })
+          onBatch: (partial) => { PBStore.mergePrices(partial); persistPrices(PBStore.getPrices()); }
         });
         if (Object.keys(newPrices).length > 0) {
           setLastUpdate(new Date());
@@ -1851,7 +1852,7 @@ function usePriceFeed(order, fetchKey, toast) {
   // cadence, so returning to the app never shows a stale day move while waiting
   // out the next interval tick.
   usePolledRefresh(refresh, pollMs, OPEN_POLL_MS, fetchKey);
-  return { prices, loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices };
+  return { loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
 // price/alert change. fireNotification is injected because its closure (toast,
@@ -2922,7 +2923,11 @@ function App() {
     warmed: warmedLists,
     activeView: view,
   }), [positions, watchlist, alerts, ribbonItems, warmedLists, view]);
-  const { prices, loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey, toast);
+  const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey, toast);
+  // TEMPORARY Phase-3-inc-1 bridge: App still reads the whole map so the existing
+  // prop-drilled consumers keep working unchanged. Removed in the next task, where
+  // each consumer subscribes to the store directly and App leaves the tick path.
+  const prices = PBStore.usePricesMap();
   // Entering a lazy tab: warm its list on first visit (so it joins the poll set)
   // and force an immediate, prioritized refresh so its prices are fresh within a
   // tick (the rehydrated cache paints last-known meanwhile). refreshPricesNow never
