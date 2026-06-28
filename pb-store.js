@@ -44,15 +44,12 @@
   function usePricesMap() {
     return R().useSyncExternalStore(appStore.subscribe, getPrices);
   }
-  function usePrice(key) {
-    return R().useSyncExternalStore(appStore.subscribe, () => getPrices()[key]);
-  }
 
   const PBStore = {
     createStore,
     getPrices, mergePrices, setPricesMap,
     subscribe: appStore.subscribe,
-    usePricesMap, usePrice
+    usePricesMap
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = PBStore;
