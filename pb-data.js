@@ -727,6 +727,22 @@
     if (points.length < 2) return null;
     return { points, range: r, fetchedAt: Date.now(), regularStart, regularEnd };
   }
+  // Resolve to the first promise that yields a non-null value; null if all do.
+  // Lets the two Yahoo hosts race so a dead host/proxy edge costs nothing instead
+  // of an 8s timeout before we even try the fallback.
+  function firstNonNull(promises) {
+    return new Promise((resolve) => {
+      let remaining = promises.length;
+      if (!remaining) { resolve(null); return; }
+      let done = false;
+      const settle = (v) => {
+        if (done) return;
+        if (v != null) { done = true; resolve(v); return; }
+        if (--remaining === 0) resolve(null);
+      };
+      promises.forEach(p => p.then(settle, () => settle(null)));
+    });
+  }
   async function fetchHistory(ticker, market, range) {
     const _indCat = cfg.indicatorCatalog && cfg.indicatorCatalog[priceKey(market, ticker)];
     if (_indCat && _indCat.source) return fetchIndicatorHistory(_indCat, range || '1y');
@@ -737,23 +753,26 @@
     // Pre/post-market bars belong ONLY on the 1-day chart. Every other range
     // shows actual regular-session trading only.
     const includePrePost = r === '1d' ? '&includePrePost=true' : '';
-    // Try both Yahoo hosts; proxy edges fail intermittently and one host often
-    // works when the other 5xx's, so a single attempt left charts blank too often.
+    // Hit both Yahoo hosts. Proxy edges fail intermittently and one host often
+    // works when the other 5xx's.
     const urls = [
       `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=${interval}&range=${r}${includePrePost}`,
       `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=${interval}&range=${r}${includePrePost}`,
     ];
-    for (let attempt = 0; attempt < urls.length; attempt++) {
-      const text = await fetchViaProxies(urls[attempt]);
-      if (!text) continue;
+    // One sweep = race both hosts in parallel, first that parses wins.
+    const sweep = () => firstNonNull(urls.map(async (u) => {
+      const text = await fetchViaProxies(u);
+      if (!text) return null;
       try {
-        const data = JSON.parse(text);
-        const result = data?.chart?.result?.[0];
-        const parsed = result ? parseHistoryResult(result, ticker, market, r) : null;
-        if (parsed) return parsed;
-      } catch (_e) {}
-    }
-    return null;
+        const result = JSON.parse(text)?.chart?.result?.[0];
+        return result ? parseHistoryResult(result, ticker, market, r) : null;
+      } catch (_e) { return null; }
+    }));
+    // Second-pass retry when a whole sweep comes back empty — proxy edges fail
+    // intermittently, exactly like the quote batchers' missing-symbol retry. The
+    // chart used to fetch once and give up, so a transient miss left the card blank
+    // until the user toggled ranges; now it self-heals like the live prices do.
+    return (await sweep()) || (await sweep());
   }
 
   const PBData = {

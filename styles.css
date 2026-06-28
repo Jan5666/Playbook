@@ -1781,6 +1781,16 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   height: 160px; display: flex; align-items: center; justify-content: center;
   color: var(--text-dim); font-size: 12px; font-family: var(--mono);
 }
+/* Failed-fetch variant: stack the message over a one-tap Retry button. */
+.chart-empty-fail { flex-direction: column; gap: 10px; }
+.chart-retry-btn {
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  color: var(--text); background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 16px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+}
+.chart-retry-btn:hover { background: color-mix(in srgb, var(--text) 8%, transparent); border-color: var(--text-dim); }
+.chart-retry-btn:active { transform: translateY(1px); }
 .chart-skeleton {
   position: relative; height: 180px; border-radius: 10px; overflow: hidden;
   background: var(--bg-raised);

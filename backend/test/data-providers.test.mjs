@@ -24,6 +24,16 @@ function yahooChart(symbol, price, prev, name) {
   }] } });
 }
 
+// A Yahoo history payload (timestamp + close arrays) for fetchHistory.
+function yahooHistory(symbol, price) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  return JSON.stringify({ chart: { result: [{
+    meta: { currency: 'USD', shortName: symbol },
+    timestamp: [nowSec - 86400, nowSec],
+    indicators: { quote: [{ close: [price, price + 1] }] }
+  }] } });
+}
+
 // Route fetch by the upstream symbol embedded in the proxied URL. Counts calls.
 let fetchCalls = [];
 function installYahoo(map /* symbol -> chart json | null */) {
@@ -77,6 +87,49 @@ globalThis.fetch = async (proxiedUrl) => {
 };
 res = await PBData.fetchQuoteBatch([{ ticker: 'AAPL', market: 'US' }, { ticker: 'MSFT', market: 'US' }]);
 ok('fetchQuoteBatch second pass recovers a missing symbol', res['US:MSFT'] && res['US:MSFT'].price === 400 && msftCalls >= 2);
+
+// ── fetchHistory reliability: parallel hosts + second-pass retry ─────────────
+// The chart used to fetch once and give up — a transient proxy miss left the card
+// blank until the user toggled ranges. It must self-heal like the quote batchers.
+
+// A whole first sweep fails (both hosts, every proxy), a retry sweep recovers.
+// Keying by the full proxied URL fails each on first sight and succeeds only on a
+// repeat — a repeat can happen ONLY if fetchHistory re-sweeps, so this isolates the
+// sweep-level retry from fetchViaProxies' own per-call proxy ladder.
+PBData._setLastGoodProxy(null);
+let histCalls = 0;
+const seenHist = new Set();
+globalThis.fetch = async (proxiedUrl) => {
+  const dec = decodeURIComponent(proxiedUrl);
+  if (dec.includes('/chart/RETRY')) {
+    histCalls++;
+    if (seenHist.has(proxiedUrl)) return { ok: true, text: async () => yahooHistory('RETRY', 100) };
+    seenHist.add(proxiedUrl);
+    return { ok: false, text: async () => '' };
+  }
+  return { ok: false, text: async () => '' };
+};
+let hist = await PBData.fetchHistory('RETRY', 'US', '1y');
+ok('fetchHistory retries after a failed first sweep', hist && Array.isArray(hist.points) && hist.points.length >= 2);
+
+// One Yahoo host is down for the whole call; the other serves it → no blank chart.
+PBData._setLastGoodProxy(null);
+globalThis.fetch = async (proxiedUrl) => {
+  const dec = decodeURIComponent(proxiedUrl);
+  if (dec.includes('/chart/HOSTFB')) {
+    if (dec.includes('query1.finance')) return { ok: false, text: async () => '' };
+    return { ok: true, text: async () => yahooHistory('HOSTFB', 50) };
+  }
+  return { ok: false, text: async () => '' };
+};
+hist = await PBData.fetchHistory('HOSTFB', 'US', '1y');
+ok('fetchHistory falls back to the live Yahoo host', hist && Array.isArray(hist.points) && hist.points.length >= 2);
+
+// Every attempt across both passes fails → null (contract preserved, no hang).
+PBData._setLastGoodProxy(null);
+globalThis.fetch = async () => ({ ok: false, text: async () => '' });
+hist = await PBData.fetchHistory('NOPE', 'US', '1y');
+ok('fetchHistory returns null when every attempt fails', hist === null);
 
 // Anti-drift guard: app.js binds these from PBData and has no local definitions.
 for (const fn of ['fetchQuote', 'fetchQuoteBatch', 'fetchQuoteBatchLight', 'fetchHistory', 'searchUnitTrusts', 'isUnitTrustId', 'cacheName', 'cachedName', 'parseStooqCsv']) {
