@@ -158,7 +158,7 @@ try {
 
   // ---- MANUAL REFRESH ----
   await evals(ws, `window.__log = []; return true;`);
-  const clicked = await evals(ws, `const b=document.querySelector('button[aria-label="Refresh"]'); if(!b) return false; b.click(); return true;`);
+  const clicked = await evals(ws, `const b=document.querySelector('.refresh-btn'); if(!b) return false; b.click(); return true;`);
   ok('refresh button exists & clickable', clicked === true);
   await sleep(2500);
   const manualLog = JSON.parse(await evals(ws, `return JSON.stringify(window.__log);`));
@@ -180,15 +180,17 @@ try {
   ok('active Picks list floats to the front of the sweep', firstPickIdx >= 0 && firstPickIdx < firstPosIdx2, `pick=${firstPickIdx} pos=${firstPosIdx2}`);
 
 
-  // ---- REFRESH-CONFIDENCE CHIP: live relative time + instant tap ack ----
-  const chipText0 = await evals(ws, `return document.querySelector('.status-chip')?.innerText || '';`);
-  ok('status chip shows relative/state text (not bare HH:MM)', /ago|just now|Updating|Updated|Loading/i.test(chipText0), JSON.stringify(chipText0));
-  await evals(ws, `const c=document.querySelector('.status-chip'); if(c) c.click(); return true;`);
-  const chipText1 = await evals(ws, `return document.querySelector('.status-chip')?.innerText || '';`);
-  ok('tapping the chip flips to Updating… instantly', /Updating/i.test(chipText1), JSON.stringify(chipText1));
+  // ---- REFRESH-CONFIDENCE STATUS (now folded into the refresh button) ----
+  // The relative-time/state label lives in the always-rendered .refresh-peek-text
+  // (visually revealed only on a press-and-hold peek); a tap on .refresh-btn refreshes.
+  const chipText0 = await evals(ws, `return document.querySelector('.refresh-peek-text')?.textContent || '';`);
+  ok('refresh control exposes relative/state text (not bare HH:MM)', /ago|just now|Updating|Updated|Loading/i.test(chipText0), JSON.stringify(chipText0));
+  await evals(ws, `const c=document.querySelector('.refresh-btn'); if(c) c.click(); return true;`);
+  const chipText1 = await evals(ws, `return document.querySelector('.refresh-peek-text')?.textContent || '';`);
+  ok('tapping the button flips status to Updating… instantly', /Updating/i.test(chipText1), JSON.stringify(chipText1));
   await sleep(3000);
-  const chipText2 = await evals(ws, `return document.querySelector('.status-chip')?.innerText || '';`);
-  ok('chip settles to Updated/relative after the sweep', /Updated|ago/i.test(chipText2), JSON.stringify(chipText2));
+  const chipText2 = await evals(ws, `return document.querySelector('.refresh-peek-text')?.textContent || '';`);
+  ok('status settles to Updated/relative after the sweep', /Updated|ago/i.test(chipText2), JSON.stringify(chipText2));
 
 
   // ---- PER-SYMBOL SESSION BADGE: a closed/quiet market reads as state, not blank ----
