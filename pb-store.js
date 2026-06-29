@@ -42,16 +42,15 @@
   // a storage adapter ({get,set}) at startup via configureSettings. The store
   // seeds from storage on configure and write-throughs on every setSetting, so each
   // setting keeps its own pb.* key (cloud backup/restore stays byte-compatible).
-  let _settingsSchema = [];       // [{ name, key, default }]
   let _settingsKeyByName = {};    // name -> localStorage key
   let _settingsStorage = null;    // { get(key, default), set(key, value) }
 
   function configureSettings(cfg) {
-    _settingsSchema = (cfg && cfg.schema) || [];
+    const schema = (cfg && cfg.schema) || []; // [{ name, key, default }]
     _settingsStorage = (cfg && cfg.storage) || null;
     _settingsKeyByName = {};
     const seeded = {};
-    for (const e of _settingsSchema) {
+    for (const e of schema) {
       _settingsKeyByName[e.name] = e.key;
       seeded[e.name] = _settingsStorage ? _settingsStorage.get(e.key, e.default) : e.default;
     }
