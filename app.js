@@ -2738,16 +2738,13 @@ function LoadingScreen({ visible }) {
 }
 function App() {
   const theme = PBStore.useSetting('theme');
-  const setTheme = useCallback((v) => PBStore.setSetting('theme', v), []);
   // Home-screen / favicon icon tile. Synced to the bootstrap in index.html via
   // window.applyIconTheme so the apple-touch-icon + manifest swap to match.
   const iconTheme = PBStore.useSetting('iconTheme');
-  const setIconTheme = useCallback((v) => PBStore.setSetting('iconTheme', v), []);
   useEffect(() => {
     if (typeof window !== 'undefined' && window.applyIconTheme) window.applyIconTheme(iconTheme);
   }, [iconTheme]);
   const perplexityKey = PBStore.useSetting('perplexityKey');
-  const setPerplexityKey = useCallback((v) => PBStore.setSetting('perplexityKey', v), []);
   const pushBackend = PBStore.useSetting('pushBackend');
   const setPushBackend = useCallback((v) => PBStore.setSetting('pushBackend', v), []);
   const displayCurrency = PBStore.useSetting('displayCurrency');
@@ -2759,19 +2756,13 @@ function App() {
   //    rest fold into one "Other" wedge (0 = show all). Holdings view only;
   //    sectors and markets are never grouped.
   const donutPalette = PBStore.useSetting('donutPalette');
-  const setDonutPalette = useCallback((v) => PBStore.setSetting('donutPalette', v), []);
   const donutTopN = PBStore.useSetting('donutTopN');
-  const setDonutTopN = useCallback((v) => PBStore.setSetting('donutTopN', v), []);
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
   const ribbonItems = PBStore.useSetting('ribbonItems');
-  const setRibbonItems = useCallback((v) => PBStore.setSetting('ribbonItems', v), []);
   const ribbonMode = PBStore.useSetting('ribbonMode');
-  const setRibbonMode = useCallback((v) => PBStore.setSetting('ribbonMode', v), []);
   const [showSettings, setShowSettings] = useState(false);
   const tabOrder = PBStore.useSetting('tabOrder');
-  const setTabOrder = useCallback((v) => PBStore.setSetting('tabOrder', v), []);
   const hiddenTabs = PBStore.useSetting('hiddenTabs');
-  const setHiddenTabs = useCallback((v) => PBStore.setSetting('hiddenTabs', v), []);
   const orderedKeys = useMemo(() => reconcileTabOrder(tabOrder), [tabOrder]);
   // The visible nav: ordered keys minus hidden ones. Dashboard is never hidden.
   const TAB_LIST = useMemo(
@@ -3418,8 +3409,6 @@ function App() {
     onLoadNews: () => loadNews(selected.ticker, selected.market),
     onLoadHistory: (r) => loadHistory(selected.ticker, selected.market, r)
   }), showSettings && React.createElement(SettingsModal, {
-    displayCurrency: displayCurrency,
-    onSetDisplayCurrency: setDisplayCurrency,
     fxRates: fxRates,
     onRefreshFx: refreshFx,
     positions: positions,
@@ -3428,29 +3417,12 @@ function App() {
     onImport: importData,
     cloudBackup: cloudBackup,
     onDeleteHoldings: removePositions,
-    ribbonItems: ribbonItems,
-    onSetRibbonItems: setRibbonItems,
-    ribbonMode: ribbonMode,
-    onSetRibbonMode: setRibbonMode,
     tabOrder: orderedKeys,
     hiddenTabs: hiddenTabs,
-    onSetTabOrder: setTabOrder,
-    onSetHiddenTabs: setHiddenTabs,
-    perplexityKey: perplexityKey,
-    onSetPerplexityKey: setPerplexityKey,
-    pushBackend: pushBackend,
     pushStatus: pushStatus,
     onConnectPush: connectPush,
     onTestPush: testPush,
     onDisconnectPush: disconnectPush,
-    iconTheme: iconTheme,
-    onSetIconTheme: setIconTheme,
-    theme: theme,
-    onSetTheme: setTheme,
-    donutPalette: donutPalette,
-    onSetDonutPalette: setDonutPalette,
-    donutTopN: donutTopN,
-    onSetDonutTopN: setDonutTopN,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -12149,7 +12121,7 @@ function FxSummary({ positions, contributions, fxRates, displayCurrency, onSetDi
 // finger 1:1; the others glide to their new slots with a FLIP animation. The
 // working order lives in local state during a drag and is committed to the
 // parent on release, so persistence only fires once.
-function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden }) {
+function TabReorderList({ tabOrder, hiddenTabs, onToggleHidden }) {
   const [order, setOrder] = useState(tabOrder);
   const [dragKey, setDragKey] = useState(null);
   const orderRef = useRef(order);
@@ -12260,7 +12232,7 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
     dragRef.current = null;
     draggingRef.current = false;
     setDragKey(null);
-    onSetTabOrder(finalOrder);
+    PBStore.setSetting('tabOrder', finalOrder);
   };
 
   return React.createElement("div", { className: "tab-config-list" + (dragKey ? " dragging" : "") },
@@ -12290,15 +12262,21 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
   );
 }
 
-function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
+function SettingsModal({ fxRates, onRefreshFx,
                         positions, contributions, onExport, onImport, cloudBackup, onDeleteHoldings,
-                        ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode,
-                        tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
-                        perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
-                        onConnectPush, onTestPush, onDisconnectPush,
-                        iconTheme, onSetIconTheme, theme, onSetTheme,
-                        donutPalette, onSetDonutPalette, donutTopN, onSetDonutTopN, onClose }) {
+                        tabOrder, hiddenTabs,
+                        pushStatus, onConnectPush, onTestPush, onDisconnectPush, onClose }) {
   const prices = PBStore.usePricesMap();
+  // Settings edited here are read/written directly on the store (no prop-drilling).
+  const displayCurrency = PBStore.useSetting('displayCurrency');
+  const ribbonItems = PBStore.useSetting('ribbonItems');
+  const ribbonMode = PBStore.useSetting('ribbonMode');
+  const perplexityKey = PBStore.useSetting('perplexityKey');
+  const pushBackend = PBStore.useSetting('pushBackend');
+  const iconTheme = PBStore.useSetting('iconTheme');
+  const theme = PBStore.useSetting('theme');
+  const donutPalette = PBStore.useSetting('donutPalette');
+  const donutTopN = PBStore.useSetting('donutTopN');
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -12329,8 +12307,8 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const rates = fxRates?.rates || {};
   // Connections (AI news + push) handlers
   const pkConfigured = !!perplexityKey;
-  const savePk = () => onSetPerplexityKey(pkDraft.trim());
-  const clearPk = () => { setPkDraft(''); onSetPerplexityKey(''); };
+  const savePk = () => PBStore.setSetting('perplexityKey', pkDraft.trim());
+  const clearPk = () => { setPkDraft(''); PBStore.setSetting('perplexityKey', ''); };
   // Cloud backup handlers
   const cb = cloudBackup || {};
   const cbStatusLabel = {
@@ -12358,7 +12336,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const toggleTabHidden = (key) => {
     if (key === TAB_ALWAYS_VISIBLE) return;
     const hidden = (hiddenTabs || []);
-    onSetHiddenTabs(hidden.includes(key) ? hidden.filter(k => k !== key) : [...hidden, key]);
+    PBStore.setSetting('hiddenTabs', hidden.includes(key) ? hidden.filter(k => k !== key) : [...hidden, key]);
   };
   // Group positions by market for the delete tool, ordered like the Holdings tabs.
   const marketOrder = MARKETS.map(m => m.value);
@@ -12428,7 +12406,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             ),
             React.createElement("select", {
               value: displayCurrency,
-              onChange: e => onSetDisplayCurrency(e.target.value),
+              onChange: e => PBStore.setSetting('displayCurrency', e.target.value),
               style: { width: 'auto', minWidth: 110 }
             }, DISPLAY_CURRENCIES.map(c => React.createElement("option", {
               key: c.code, value: c.code
@@ -12452,14 +12430,14 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                 type: "button",
                 className: "seg-opt" + (theme === 'light' ? " active" : ""),
                 style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 },
-                onClick: () => onSetTheme('light'),
+                onClick: () => PBStore.setSetting('theme', 'light'),
                 "aria-pressed": theme === 'light'
               }, React.createElement(Icon, { name: "sun", size: 14 }), "Light"),
               React.createElement("button", {
                 type: "button",
                 className: "seg-opt" + (theme !== 'light' ? " active" : ""),
                 style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 },
-                onClick: () => onSetTheme('dark'),
+                onClick: () => PBStore.setSetting('theme', 'dark'),
                 "aria-pressed": theme !== 'light'
               }, React.createElement(Icon, { name: "moon", size: 14 }), "Dark")
             )
@@ -12477,7 +12455,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                 key: opt.key,
                 type: "button",
                 className: `icon-choice ${active ? 'active' : ''}`,
-                onClick: () => onSetIconTheme(opt.key),
+                onClick: () => PBStore.setSetting('iconTheme', opt.key),
                 "aria-pressed": active
               },
                 React.createElement("svg", { className: "icon-choice-tile", viewBox: "0 0 512 512", width: 76, height: 76, "aria-hidden": "true" },
@@ -12505,13 +12483,13 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               React.createElement("button", {
                 type: "button",
                 className: "seg-opt" + (donutPalette !== 'indigo' ? " active" : ""),
-                onClick: () => onSetDonutPalette('spectrum'),
+                onClick: () => PBStore.setSetting('donutPalette', 'spectrum'),
                 "aria-pressed": donutPalette !== 'indigo'
               }, "Spectrum"),
               React.createElement("button", {
                 type: "button",
                 className: "seg-opt" + (donutPalette === 'indigo' ? " active" : ""),
-                onClick: () => onSetDonutPalette('indigo'),
+                onClick: () => PBStore.setSetting('donutPalette', 'indigo'),
                 "aria-pressed": donutPalette === 'indigo'
               }, "Indigo")
             )
@@ -12524,7 +12502,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             ),
             React.createElement("select", {
               value: String(donutTopN),
-              onChange: e => onSetDonutTopN(parseInt(e.target.value, 10)),
+              onChange: e => PBStore.setSetting('donutTopN', parseInt(e.target.value, 10)),
               style: { width: 'auto', minWidth: 110 }
             },
               React.createElement("option", { value: "0" }, "All"),
@@ -12538,7 +12516,6 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
           React.createElement(TabReorderList, {
             tabOrder: (tabOrder || DEFAULT_TAB_ORDER),
             hiddenTabs: hiddenTabs,
-            onSetTabOrder: onSetTabOrder,
             onToggleHidden: toggleTabHidden
           })
         ),
@@ -12553,7 +12530,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             ),
             ribbonItems.length > 3 && React.createElement("select", {
               value: ribbonMode,
-              onChange: e => onSetRibbonMode(e.target.value),
+              onChange: e => PBStore.setSetting('ribbonMode', e.target.value),
               style: { width: 'auto', minWidth: 110 }
             },
               React.createElement("option", { value: "rows" }, "Rows of 3"),
@@ -12576,8 +12553,8 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                     key: item.key,
                     className: `ribbon-catalog-item ${active ? 'active' : ''}`,
                     onClick: () => {
-                      if (active) onSetRibbonItems(ribbonItems.filter(k => k !== item.key));
-                      else onSetRibbonItems([...ribbonItems, item.key]);
+                      if (active) PBStore.setSetting('ribbonItems', ribbonItems.filter(k => k !== item.key));
+                      else PBStore.setSetting('ribbonItems', [...ribbonItems, item.key]);
                     }
                   },
                     React.createElement("span", { className: "ribbon-catalog-short" }, item.short),
