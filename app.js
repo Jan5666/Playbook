@@ -3317,25 +3317,11 @@ function App() {
     theme: theme
   }), React.createElement("div", {
     className: "brand-title"
-  }, "Playbook")), React.createElement("div", {
-    className: "status-chip",
-    role: "button",
-    tabIndex: 0,
-    onClick: onChipRefresh,
-    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChipRefresh(); } },
-    title: chipState.phase === 'error'
-      ? 'Price feed failing — tap to retry'
-      : (lastUpdate ? 'Last refresh ' + lastUpdate.toLocaleTimeString() : 'Loading…'),
-    "aria-label": chipState.text
-  }, React.createElement("span", {
-    className: `dot ${chipState.dot}`
-  }), React.createElement("span", null, chipState.text)), React.createElement("button", {
-    className: `icon-btn ${loading ? 'spin' : ''}`,
-    onClick: onChipRefresh,
-    "aria-label": "Refresh"
-  }, React.createElement(Icon, {
-    name: "refresh"
-  })), React.createElement("button", {
+  }, "Playbook")), React.createElement(RefreshControl, {
+    chipState: chipState,
+    loading: loading,
+    onRefresh: onChipRefresh
+  }), React.createElement("button", {
     className: "icon-btn",
     onClick: () => setShowAlerts(true),
     "aria-label": "Alerts"
@@ -3586,6 +3572,70 @@ function Hero(_ref4) {
   return React.createElement("section", {
     className: "hero"
   }, ribbonEl);
+}
+// Header refresh control: the price-feed status folded into the refresh button.
+// A colored dot shows feed state at rest; a quick tap (native click, also
+// keyboard Enter/Space) refreshes; press-and-hold "peeks" a pill that expands
+// to the relative-time text and springs closed on release (no refresh). Refresh
+// runs on click; pointer events only add the hold→peek and suppress the trailing
+// click so a peek-release never refreshes.
+function RefreshControl({ chipState, loading, onRefresh }) {
+  const [peeking, setPeeking] = useState(false);
+  const [peekW, setPeekW] = useState(0);
+  const holdRef = useRef(null);
+  const startRef = useRef({ x: 0, y: 0 });
+  const suppressClickRef = useRef(false);
+  const peekingRef = useRef(false);
+  const textRef = useRef(null);
+  const HOLD_MS = 200, SLOP2 = 100, PAD = 54; // PAD = 14px left + 40px icon clearance
+
+  const clearHold = () => { if (holdRef.current) { clearTimeout(holdRef.current); holdRef.current = null; } };
+  const open = () => { peekingRef.current = true; suppressClickRef.current = true; setPeeking(true); };
+  const close = () => { peekingRef.current = false; setPeeking(false); };
+
+  // Measure the (always-rendered, naturally-sized) text on open and whenever the
+  // live label changes while held, so the pill width tracks "Updated 6s ago" etc.
+  useEffect(() => {
+    if (!peeking) { setPeekW(0); return; }
+    const w = textRef.current ? textRef.current.scrollWidth : 0;
+    setPeekW(w + PAD);
+  }, [peeking, chipState.text]);
+  useEffect(() => () => clearHold(), []);
+
+  const onPointerDown = (e) => {
+    if (e.button != null && e.button > 0) return;
+    suppressClickRef.current = false;
+    startRef.current = { x: e.clientX, y: e.clientY };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    clearHold();
+    holdRef.current = setTimeout(() => { holdRef.current = null; open(); }, HOLD_MS);
+  };
+  const onPointerMove = (e) => {
+    if (!holdRef.current) return;
+    const dx = e.clientX - startRef.current.x, dy = e.clientY - startRef.current.y;
+    if (dx * dx + dy * dy > SLOP2) clearHold(); // moved → it's a scroll, not a hold
+  };
+  const endPointer = () => {
+    clearHold();
+    if (peekingRef.current) { close(); setTimeout(() => { suppressClickRef.current = false; }, 400); }
+  };
+  const onClick = (e) => {
+    if (suppressClickRef.current) { suppressClickRef.current = false; e.preventDefault(); return; }
+    onRefresh();
+  };
+
+  return React.createElement("div", { className: "refresh-ctl" + (peeking ? " peeking" : "") },
+    React.createElement("div", { className: "refresh-peek", "aria-hidden": "true", style: { width: peeking ? peekW + 'px' : undefined } },
+      React.createElement("span", { className: "refresh-peek-text", ref: textRef }, chipState.text)),
+    React.createElement("button", {
+      className: "icon-btn refresh-btn" + (loading ? " spin" : ""),
+      onPointerDown, onPointerMove, onPointerUp: endPointer, onPointerCancel: endPointer, onClick,
+      onContextMenu: (e) => e.preventDefault(),
+      title: chipState.phase === 'error' ? 'Price feed failing — tap to retry' : chipState.text,
+      "aria-label": chipState.text + ' — tap to refresh'
+    },
+      React.createElement(Icon, { name: "refresh" }),
+      React.createElement("span", { className: "refresh-dot dot " + chipState.dot })));
 }
 // Per-symbol market-session badge. When Yahoo reports a live ext session with a
 // move, quote.extKind ('pre'/'post') is authoritative; otherwise fall back to the
