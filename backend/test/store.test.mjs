@@ -78,3 +78,88 @@ test('anti-drift: useAlertEngine no longer takes a prices param', () => {
   assert.ok(/function useAlertEngine\(alerts, fireNotification\)/.test(appSrc),
     'useAlertEngine signature should be (alerts, fireNotification)');
 });
+
+// ─── settings slice (Increment 2) ────────────────────────────────────────────
+function fakeStorage(initial = {}) {
+  const map = new Map(Object.entries(initial));
+  const writes = [];
+  return {
+    get: (k, d) => (map.has(k) ? map.get(k) : d),
+    set: (k, v) => { map.set(k, v); writes.push([k, v]); },
+    _map: map, _writes: writes,
+  };
+}
+
+test('configureSettings: seeds from storage, falling back to default', () => {
+  const storage = fakeStorage({ 'pb.theme.v2': 'light' });
+  PBStore.configureSettings({ storage, schema: [
+    { name: 'theme', key: 'pb.theme.v2', default: 'dark' },
+    { name: 'displayCurrency', key: 'pb.displayCurrency.v1', default: 'USD' },
+  ]});
+  assert.strictEqual(PBStore.getSetting('theme'), 'light');          // stored value wins
+  assert.strictEqual(PBStore.getSetting('displayCurrency'), 'USD');  // default when absent
+});
+
+test('getSettings: returns the whole settings object', () => {
+  const storage = fakeStorage();
+  PBStore.configureSettings({ storage, schema: [
+    { name: 'theme', key: 'pb.theme.v2', default: 'dark' },
+    { name: 'donutTopN', key: 'pb.donutTopN.v1', default: 10 },
+  ]});
+  assert.deepStrictEqual(PBStore.getSettings(), { theme: 'dark', donutTopN: 10 });
+});
+
+test('setSetting: write-through to storage + updates slice + notifies subscribers', () => {
+  const storage = fakeStorage();
+  PBStore.configureSettings({ storage, schema: [
+    { name: 'theme', key: 'pb.theme.v2', default: 'dark' },
+  ]});
+  let hits = 0;
+  const unsub = PBStore.subscribe(() => { hits++; });
+  PBStore.setSetting('theme', 'light');
+  assert.strictEqual(PBStore.getSetting('theme'), 'light');
+  assert.deepStrictEqual(storage._writes, [['pb.theme.v2', 'light']]);
+  assert.strictEqual(hits, 1);
+  unsub();
+});
+
+test('setSetting: unchanged settings keep their reference (selector stability)', () => {
+  const storage = fakeStorage();
+  PBStore.configureSettings({ storage, schema: [
+    { name: 'ribbonItems', key: 'pb.ribbonItems.v1', default: ['US:^SPX'] },
+    { name: 'theme', key: 'pb.theme.v2', default: 'dark' },
+  ]});
+  const ribbonBefore = PBStore.getSetting('ribbonItems');
+  PBStore.setSetting('theme', 'light');
+  assert.strictEqual(PBStore.getSetting('ribbonItems'), ribbonBefore,
+    'untouched setting keeps its reference after a sibling changes');
+});
+
+test('setSetting: unknown name is a safe no-op', () => {
+  const storage = fakeStorage();
+  PBStore.configureSettings({ storage, schema: [
+    { name: 'theme', key: 'pb.theme.v2', default: 'dark' },
+  ]});
+  assert.doesNotThrow(() => PBStore.setSetting('nope', 1));
+  assert.strictEqual(PBStore.getSetting('nope'), undefined);
+  assert.strictEqual(storage._writes.length, 0, 'no write for unknown setting');
+});
+
+test('anti-drift: migrated settings no longer use usePersistedState', () => {
+  for (const k of ['pb.theme.v2','pb.iconTheme.v1','pb.perplexityKey.v1','pb.pushBackend.v1',
+    'pb.displayCurrency.v1','pb.donutPalette.v1','pb.donutTopN.v1','pb.ribbonItems.v1',
+    'pb.ribbonMode.v1','pb.tabOrder.v2','pb.hiddenTabs.v1']) {
+    const re = new RegExp("usePersistedState\\('" + k.replace(/\./g, '\\.') + "'");
+    assert.ok(!re.test(appSrc), `${k} should be migrated off usePersistedState into PBStore`);
+  }
+});
+
+test('anti-drift: app.js configures PBStore settings with the LS adapter', () => {
+  assert.ok(/PBStore\.configureSettings\(\{\s*schema:\s*SETTINGS_SCHEMA,\s*storage:\s*LS\s*\}\)/.test(appSrc),
+    'app.js should call PBStore.configureSettings({ schema: SETTINGS_SCHEMA, storage: LS })');
+});
+
+test('anti-drift: fxRates stays usePersistedState (out of scope)', () => {
+  assert.ok(/usePersistedState\('pb\.fxRates\.v1'/.test(appSrc),
+    'fxRates must remain usePersistedState this increment');
+});

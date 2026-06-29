@@ -2649,6 +2649,24 @@ const ALL_TABS = [
 const ALL_TAB_KEYS = ALL_TABS.map(t => t[0]);
 const TAB_LABELS = Object.fromEntries(ALL_TABS);
 const DEFAULT_TAB_ORDER = ALL_TAB_KEYS.slice();
+// ─── Settings registry (Increment 2: migrated from per-key usePersistedState) ──
+// Each entry { name, key, default } is seeded from localStorage via the injected LS
+// adapter and write-through on change, so every setting keeps its own pb.* key and
+// cloud backup/restore stays byte-compatible. fxRates is intentionally NOT here.
+const SETTINGS_SCHEMA = [
+  { name: 'theme',           key: 'pb.theme.v2',           default: 'dark' },
+  { name: 'iconTheme',       key: 'pb.iconTheme.v1',       default: (typeof window !== 'undefined' && window.__pbIconTheme) || 'dark' },
+  { name: 'perplexityKey',   key: 'pb.perplexityKey.v1',   default: '' },
+  { name: 'pushBackend',     key: 'pb.pushBackend.v1',     default: '' },
+  { name: 'displayCurrency', key: 'pb.displayCurrency.v1', default: 'USD' },
+  { name: 'donutPalette',    key: 'pb.donutPalette.v1',    default: 'spectrum' },
+  { name: 'donutTopN',       key: 'pb.donutTopN.v1',       default: 10 },
+  { name: 'ribbonItems',     key: 'pb.ribbonItems.v1',     default: DEFAULT_RIBBON_ITEMS },
+  { name: 'ribbonMode',      key: 'pb.ribbonMode.v1',      default: 'rows' },
+  { name: 'tabOrder',        key: 'pb.tabOrder.v2',        default: DEFAULT_TAB_ORDER },
+  { name: 'hiddenTabs',      key: 'pb.hiddenTabs.v1',      default: [] },
+];
+PBStore.configureSettings({ schema: SETTINGS_SCHEMA, storage: LS });
 // Dashboard always stays available so the nav can never be emptied entirely.
 const TAB_ALWAYS_VISIBLE = 'dashboard';
 // Static recommendation lists are fetched lazily — only once their tab has been
@@ -2719,31 +2737,23 @@ function LoadingScreen({ visible }) {
     React.createElement("div", { className: "pb-word" }, "Playbook"));
 }
 function App() {
-  const [theme, setTheme] = usePersistedState('pb.theme.v2', 'dark');
+  const theme = PBStore.useSetting('theme');
   // Home-screen / favicon icon tile. Synced to the bootstrap in index.html via
   // window.applyIconTheme so the apple-touch-icon + manifest swap to match.
-  const [iconTheme, setIconTheme] = usePersistedState('pb.iconTheme.v1',
-    (typeof window !== 'undefined' && window.__pbIconTheme) || 'dark');
+  const iconTheme = PBStore.useSetting('iconTheme');
   useEffect(() => {
     if (typeof window !== 'undefined' && window.applyIconTheme) window.applyIconTheme(iconTheme);
   }, [iconTheme]);
-  const [perplexityKey, setPerplexityKey] = usePersistedState('pb.perplexityKey.v1', '');
-  const [pushBackend, setPushBackend] = usePersistedState('pb.pushBackend.v1', '');
-  const [displayCurrency, setDisplayCurrency] = usePersistedState('pb.displayCurrency.v1', 'USD');
-  // Allocation donut appearance (Settings → Appearance), two independent knobs:
-  //  • palette — 'spectrum' (a distinct multi-hue colour per holding) or 'indigo'
-  //    (the brand's periwinkle→blue gradient). Both scale to any holding count.
-  //  • topN — how many of the largest holdings to show individually before the
-  //    rest fold into one "Other" wedge (0 = show all). Holdings view only;
-  //    sectors and markets are never grouped.
-  const [donutPalette, setDonutPalette] = usePersistedState('pb.donutPalette.v1', 'spectrum');
-  const [donutTopN, setDonutTopN] = usePersistedState('pb.donutTopN.v1', 10);
+  const perplexityKey = PBStore.useSetting('perplexityKey');
+  const pushBackend = PBStore.useSetting('pushBackend');
+  const setPushBackend = useCallback((v) => PBStore.setSetting('pushBackend', v), []);
+  const displayCurrency = PBStore.useSetting('displayCurrency');
+  const setDisplayCurrency = useCallback((v) => PBStore.setSetting('displayCurrency', v), []);
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
-  const [ribbonItems, setRibbonItems] = usePersistedState('pb.ribbonItems.v1', DEFAULT_RIBBON_ITEMS);
-  const [ribbonMode, setRibbonMode] = usePersistedState('pb.ribbonMode.v1', 'rows');
+  const ribbonItems = PBStore.useSetting('ribbonItems');
   const [showSettings, setShowSettings] = useState(false);
-  const [tabOrder, setTabOrder] = usePersistedState('pb.tabOrder.v2', DEFAULT_TAB_ORDER);
-  const [hiddenTabs, setHiddenTabs] = usePersistedState('pb.hiddenTabs.v1', []);
+  const tabOrder = PBStore.useSetting('tabOrder');
+  const hiddenTabs = PBStore.useSetting('hiddenTabs');
   const orderedKeys = useMemo(() => reconcileTabOrder(tabOrder), [tabOrder]);
   // The visible nav: ordered keys minus hidden ones. Dashboard is never hidden.
   const TAB_LIST = useMemo(
@@ -3217,9 +3227,7 @@ function App() {
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
       sectorWeights: sectorWeights,
-      onSetSectorWeights: setSectorWeightsFor,
-      donutPalette: donutPalette,
-      donutTopN: donutTopN
+      onSetSectorWeights: setSectorWeightsFor
     }),
     current: React.createElement(CurrentView, {
       positions: positions,
@@ -3283,9 +3291,7 @@ function App() {
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
       sectorWeights: sectorWeights,
-      onSetSectorWeights: setSectorWeightsFor,
-      donutPalette: donutPalette,
-      donutTopN: donutTopN
+      onSetSectorWeights: setSectorWeightsFor
     }),
     hot: React.createElement(HotTopicsView, {
       hot: hotTopicsCache['hot'],
@@ -3311,25 +3317,11 @@ function App() {
     theme: theme
   }), React.createElement("div", {
     className: "brand-title"
-  }, "Playbook")), React.createElement("div", {
-    className: "status-chip",
-    role: "button",
-    tabIndex: 0,
-    onClick: onChipRefresh,
-    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChipRefresh(); } },
-    title: chipState.phase === 'error'
-      ? 'Price feed failing — tap to retry'
-      : (lastUpdate ? 'Last refresh ' + lastUpdate.toLocaleTimeString() : 'Loading…'),
-    "aria-label": chipState.text
-  }, React.createElement("span", {
-    className: `dot ${chipState.dot}`
-  }), React.createElement("span", null, chipState.text)), React.createElement("button", {
-    className: `icon-btn ${loading ? 'spin' : ''}`,
-    onClick: onChipRefresh,
-    "aria-label": "Refresh"
-  }, React.createElement(Icon, {
-    name: "refresh"
-  })), React.createElement("button", {
+  }, "Playbook")), React.createElement(RefreshControl, {
+    chipState: chipState,
+    loading: loading,
+    onRefresh: onChipRefresh
+  }), React.createElement("button", {
     className: "icon-btn",
     onClick: () => setShowAlerts(true),
     "aria-label": "Alerts"
@@ -3346,8 +3338,6 @@ function App() {
   }, React.createElement(Icon, {
     name: "settings"
   })))), React.createElement(Hero, {
-    ribbonItems: ribbonItems,
-    ribbonMode: ribbonMode,
     onOpenDetail: openDetail
   }), React.createElement("nav", {
     className: "nav",
@@ -3390,8 +3380,6 @@ function App() {
     onLoadNews: () => loadNews(selected.ticker, selected.market),
     onLoadHistory: (r) => loadHistory(selected.ticker, selected.market, r)
   }), showSettings && React.createElement(SettingsModal, {
-    displayCurrency: displayCurrency,
-    onSetDisplayCurrency: setDisplayCurrency,
     fxRates: fxRates,
     onRefreshFx: refreshFx,
     positions: positions,
@@ -3400,29 +3388,12 @@ function App() {
     onImport: importData,
     cloudBackup: cloudBackup,
     onDeleteHoldings: removePositions,
-    ribbonItems: ribbonItems,
-    onSetRibbonItems: setRibbonItems,
-    ribbonMode: ribbonMode,
-    onSetRibbonMode: setRibbonMode,
     tabOrder: orderedKeys,
     hiddenTabs: hiddenTabs,
-    onSetTabOrder: setTabOrder,
-    onSetHiddenTabs: setHiddenTabs,
-    perplexityKey: perplexityKey,
-    onSetPerplexityKey: setPerplexityKey,
-    pushBackend: pushBackend,
     pushStatus: pushStatus,
     onConnectPush: connectPush,
     onTestPush: testPush,
     onDisconnectPush: disconnectPush,
-    iconTheme: iconTheme,
-    onSetIconTheme: setIconTheme,
-    theme: theme,
-    onSetTheme: setTheme,
-    donutPalette: donutPalette,
-    onSetDonutPalette: setDonutPalette,
-    donutTopN: donutTopN,
-    onSetDonutTopN: setDonutTopN,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
@@ -3500,10 +3471,10 @@ function App() {
 }
 function Hero(_ref4) {
   let {
-    ribbonItems,
-    ribbonMode,
     onOpenDetail
   } = _ref4;
+  const ribbonItems = PBStore.useSetting('ribbonItems');
+  const ribbonMode = PBStore.useSetting('ribbonMode');
   const prices = PBStore.usePricesMap();
   const ribbonScrollRef = useRef(null);
   const ribbonAnimRef = useRef(null);
@@ -3601,6 +3572,70 @@ function Hero(_ref4) {
   return React.createElement("section", {
     className: "hero"
   }, ribbonEl);
+}
+// Header refresh control: the price-feed status folded into the refresh button.
+// A colored dot shows feed state at rest; a quick tap (native click, also
+// keyboard Enter/Space) refreshes; press-and-hold "peeks" a pill that expands
+// to the relative-time text and springs closed on release (no refresh). Refresh
+// runs on click; pointer events only add the hold→peek and suppress the trailing
+// click so a peek-release never refreshes.
+function RefreshControl({ chipState, loading, onRefresh }) {
+  const [peeking, setPeeking] = useState(false);
+  const [peekW, setPeekW] = useState(0);
+  const holdRef = useRef(null);
+  const startRef = useRef({ x: 0, y: 0 });
+  const suppressClickRef = useRef(false);
+  const peekingRef = useRef(false);
+  const textRef = useRef(null);
+  const HOLD_MS = 200, SLOP2 = 100, PAD = 54; // PAD = 14px left + 40px icon clearance
+
+  const clearHold = () => { if (holdRef.current) { clearTimeout(holdRef.current); holdRef.current = null; } };
+  const open = () => { peekingRef.current = true; suppressClickRef.current = true; setPeeking(true); };
+  const close = () => { peekingRef.current = false; setPeeking(false); };
+
+  // Measure the (always-rendered, naturally-sized) text on open and whenever the
+  // live label changes while held, so the pill width tracks "Updated 6s ago" etc.
+  useEffect(() => {
+    if (!peeking) { setPeekW(0); return; }
+    const w = textRef.current ? textRef.current.scrollWidth : 0;
+    setPeekW(w + PAD);
+  }, [peeking, chipState.text]);
+  useEffect(() => () => clearHold(), []);
+
+  const onPointerDown = (e) => {
+    if (e.button != null && e.button > 0) return;
+    suppressClickRef.current = false;
+    startRef.current = { x: e.clientX, y: e.clientY };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    clearHold();
+    holdRef.current = setTimeout(() => { holdRef.current = null; open(); }, HOLD_MS);
+  };
+  const onPointerMove = (e) => {
+    if (!holdRef.current) return;
+    const dx = e.clientX - startRef.current.x, dy = e.clientY - startRef.current.y;
+    if (dx * dx + dy * dy > SLOP2) clearHold(); // moved → it's a scroll, not a hold
+  };
+  const endPointer = () => {
+    clearHold();
+    if (peekingRef.current) { close(); setTimeout(() => { suppressClickRef.current = false; }, 400); }
+  };
+  const onClick = (e) => {
+    if (suppressClickRef.current) { suppressClickRef.current = false; e.preventDefault(); return; }
+    onRefresh();
+  };
+
+  return React.createElement("div", { className: "refresh-ctl" + (peeking ? " peeking" : "") },
+    React.createElement("div", { className: "refresh-peek", "aria-hidden": "true", style: { width: peeking ? peekW + 'px' : undefined } },
+      React.createElement("span", { className: "refresh-peek-text", ref: textRef }, chipState.text)),
+    React.createElement("button", {
+      className: "icon-btn refresh-btn" + (loading ? " spin" : ""),
+      onPointerDown, onPointerMove, onPointerUp: endPointer, onPointerCancel: endPointer, onClick,
+      onContextMenu: (e) => e.preventDefault(),
+      title: chipState.phase === 'error' ? 'Price feed failing — tap to retry' : chipState.text,
+      "aria-label": chipState.text + ' — tap to refresh'
+    },
+      React.createElement(Icon, { name: "refresh" }),
+      React.createElement("span", { className: "refresh-dot dot " + chipState.dot })));
 }
 // Per-symbol market-session badge. When Yahoo reports a live ext session with a
 // move, quote.extKind ('pre'/'post') is authoritative; otherwise fall back to the
@@ -4187,7 +4222,9 @@ function donutPaletteColors(palette, n) {
 const DONUT_OTHER_COLOR = '#2E2E3C';
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR', CRYPTO: 'Crypto' };
-function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes, donutPalette, donutTopN }) {
+function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes }) {
+  const donutPalette = PBStore.useSetting('donutPalette');
+  const donutTopN = PBStore.useSetting('donutTopN');
   const prices = PBStore.usePricesMap();
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
@@ -4581,9 +4618,7 @@ function DashboardView(_ref6) {
     sectorCache,
     fundamentals,
     sectorWeights,
-    onSetSectorWeights,
-    donutPalette,
-    donutTopN
+    onSetSectorWeights
   } = _ref6;
   const prices = PBStore.usePricesMap();
   const computeStats = list => {
@@ -4728,7 +4763,7 @@ function DashboardView(_ref6) {
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN })),
+        React.createElement(PortfolioPieChart, { positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
@@ -7255,6 +7290,16 @@ function WatchlistView(_ref8) {
       const cb = qb && typeof qb.changePct === 'number' && isFinite(qb.changePct) ? qb.changePct : -Infinity;
       return cb - ca;
     });
+    // Pre-market move: rank by the live pre-session % (q.extKind === 'pre').
+    // Only counts a genuine pre-market quote — symbols with no pre move (post /
+    // regular / closed / no data) sink to the bottom, so outside pre-market hours
+    // the option just degrades gracefully rather than scrambling the list.
+    else if (sortMode === 'premarket') arr = [...arr].sort((a, b) => {
+      const qa = prices[priceKey(a.market, a.ticker)], qb = prices[priceKey(b.market, b.ticker)];
+      const pa = qa && qa.extKind === 'pre' && typeof qa.extChangePct === 'number' && isFinite(qa.extChangePct) ? qa.extChangePct : -Infinity;
+      const pb = qb && qb.extKind === 'pre' && typeof qb.extChangePct === 'number' && isFinite(qb.extChangePct) ? qb.extChangePct : -Infinity;
+      return pb - pa;
+    });
     return arr;
   }, [watchlist, activeList, search, filterMarket, filterTag, sortMode, prices, alerts]);
   // Switching lists clears the in-list filters so you never land on a list that
@@ -7263,6 +7308,7 @@ function WatchlistView(_ref8) {
   const sortOptions = [
     { id: 'manual', label: reorderEnabled ? 'Manual order' : 'Default order' },
     { id: 'today', label: "Today's move" },
+    { id: 'premarket', label: 'Pre-market move' },
     { id: 'name', label: 'Name A–Z' },
     { id: 'recent', label: 'Recently added' }
   ];
@@ -8993,7 +9039,7 @@ function TFSABalancer({ positions, onBuyPosition }) {
 }
 function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
-                   fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN }) {
+                   fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights }) {
   const prices = PBStore.usePricesMap();
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
@@ -9019,8 +9065,7 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
     React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "TFSA holdings"),
     React.createElement(PortfolioPieChart, {
       positions, displayCurrency: 'ZAR', fxRates,
-      onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector'],
-      donutPalette, donutTopN
+      onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector']
     }),
     React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
@@ -12121,7 +12166,7 @@ function FxSummary({ positions, contributions, fxRates, displayCurrency, onSetDi
 // finger 1:1; the others glide to their new slots with a FLIP animation. The
 // working order lives in local state during a drag and is committed to the
 // parent on release, so persistence only fires once.
-function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden }) {
+function TabReorderList({ tabOrder, hiddenTabs, onToggleHidden }) {
   const [order, setOrder] = useState(tabOrder);
   const [dragKey, setDragKey] = useState(null);
   const orderRef = useRef(order);
@@ -12232,7 +12277,7 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
     dragRef.current = null;
     draggingRef.current = false;
     setDragKey(null);
-    onSetTabOrder(finalOrder);
+    PBStore.setSetting('tabOrder', finalOrder);
   };
 
   return React.createElement("div", { className: "tab-config-list" + (dragKey ? " dragging" : "") },
@@ -12262,15 +12307,21 @@ function TabReorderList({ tabOrder, hiddenTabs, onSetTabOrder, onToggleHidden })
   );
 }
 
-function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefreshFx,
+function SettingsModal({ fxRates, onRefreshFx,
                         positions, contributions, onExport, onImport, cloudBackup, onDeleteHoldings,
-                        ribbonItems, onSetRibbonItems, ribbonMode, onSetRibbonMode,
-                        tabOrder, hiddenTabs, onSetTabOrder, onSetHiddenTabs,
-                        perplexityKey, onSetPerplexityKey, pushBackend, pushStatus,
-                        onConnectPush, onTestPush, onDisconnectPush,
-                        iconTheme, onSetIconTheme, theme, onSetTheme,
-                        donutPalette, onSetDonutPalette, donutTopN, onSetDonutTopN, onClose }) {
+                        tabOrder, hiddenTabs,
+                        pushStatus, onConnectPush, onTestPush, onDisconnectPush, onClose }) {
   const prices = PBStore.usePricesMap();
+  // Settings edited here are read/written directly on the store (no prop-drilling).
+  const displayCurrency = PBStore.useSetting('displayCurrency');
+  const ribbonItems = PBStore.useSetting('ribbonItems');
+  const ribbonMode = PBStore.useSetting('ribbonMode');
+  const perplexityKey = PBStore.useSetting('perplexityKey');
+  const pushBackend = PBStore.useSetting('pushBackend');
+  const iconTheme = PBStore.useSetting('iconTheme');
+  const theme = PBStore.useSetting('theme');
+  const donutPalette = PBStore.useSetting('donutPalette');
+  const donutTopN = PBStore.useSetting('donutTopN');
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -12301,8 +12352,8 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const rates = fxRates?.rates || {};
   // Connections (AI news + push) handlers
   const pkConfigured = !!perplexityKey;
-  const savePk = () => onSetPerplexityKey(pkDraft.trim());
-  const clearPk = () => { setPkDraft(''); onSetPerplexityKey(''); };
+  const savePk = () => PBStore.setSetting('perplexityKey', pkDraft.trim());
+  const clearPk = () => { setPkDraft(''); PBStore.setSetting('perplexityKey', ''); };
   // Cloud backup handlers
   const cb = cloudBackup || {};
   const cbStatusLabel = {
@@ -12330,7 +12381,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
   const toggleTabHidden = (key) => {
     if (key === TAB_ALWAYS_VISIBLE) return;
     const hidden = (hiddenTabs || []);
-    onSetHiddenTabs(hidden.includes(key) ? hidden.filter(k => k !== key) : [...hidden, key]);
+    PBStore.setSetting('hiddenTabs', hidden.includes(key) ? hidden.filter(k => k !== key) : [...hidden, key]);
   };
   // Group positions by market for the delete tool, ordered like the Holdings tabs.
   const marketOrder = MARKETS.map(m => m.value);
@@ -12400,7 +12451,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             ),
             React.createElement("select", {
               value: displayCurrency,
-              onChange: e => onSetDisplayCurrency(e.target.value),
+              onChange: e => PBStore.setSetting('displayCurrency', e.target.value),
               style: { width: 'auto', minWidth: 110 }
             }, DISPLAY_CURRENCIES.map(c => React.createElement("option", {
               key: c.code, value: c.code
@@ -12424,14 +12475,14 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                 type: "button",
                 className: "seg-opt" + (theme === 'light' ? " active" : ""),
                 style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 },
-                onClick: () => onSetTheme('light'),
+                onClick: () => PBStore.setSetting('theme', 'light'),
                 "aria-pressed": theme === 'light'
               }, React.createElement(Icon, { name: "sun", size: 14 }), "Light"),
               React.createElement("button", {
                 type: "button",
                 className: "seg-opt" + (theme !== 'light' ? " active" : ""),
                 style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 },
-                onClick: () => onSetTheme('dark'),
+                onClick: () => PBStore.setSetting('theme', 'dark'),
                 "aria-pressed": theme !== 'light'
               }, React.createElement(Icon, { name: "moon", size: 14 }), "Dark")
             )
@@ -12449,7 +12500,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                 key: opt.key,
                 type: "button",
                 className: `icon-choice ${active ? 'active' : ''}`,
-                onClick: () => onSetIconTheme(opt.key),
+                onClick: () => PBStore.setSetting('iconTheme', opt.key),
                 "aria-pressed": active
               },
                 React.createElement("svg", { className: "icon-choice-tile", viewBox: "0 0 512 512", width: 76, height: 76, "aria-hidden": "true" },
@@ -12477,13 +12528,13 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
               React.createElement("button", {
                 type: "button",
                 className: "seg-opt" + (donutPalette !== 'indigo' ? " active" : ""),
-                onClick: () => onSetDonutPalette('spectrum'),
+                onClick: () => PBStore.setSetting('donutPalette', 'spectrum'),
                 "aria-pressed": donutPalette !== 'indigo'
               }, "Spectrum"),
               React.createElement("button", {
                 type: "button",
                 className: "seg-opt" + (donutPalette === 'indigo' ? " active" : ""),
-                onClick: () => onSetDonutPalette('indigo'),
+                onClick: () => PBStore.setSetting('donutPalette', 'indigo'),
                 "aria-pressed": donutPalette === 'indigo'
               }, "Indigo")
             )
@@ -12496,7 +12547,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             ),
             React.createElement("select", {
               value: String(donutTopN),
-              onChange: e => onSetDonutTopN(parseInt(e.target.value, 10)),
+              onChange: e => PBStore.setSetting('donutTopN', parseInt(e.target.value, 10)),
               style: { width: 'auto', minWidth: 110 }
             },
               React.createElement("option", { value: "0" }, "All"),
@@ -12510,7 +12561,6 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
           React.createElement(TabReorderList, {
             tabOrder: (tabOrder || DEFAULT_TAB_ORDER),
             hiddenTabs: hiddenTabs,
-            onSetTabOrder: onSetTabOrder,
             onToggleHidden: toggleTabHidden
           })
         ),
@@ -12525,7 +12575,7 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
             ),
             ribbonItems.length > 3 && React.createElement("select", {
               value: ribbonMode,
-              onChange: e => onSetRibbonMode(e.target.value),
+              onChange: e => PBStore.setSetting('ribbonMode', e.target.value),
               style: { width: 'auto', minWidth: 110 }
             },
               React.createElement("option", { value: "rows" }, "Rows of 3"),
@@ -12548,8 +12598,8 @@ function SettingsModal({ displayCurrency, onSetDisplayCurrency, fxRates, onRefre
                     key: item.key,
                     className: `ribbon-catalog-item ${active ? 'active' : ''}`,
                     onClick: () => {
-                      if (active) onSetRibbonItems(ribbonItems.filter(k => k !== item.key));
-                      else onSetRibbonItems([...ribbonItems, item.key]);
+                      if (active) PBStore.setSetting('ribbonItems', ribbonItems.filter(k => k !== item.key));
+                      else PBStore.setSetting('ribbonItems', [...ribbonItems, item.key]);
                     }
                   },
                     React.createElement("span", { className: "ribbon-catalog-short" }, item.short),
