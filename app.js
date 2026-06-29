@@ -2182,14 +2182,17 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
 // Raw setters are exposed so importData / cloud sync can replace state wholesale.
 function usePortfolio(fxRates, toast) {
   const [positions, setPositions] = usePersistedState('pb.positions.v2', []);
-  const [watchlist, setWatchlist] = usePersistedState('pb.watchlist.v2', []);
+  const watchlist = PBStore.useCollection('watchlist');
+  const setWatchlist = useCallback(v => PBStore.setCollection('watchlist', v), []);
   // User-defined watchlists. The built-in "Watchlist" list (id 'default') is
   // always present and implicit, so this array holds only the extra lists the
   // user creates. Each watchlist item carries a `listIds` array — a stock can
   // belong to several lists at once. Legacy entries with a single `listId` (or
   // none) are normalised by watchListIds().
-  const [watchlistGroups, setWatchlistGroups] = usePersistedState('pb.watchlistGroups.v1', []);
-  const [alerts, setAlerts] = usePersistedState('pb.alerts.v2', []);
+  const watchlistGroups = PBStore.useCollection('watchlistGroups');
+  const setWatchlistGroups = useCallback(v => PBStore.setCollection('watchlistGroups', v), []);
+  const alerts = PBStore.useCollection('alerts');
+  const setAlerts = useCallback(v => PBStore.setCollection('alerts', v), []);
   const [contributions, setContributions] = usePersistedState('pb.contributions.v1', []);
   const [transactions, setTransactions] = usePersistedState('pb.transactions.v1', []);
   // TFSA deposit log — drives the annual (R46k) / lifetime (R500k) contribution
@@ -2202,14 +2205,16 @@ function usePortfolio(fxRates, toast) {
   // Background-resolved sectors for holdings the static map can't classify,
   // keyed "MARKET:TICKER" → { sector, industry, at }. Persisted so the dashboard
   // allocation stays accurate across reloads without re-fetching.
-  const [sectorCache, setSectorCache] = usePersistedState('pb.sectorCache.v1', {});
+  const sectorCache = PBStore.useCollection('sectorCache');
+  const setSectorCache = useCallback(v => PBStore.setCollection('sectorCache', v), []);
   // Per-instrument sector breakdowns for ETFs/funds, keyed "MARKET:TICKER" →
   // [{ sector, weight }]. When present, the allocation charts split that holding's
   // value across these sectors (normalised) instead of dumping it into one bucket
   // — giving a true look-through sector mix. Shared across accounts that hold the
   // same fund (e.g. a normal + TFSA position). Future AI auto-fills this from the
   // fund's latest MDD / fact sheet.
-  const [sectorWeights, setSectorWeights] = usePersistedState('pb.sectorWeights.v1', {});
+  const sectorWeights = PBStore.useCollection('sectorWeights');
+  const setSectorWeights = useCallback(v => PBStore.setCollection('sectorWeights', v), []);
   const setSectorWeightsFor = (key, weights) => {
     setSectorWeights(prev => {
       const next = { ...prev };
@@ -2667,6 +2672,19 @@ const SETTINGS_SCHEMA = [
   { name: 'hiddenTabs',      key: 'pb.hiddenTabs.v1',      default: [] },
 ];
 PBStore.configureSettings({ schema: SETTINGS_SCHEMA, storage: LS });
+// ─── Portfolio collections registry (Increment 3a: non-money slices → PBStore) ─
+// The 5 non-money usePortfolio slices, each seeded from / written through to its
+// own pb.* key via the injected LS adapter (cloud backup stays byte-identical;
+// pb.sectorCache.v1 is in BACKUP_SKIP so LS.set still skips its backup-notify).
+// The 4 money slices + their async mutators stay in usePortfolio (Increment 3b).
+const PORTFOLIO_SCHEMA = [
+  { name: 'watchlist',       key: 'pb.watchlist.v2',       default: [] },
+  { name: 'watchlistGroups', key: 'pb.watchlistGroups.v1', default: [] },
+  { name: 'alerts',          key: 'pb.alerts.v2',          default: [] },
+  { name: 'sectorCache',     key: 'pb.sectorCache.v1',     default: {} },
+  { name: 'sectorWeights',   key: 'pb.sectorWeights.v1',   default: {} },
+];
+PBStore.configureCollections({ schema: PORTFOLIO_SCHEMA, storage: LS });
 // Dashboard always stays available so the nav can never be emptied entirely.
 const TAB_ALWAYS_VISIBLE = 'dashboard';
 // Static recommendation lists are fetched lazily — only once their tab has been

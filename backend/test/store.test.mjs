@@ -163,3 +163,97 @@ test('anti-drift: fxRates stays usePersistedState (out of scope)', () => {
   assert.ok(/usePersistedState\('pb\.fxRates\.v1'/.test(appSrc),
     'fxRates must remain usePersistedState this increment');
 });
+
+// ─── portfolio collections slice (Increment 3a) ──────────────────────────────
+test('configureCollections: seeds from storage, falling back to default', () => {
+  const storage = fakeStorage({ 'pb.watchlist.v2': [{ ticker: 'AAPL' }] });
+  PBStore.configureCollections({ storage, schema: [
+    { name: 'watchlist', key: 'pb.watchlist.v2', default: [] },
+    { name: 'sectorWeights', key: 'pb.sectorWeights.v1', default: {} },
+  ]});
+  assert.deepStrictEqual(PBStore.getCollection('watchlist'), [{ ticker: 'AAPL' }]); // stored wins
+  assert.deepStrictEqual(PBStore.getCollection('sectorWeights'), {});               // default when absent
+});
+
+test('setCollection: value form writes through + updates slice + notifies', () => {
+  const storage = fakeStorage();
+  PBStore.configureCollections({ storage, schema: [
+    { name: 'alerts', key: 'pb.alerts.v2', default: [] },
+  ]});
+  let hits = 0;
+  const unsub = PBStore.subscribe(() => { hits++; });
+  PBStore.setCollection('alerts', [{ id: 1 }]);
+  assert.deepStrictEqual(PBStore.getCollection('alerts'), [{ id: 1 }]);
+  assert.deepStrictEqual(storage._writes, [['pb.alerts.v2', [{ id: 1 }]]]);
+  assert.strictEqual(hits, 1);
+  unsub();
+});
+
+test('setCollection: function form applies fn(prev) and persists the result', () => {
+  const storage = fakeStorage({ 'pb.watchlist.v2': [{ ticker: 'AAPL' }] });
+  PBStore.configureCollections({ storage, schema: [
+    { name: 'watchlist', key: 'pb.watchlist.v2', default: [] },
+  ]});
+  PBStore.setCollection('watchlist', prev => [...prev, { ticker: 'MSFT' }]);
+  assert.deepStrictEqual(PBStore.getCollection('watchlist'),
+    [{ ticker: 'AAPL' }, { ticker: 'MSFT' }]);
+  assert.deepStrictEqual(storage._writes[0],
+    ['pb.watchlist.v2', [{ ticker: 'AAPL' }, { ticker: 'MSFT' }]]);
+});
+
+test('setCollection: unchanged collections keep their reference (selector stability)', () => {
+  const storage = fakeStorage();
+  PBStore.configureCollections({ storage, schema: [
+    { name: 'watchlist', key: 'pb.watchlist.v2', default: [] },
+    { name: 'alerts', key: 'pb.alerts.v2', default: [] },
+  ]});
+  const watchBefore = PBStore.getCollection('watchlist');
+  PBStore.setCollection('alerts', [{ id: 1 }]);
+  assert.strictEqual(PBStore.getCollection('watchlist'), watchBefore,
+    'untouched collection keeps its reference after a sibling changes');
+});
+
+test('setCollection: unknown name is a safe no-op', () => {
+  const storage = fakeStorage();
+  PBStore.configureCollections({ storage, schema: [
+    { name: 'alerts', key: 'pb.alerts.v2', default: [] },
+  ]});
+  assert.doesNotThrow(() => PBStore.setCollection('nope', 1));
+  assert.strictEqual(PBStore.getCollection('nope'), undefined);
+  assert.strictEqual(storage._writes.length, 0, 'no write for unknown collection');
+});
+
+test('namespace isolation: collections and settings do not clobber each other', () => {
+  const cStore = fakeStorage();
+  const sStore = fakeStorage();
+  PBStore.configureSettings({ storage: sStore, schema: [
+    { name: 'theme', key: 'pb.theme.v2', default: 'dark' },
+  ]});
+  PBStore.configureCollections({ storage: cStore, schema: [
+    { name: 'alerts', key: 'pb.alerts.v2', default: [] },
+  ]});
+  PBStore.setCollection('alerts', [{ id: 1 }]);
+  assert.strictEqual(PBStore.getSetting('theme'), 'dark', 'collection write left settings intact');
+  PBStore.setSetting('theme', 'light');
+  assert.deepStrictEqual(PBStore.getCollection('alerts'), [{ id: 1 }], 'setting write left collections intact');
+});
+
+test('anti-drift: migrated non-money slices no longer use usePersistedState', () => {
+  for (const k of ['pb.watchlist.v2','pb.watchlistGroups.v1','pb.alerts.v2',
+    'pb.sectorCache.v1','pb.sectorWeights.v1']) {
+    const re = new RegExp("usePersistedState\\('" + k.replace(/\./g, '\\.') + "'");
+    assert.ok(!re.test(appSrc), `${k} should be migrated off usePersistedState into PBStore`);
+  }
+});
+
+test('anti-drift: app.js configures PBStore collections with the LS adapter', () => {
+  assert.ok(/PBStore\.configureCollections\(\{\s*schema:\s*PORTFOLIO_SCHEMA,\s*storage:\s*LS\s*\}\)/.test(appSrc),
+    'app.js should call PBStore.configureCollections({ schema: PORTFOLIO_SCHEMA, storage: LS })');
+});
+
+test('anti-drift: money slices stay usePersistedState (3b out of scope)', () => {
+  for (const k of ['pb.positions.v2','pb.transactions.v1','pb.contributions.v1','pb.tfsa.deposits.v1']) {
+    const re = new RegExp("usePersistedState\\('" + k.replace(/\./g, '\\.') + "'");
+    assert.ok(re.test(appSrc), `${k} must remain usePersistedState this increment`);
+  }
+});
