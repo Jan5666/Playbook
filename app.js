@@ -2749,14 +2749,6 @@ function App() {
   const setPushBackend = useCallback((v) => PBStore.setSetting('pushBackend', v), []);
   const displayCurrency = PBStore.useSetting('displayCurrency');
   const setDisplayCurrency = useCallback((v) => PBStore.setSetting('displayCurrency', v), []);
-  // Allocation donut appearance (Settings → Appearance), two independent knobs:
-  //  • palette — 'spectrum' (a distinct multi-hue colour per holding) or 'indigo'
-  //    (the brand's periwinkle→blue gradient). Both scale to any holding count.
-  //  • topN — how many of the largest holdings to show individually before the
-  //    rest fold into one "Other" wedge (0 = show all). Holdings view only;
-  //    sectors and markets are never grouped.
-  const donutPalette = PBStore.useSetting('donutPalette');
-  const donutTopN = PBStore.useSetting('donutTopN');
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
   const ribbonItems = PBStore.useSetting('ribbonItems');
   const [showSettings, setShowSettings] = useState(false);
@@ -3235,9 +3227,7 @@ function App() {
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
       sectorWeights: sectorWeights,
-      onSetSectorWeights: setSectorWeightsFor,
-      donutPalette: donutPalette,
-      donutTopN: donutTopN
+      onSetSectorWeights: setSectorWeightsFor
     }),
     current: React.createElement(CurrentView, {
       positions: positions,
@@ -3301,9 +3291,7 @@ function App() {
       sectorCache: sectorCache,
       fundamentals: fundamentalsByTicker,
       sectorWeights: sectorWeights,
-      onSetSectorWeights: setSectorWeightsFor,
-      donutPalette: donutPalette,
-      donutTopN: donutTopN
+      onSetSectorWeights: setSectorWeightsFor
     }),
     hot: React.createElement(HotTopicsView, {
       hot: hotTopicsCache['hot'],
@@ -4184,7 +4172,9 @@ function donutPaletteColors(palette, n) {
 const DONUT_OTHER_COLOR = '#2E2E3C';
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
 const MARKET_LABELS = { US: 'USA', JSE: 'SA', TFSA: 'TFSA', LSE: 'UK', ASX: 'AUS', FRA: 'EUR', PAR: 'EUR', AMS: 'EUR', CRYPTO: 'Crypto' };
-function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes, donutPalette, donutTopN }) {
+function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes }) {
+  const donutPalette = PBStore.useSetting('donutPalette');
+  const donutTopN = PBStore.useSetting('donutTopN');
   const prices = PBStore.usePricesMap();
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
@@ -4578,9 +4568,7 @@ function DashboardView(_ref6) {
     sectorCache,
     fundamentals,
     sectorWeights,
-    onSetSectorWeights,
-    donutPalette,
-    donutTopN
+    onSetSectorWeights
   } = _ref6;
   const prices = PBStore.usePricesMap();
   const computeStats = list => {
@@ -4725,7 +4713,7 @@ function DashboardView(_ref6) {
       // Allocation pie chart
       React.createElement("div", { className: "card mb-4" },
         React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "Allocation"),
-        React.createElement(PortfolioPieChart, { positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN })),
+        React.createElement(PortfolioPieChart, { positions, displayCurrency, fxRates, onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights })),
       // Growth tracker
       React.createElement("div", { className: "card mb-4 growth-tracker-card" },
         React.createElement("div", { className: "growth-tracker-header" },
@@ -8990,7 +8978,7 @@ function TFSABalancer({ positions, onBuyPosition }) {
 }
 function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
-                   fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, donutPalette, donutTopN }) {
+                   fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights }) {
   const prices = PBStore.usePricesMap();
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
@@ -9016,8 +9004,7 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
     React.createElement("div", { className: "eyebrow", style: { marginBottom: 12 } }, "TFSA holdings"),
     React.createElement(PortfolioPieChart, {
       positions, displayCurrency: 'ZAR', fxRates,
-      onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector'],
-      donutPalette, donutTopN
+      onOpenDetail, sectorCache, fundamentals, sectorWeights, onSetSectorWeights, availableModes: ['ticker', 'sector']
     }),
     React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
