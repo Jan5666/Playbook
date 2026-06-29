@@ -1,3 +1,18 @@
 {
-  "alwaysThinkingEnabled": true
+  "alwaysThinkingEnabled": true,
+  "permissions": {
+    "allow": [
+      "Bash(xxd:*)",
+      "Bash(node backend/test/verify-refresh-behavior.mjs:*)",
+      "Bash(node backend/test/verify-modals.mjs:*)",
+      "Bash(node backend/test/verify-settings.mjs:*)",
+      "Bash(node backend/test/verify-goal-holdings.mjs:*)",
+      "Bash(node backend/test/verify-indicators.mjs:*)",
+      "Bash(node backend/test/verify-exthours-live.mjs:*)",
+      "Bash(node backend/test/verify-extended-hours.mjs:*)",
+      "Bash(node backend/test/verify-day-move-box.mjs:*)",
+      "Bash(node backend/test/verify-refresh-peek.mjs:*)",
+      "Bash(node import-matching.test.mjs:*)"
+    ]
+  }
 }
