@@ -238,9 +238,10 @@ test('namespace isolation: collections and settings do not clobber each other', 
   assert.deepStrictEqual(PBStore.getCollection('alerts'), [{ id: 1 }], 'setting write left collections intact');
 });
 
-test('anti-drift: migrated non-money slices no longer use usePersistedState', () => {
+test('anti-drift: migrated portfolio slices no longer use usePersistedState', () => {
   for (const k of ['pb.watchlist.v2','pb.watchlistGroups.v1','pb.alerts.v2',
-    'pb.sectorCache.v1','pb.sectorWeights.v1']) {
+    'pb.sectorCache.v1','pb.sectorWeights.v1',
+    'pb.positions.v2','pb.transactions.v1','pb.contributions.v1','pb.tfsa.deposits.v1']) {
     const re = new RegExp("usePersistedState\\('" + k.replace(/\./g, '\\.') + "'");
     assert.ok(!re.test(appSrc), `${k} should be migrated off usePersistedState into PBStore`);
   }
@@ -251,9 +252,9 @@ test('anti-drift: app.js configures PBStore collections with the LS adapter', ()
     'app.js should call PBStore.configureCollections({ schema: PORTFOLIO_SCHEMA, storage: LS })');
 });
 
-test('anti-drift: money slices stay usePersistedState (3b out of scope)', () => {
+test('anti-drift: money slices are registered in PORTFOLIO_SCHEMA', () => {
   for (const k of ['pb.positions.v2','pb.transactions.v1','pb.contributions.v1','pb.tfsa.deposits.v1']) {
-    const re = new RegExp("usePersistedState\\('" + k.replace(/\./g, '\\.') + "'");
-    assert.ok(re.test(appSrc), `${k} must remain usePersistedState this increment`);
+    const re = new RegExp("key:\\s*'" + k.replace(/\./g, '\\.') + "'");
+    assert.ok(re.test(appSrc), `${k} must be a PORTFOLIO_SCHEMA entry after 3b`);
   }
 });

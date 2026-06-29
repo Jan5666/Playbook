@@ -2181,7 +2181,8 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
 // purchase-date FX resolution; toast is injected for user-facing feedback.
 // Raw setters are exposed so importData / cloud sync can replace state wholesale.
 function usePortfolio(fxRates, toast) {
-  const [positions, setPositions] = usePersistedState('pb.positions.v2', []);
+  const positions = PBStore.useCollection('positions');
+  const setPositions = useCallback(v => PBStore.setCollection('positions', v), []);
   const watchlist = PBStore.useCollection('watchlist');
   const setWatchlist = useCallback(v => PBStore.setCollection('watchlist', v), []);
   // User-defined watchlists. The built-in "Watchlist" list (id 'default') is
@@ -2193,15 +2194,18 @@ function usePortfolio(fxRates, toast) {
   const setWatchlistGroups = useCallback(v => PBStore.setCollection('watchlistGroups', v), []);
   const alerts = PBStore.useCollection('alerts');
   const setAlerts = useCallback(v => PBStore.setCollection('alerts', v), []);
-  const [contributions, setContributions] = usePersistedState('pb.contributions.v1', []);
-  const [transactions, setTransactions] = usePersistedState('pb.transactions.v1', []);
+  const contributions = PBStore.useCollection('contributions');
+  const setContributions = useCallback(v => PBStore.setCollection('contributions', v), []);
+  const transactions = PBStore.useCollection('transactions');
+  const setTransactions = useCallback(v => PBStore.setCollection('transactions', v), []);
   // TFSA deposit log — drives the annual (R46k) / lifetime (R500k) contribution
   // bars. Two kinds of entry live here: 'manual' (the user logs cash they put in,
   // e.g. a baseline for what they contributed before/outside the app) and
   // 'purchase' (auto-appended below whenever a TFSA holding is bought in-app, so
   // ongoing buys count toward the limits without manual logging). All entries are
   // editable/removable so the user can correct double-counts.
-  const [tfsaDeposits, setTfsaDeposits] = usePersistedState('pb.tfsa.deposits.v1', []);
+  const tfsaDeposits = PBStore.useCollection('tfsaDeposits');
+  const setTfsaDeposits = useCallback(v => PBStore.setCollection('tfsaDeposits', v), []);
   // Background-resolved sectors for holdings the static map can't classify,
   // keyed "MARKET:TICKER" → { sector, industry, at }. Persisted so the dashboard
   // allocation stays accurate across reloads without re-fetching.
@@ -2683,6 +2687,12 @@ const PORTFOLIO_SCHEMA = [
   { name: 'alerts',          key: 'pb.alerts.v2',          default: [] },
   { name: 'sectorCache',     key: 'pb.sectorCache.v1',     default: {} },
   { name: 'sectorWeights',   key: 'pb.sectorWeights.v1',   default: {} },
+  // Money slices (Increment 3b): same mechanism, all four arrays. Mutator bodies
+  // in usePortfolio are unchanged — they call the setter wrappers over setCollection.
+  { name: 'positions',       key: 'pb.positions.v2',       default: [] },
+  { name: 'transactions',    key: 'pb.transactions.v1',    default: [] },
+  { name: 'contributions',   key: 'pb.contributions.v1',   default: [] },
+  { name: 'tfsaDeposits',    key: 'pb.tfsa.deposits.v1',   default: [] },
 ];
 PBStore.configureCollections({ schema: PORTFOLIO_SCHEMA, storage: LS });
 // Dashboard always stays available so the nav can never be emptied entirely.
