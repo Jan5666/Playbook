@@ -7240,6 +7240,16 @@ function WatchlistView(_ref8) {
       const cb = qb && typeof qb.changePct === 'number' && isFinite(qb.changePct) ? qb.changePct : -Infinity;
       return cb - ca;
     });
+    // Pre-market move: rank by the live pre-session % (q.extKind === 'pre').
+    // Only counts a genuine pre-market quote — symbols with no pre move (post /
+    // regular / closed / no data) sink to the bottom, so outside pre-market hours
+    // the option just degrades gracefully rather than scrambling the list.
+    else if (sortMode === 'premarket') arr = [...arr].sort((a, b) => {
+      const qa = prices[priceKey(a.market, a.ticker)], qb = prices[priceKey(b.market, b.ticker)];
+      const pa = qa && qa.extKind === 'pre' && typeof qa.extChangePct === 'number' && isFinite(qa.extChangePct) ? qa.extChangePct : -Infinity;
+      const pb = qb && qb.extKind === 'pre' && typeof qb.extChangePct === 'number' && isFinite(qb.extChangePct) ? qb.extChangePct : -Infinity;
+      return pb - pa;
+    });
     return arr;
   }, [watchlist, activeList, search, filterMarket, filterTag, sortMode, prices, alerts]);
   // Switching lists clears the in-list filters so you never land on a list that
@@ -7248,6 +7258,7 @@ function WatchlistView(_ref8) {
   const sortOptions = [
     { id: 'manual', label: reorderEnabled ? 'Manual order' : 'Default order' },
     { id: 'today', label: "Today's move" },
+    { id: 'premarket', label: 'Pre-market move' },
     { id: 'name', label: 'Name A–Z' },
     { id: 'recent', label: 'Recently added' }
   ];
