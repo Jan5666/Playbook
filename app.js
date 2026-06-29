@@ -2759,7 +2759,6 @@ function App() {
   const donutTopN = PBStore.useSetting('donutTopN');
   const [fxRates, setFxRates] = usePersistedState('pb.fxRates.v1', null);
   const ribbonItems = PBStore.useSetting('ribbonItems');
-  const ribbonMode = PBStore.useSetting('ribbonMode');
   const [showSettings, setShowSettings] = useState(false);
   const tabOrder = PBStore.useSetting('tabOrder');
   const hiddenTabs = PBStore.useSetting('hiddenTabs');
@@ -3365,8 +3364,6 @@ function App() {
   }, React.createElement(Icon, {
     name: "settings"
   })))), React.createElement(Hero, {
-    ribbonItems: ribbonItems,
-    ribbonMode: ribbonMode,
     onOpenDetail: openDetail
   }), React.createElement("nav", {
     className: "nav",
@@ -3500,10 +3497,10 @@ function App() {
 }
 function Hero(_ref4) {
   let {
-    ribbonItems,
-    ribbonMode,
     onOpenDetail
   } = _ref4;
+  const ribbonItems = PBStore.useSetting('ribbonItems');
+  const ribbonMode = PBStore.useSetting('ribbonMode');
   const prices = PBStore.usePricesMap();
   const ribbonScrollRef = useRef(null);
   const ribbonAnimRef = useRef(null);
