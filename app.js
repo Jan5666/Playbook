@@ -2671,6 +2671,7 @@ const SETTINGS_SCHEMA = [
   { name: 'displayCurrency', key: 'pb.displayCurrency.v1', default: 'USD' },
   { name: 'donutPalette',    key: 'pb.donutPalette.v1',    default: 'spectrum' },
   { name: 'donutTopN',       key: 'pb.donutTopN.v1',       default: 10 },
+  { name: 'valueHidden',     key: 'pb.valueHidden.v1',     default: false },
   { name: 'ribbonItems',     key: 'pb.ribbonItems.v1',     default: DEFAULT_RIBBON_ITEMS },
   { name: 'ribbonMode',      key: 'pb.ribbonMode.v1',      default: 'rows' },
   { name: 'tabOrder',        key: 'pb.tabOrder.v2',        default: DEFAULT_TAB_ORDER },
@@ -3781,6 +3782,7 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
 // SVG-based line chart for portfolio growth over time
 function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates }) {
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   const [range, setRange] = useState('1y');
   const [historyCache, setHistoryCache] = useState({});
   const [loading, setLoading] = useState(false);
@@ -3984,12 +3986,16 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
     yLabels.push({ val, y: y(val) });
   }
   const sym = CURRENCY_SYMBOLS[displayCurrency] || '$';
-  const fmtShort = v => {
+  const fmtShortRaw = v => {
     if (v >= 1e6) return sym + (v / 1e6).toFixed(1) + 'M';
     if (v >= 1e3) return sym + Math.round(v / 1e3).toLocaleString('en-US') + 'k';
     return sym + Math.round(v).toLocaleString('en-US');
   };
-  const fmtFull = v => sym + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtFullRaw = v => sym + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // Hide-value: the growth chart plots the portfolio total, so its money labels
+  // mask to dots while hidden (the line's shape stays visible).
+  const fmtShort = valueHidden ? (() => '••••') : fmtShortRaw;
+  const fmtFull = valueHidden ? (() => '••••••') : fmtFullRaw;
 
   const hoverPoint = hoverIdx != null ? points[hoverIdx] : null;
   const hoverElements = [];
@@ -4255,6 +4261,7 @@ function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, 
   const donutPalette = PBStore.useSetting('donutPalette');
   const donutTopN = PBStore.useSetting('donutTopN');
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
@@ -4498,7 +4505,7 @@ function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, 
               })()
             : React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "chart-pie-center-label" }, "Total"),
-                React.createElement("div", { className: "chart-pie-center-val" }, fmtTotal(total)))
+                React.createElement("div", { className: "chart-pie-center-val" + (valueHidden ? " val-blur" : "") }, fmtTotal(total)))
         )
       ),
       React.createElement("div", {
@@ -4727,7 +4734,9 @@ function DashboardView(_ref6) {
   const [showContribHistory, setShowContribHistory] = useState(false);
   const [showTxHistory, setShowTxHistory] = useState(false);
   const [txFilter, setTxFilter] = useState('all');
-  const [valueHidden, setValueHidden] = usePersistedState('pb.valueHidden.v1', false);
+  // App-wide hide-value flag (also read by the donut, Holdings summaries, TFSA
+  // totals and the growth chart) — the eye button here is the single toggle.
+  const valueHidden = PBStore.useSetting('valueHidden');
   // "Money put in" = each deposit valued at the rate locked when it was made
   // (the real rate when USD-landed was recorded), not today's market rate — so
   // overall return compares what you contributed to what you now hold.
@@ -4749,7 +4758,7 @@ function DashboardView(_ref6) {
           React.createElement("div", { className: "stat-label" }, "Total Portfolio Value \xB7 " + displayCurrency),
           React.createElement("button", {
             className: "icon-btn",
-            onClick: () => setValueHidden(v => !v),
+            onClick: () => PBStore.setSetting('valueHidden', !valueHidden),
             'aria-label': valueHidden ? "Show value" : "Hide value",
             style: { marginTop: -4, marginBottom: -4 }
           }, React.createElement(Icon, { name: valueHidden ? 'eye-off' : 'eye', size: 14 }))),
@@ -4816,7 +4825,7 @@ function DashboardView(_ref6) {
             totalContribDisplay > 0
               ? React.createElement("div", { className: "growth-currency-row" },
                   React.createElement("span", { className: "market-badge" }, displayCurrency),
-                  React.createElement("span", { className: `growth-val ${overallReturn >= 0 ? 'up' : 'down'}` },
+                  React.createElement("span", { className: `growth-val ${overallReturn >= 0 ? 'up' : 'down'}` + (valueHidden ? " val-blur" : "") },
                     overallReturn >= 0 ? '+' : '\u2212',
                     fmtCcy(Math.abs(overallReturn), displayCurrency)),
                   React.createElement("span", { className: `growth-pct ${overallReturnPct >= 0 ? 'up' : 'down'}` },
@@ -4826,7 +4835,7 @@ function DashboardView(_ref6) {
               className: "growth-contrib-total",
               onClick: () => setShowContribHistory(true)
             }, React.createElement("span", { className: "text-dim" }, "Total contributions"),
-              React.createElement("span", { className: "mono" }, fmtCcy(totalContribDisplay, displayCurrency)),
+              React.createElement("span", { className: "mono" + (valueHidden ? " hsum-blur-inline" : "") }, fmtCcy(totalContribDisplay, displayCurrency)),
               React.createElement(Icon, { name: "chevron", size: 12 }))),
           React.createElement("div", { className: "growth-stat" },
             React.createElement("div", { className: "growth-stat-header" },
@@ -4835,7 +4844,7 @@ function DashboardView(_ref6) {
             currencyGroups.length > 0
               ? currencyGroups.map(g => React.createElement("div", { key: g.code, className: "growth-currency-row" },
                   React.createElement("span", { className: "market-badge" }, g.label),
-                  React.createElement("span", { className: `growth-val ${g.pnl >= 0 ? 'up' : 'down'}` }, g.pnl >= 0 ? '+' : '\u2212', fmt(Math.abs(g.pnl), g.fmtMarket)),
+                  React.createElement("span", { className: `growth-val ${g.pnl >= 0 ? 'up' : 'down'}` + (valueHidden ? " val-blur" : "") }, g.pnl >= 0 ? '+' : '\u2212', fmt(Math.abs(g.pnl), g.fmtMarket)),
                   React.createElement("span", { className: `growth-pct ${g.pnlPct >= 0 ? 'up' : 'down'}` }, g.pnlPct >= 0 ? '+' : '', g.pnlPct.toFixed(1), "%")))
               : React.createElement("div", { className: "text-dim text-sm", style: { padding: '10px 14px', background: 'var(--bg-elev)', borderRadius: 10 } }, "Add positions to see P/L."),
             (positions.length > 0 || transactions.length > 0) && React.createElement("button", {
@@ -5027,6 +5036,7 @@ function CurrentView(_ref7) {
     onSellPosition
   } = _ref7;
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   // Always offer the three primary US/SA tabs, then surface any other market
   // the user actually holds (LSE, ASX, FRA, PAR, AMS…) so imported non-US
   // holdings don't silently disappear from the Holdings view.
@@ -5124,9 +5134,9 @@ function CurrentView(_ref7) {
       React.createElement("div", { className: "hsum-top" },
         React.createElement("div", { className: "hsum-main" },
           React.createElement("div", { className: "hsum-label" }, "Market value · " + ccy),
-          React.createElement("div", { className: "hsum-value mono" }, fmtCcy(s.value, ccy))),
+          React.createElement("div", { className: "hsum-value mono" + (valueHidden ? " val-blur" : "") }, fmtCcy(s.value, ccy))),
         React.createElement("div", { className: `hsum-pl ${up ? 'up' : 'down'}` },
-          React.createElement("div", { className: "hsum-pl-amt mono" }, fmtCcySigned(s.gain, ccy)),
+          React.createElement("div", { className: "hsum-pl-amt mono" + (valueHidden ? " val-blur" : "") }, fmtCcySigned(s.gain, ccy)),
           s.gainPct != null ? React.createElement("div", { className: "hsum-pl-pct mono" },
             (up ? '+' : '') + s.gainPct.toFixed(2) + '%') : null)),
       React.createElement("div", { className: "hsum-bar" },
@@ -5135,10 +5145,12 @@ function CurrentView(_ref7) {
       React.createElement("div", { className: "hsum-foot" },
         React.createElement("div", { className: "hsum-foot-legend" },
           React.createElement("span", { className: "hsum-dot invested" }),
-          React.createElement("span", null, "Invested ", fmtCcy(s.cost, ccy))),
+          React.createElement("span", null, "Invested ",
+            React.createElement("span", { className: valueHidden ? "hsum-blur-inline" : "" }, fmtCcy(s.cost, ccy)))),
         s.dayPct != null ? React.createElement("div", { className: `hsum-today ${dayUp ? 'up' : 'down'}` },
           React.createElement("span", { className: "hsum-today-arrow" }, dayUp ? '▲' : '▼'),
-          React.createElement("span", { className: "mono" }, "Today ", fmtCcySigned(s.dayChange, ccy),
+          React.createElement("span", { className: "mono" }, "Today ",
+            React.createElement("span", { className: valueHidden ? "hsum-blur-inline" : "" }, fmtCcySigned(s.dayChange, ccy)),
             " · ", (dayUp ? '+' : '') + s.dayPct.toFixed(2) + '%')) : null));
   };
 
@@ -9075,6 +9087,7 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
                    fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights }) {
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
     return s + (q ? p.shares * q.price : p.shares * p.costBasis);
@@ -9104,16 +9117,16 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
     React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
         React.createElement("div", { className: "kv-label" }, "Value"),
-        React.createElement("div", { className: "kv-val mono" }, fmtRand(totalValue, 2))),
+        React.createElement("div", { className: "kv-val mono" + (valueHidden ? " val-blur" : "") }, fmtRand(totalValue, 2))),
       React.createElement("div", { className: "kv" },
         React.createElement("div", { className: "kv-label" }, "Cost"),
-        React.createElement("div", { className: "kv-val mono" }, fmtRand(totalCost, 2))),
+        React.createElement("div", { className: "kv-val mono" + (valueHidden ? " val-blur" : "") }, fmtRand(totalCost, 2))),
       React.createElement("div", { className: "kv" },
         React.createElement("div", { className: "kv-label" }, "P/L"),
         // Currency amount stays the prominent figure; the % rides below it as a
         // smaller tinted pill, mirroring the dashboard's green return boxes.
         React.createElement("div", { className: "tfsa-pnl-val" },
-          React.createElement("span", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
+          React.createElement("span", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` + (valueHidden ? " val-blur" : "") },
             (pnl >= 0 ? '+' : '−') + fmtRand(pnl, 2)),
           React.createElement("span", { className: `tfsa-pnl-pct ${pnlPct >= 0 ? 'up' : 'down'}` },
             (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(1) + "%"))))

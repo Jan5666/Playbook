@@ -780,10 +780,15 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   filter: blur(0);
   transition: filter 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.total-portfolio-card .val-blur { filter: blur(10px); user-select: none; -webkit-user-select: none; }
-.total-portfolio-card .stat-sub.val-blur,
-.total-portfolio-card .dash-today.val-blur { filter: blur(7px); }
-.total-portfolio-card .portfolio-summary-row.val-blur { filter: blur(6px); }
+/* Hide-value: blur any money figure marked val-blur (totals only — per-holding
+   rows and percentages stay readable). */
+.val-blur { filter: blur(10px); user-select: none; -webkit-user-select: none; }
+.stat-sub.val-blur, .dash-today.val-blur { filter: blur(7px); }
+.portfolio-summary-row.val-blur { filter: blur(6px); }
+.chart-pie-center-val.val-blur { filter: blur(9px); }
+.hsum-value.val-blur { filter: blur(9px); }
+.hsum-pl-amt.val-blur, .kv-val.val-blur, .growth-val.val-blur { filter: blur(7px); }
+.hsum-blur-inline { filter: blur(6px); }
 
 /* Portfolio summary row inside the card */
 .portfolio-summary-row {
