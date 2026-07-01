@@ -1867,6 +1867,9 @@ function useAlertEngine(alerts, fireNotification) {
   useEffect(() => { seenRef.current = alertSeenMap; }, [alertSeenMap]);
   useEffect(() => {
     const run = () => {
+      // Preview mode shows a demo book — don't fire real alerts from a demo
+      // session (background SW alerts keep running on the real config).
+      if (PBStore.getSetting('previewMode')) return;
       const { nextSeen, newTriggers, seenChanged } = evaluateTriggers(alerts, PBStore.getPrices(), seenRef.current);
       if (seenChanged) setAlertSeenMap(nextSeen);
       if (newTriggers.length) {
@@ -2227,6 +2230,19 @@ function usePortfolio(fxRates, toast) {
       else delete next[key];
       return next;
     });
+  };
+  // Preview mode (Settings → Preview): swap in the static demo book read-only.
+  // Real localStorage is never touched — the store keeps holding the real data,
+  // we just don't show it — and every mutator below short-circuits to a toast.
+  const previewMode = PBStore.useSetting('previewMode');
+  const DEMO = (typeof window !== 'undefined' && window.PB_DEMO) || null;
+  const inPreview = !!(previewMode && DEMO);
+  const guardPreview = (fn) => (...args) => {
+    if (inPreview) {
+      toast('Preview mode is on — turn it off in Settings to edit your real portfolio.');
+      return;
+    }
+    return fn(...args);
   };
   useEffect(() => {
     setPositions(prev => {
@@ -2596,20 +2612,31 @@ function usePortfolio(fxRates, toast) {
     setAlerts(prev => prev.filter(a => a.id !== id));
   };
   return {
-    positions, setPositions,
-    watchlist, setWatchlist,
-    watchlistGroups, setWatchlistGroups,
+    // Read side: preview substitutes the demo book; the store itself never
+    // changes, so flipping the setting off restores the real data instantly.
+    positions: inPreview ? DEMO.positions : positions, setPositions,
+    watchlist: inPreview ? DEMO.watchlist : watchlist, setWatchlist,
+    watchlistGroups: inPreview ? [] : watchlistGroups, setWatchlistGroups,
     alerts, setAlerts,
-    contributions, setContributions,
-    transactions, setTransactions,
-    tfsaDeposits, setTfsaDeposits,
+    contributions: inPreview ? DEMO.contributions : contributions, setContributions,
+    transactions: inPreview ? DEMO.transactions : transactions, setTransactions,
+    tfsaDeposits: inPreview ? DEMO.tfsaDeposits : tfsaDeposits, setTfsaDeposits,
     sectorCache, setSectorCache,
     sectorWeights, setSectorWeights, setSectorWeightsFor,
-    addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
-    addContribution, removeContribution, importContributions,
-    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit, removeTfsaDeposits,
-    addWatch, removeWatch, moveWatch, toggleWatchList, addWatchGroup, renameWatchGroup, removeWatchGroup,
-    addAlert, removeAlert
+    // Write side: every user-facing mutator is read-only in preview (raw
+    // setters stay live — cloud restore/import wiring uses them deliberately).
+    addPosition: guardPreview(addPosition), updatePosition: guardPreview(updatePosition),
+    removePosition: guardPreview(removePosition), removePositions: guardPreview(removePositions),
+    sellPosition: guardPreview(sellPosition), importPositions: guardPreview(importPositions),
+    addContribution: guardPreview(addContribution), removeContribution: guardPreview(removeContribution),
+    importContributions: guardPreview(importContributions),
+    addTfsaDeposit: guardPreview(addTfsaDeposit), updateTfsaDeposit: guardPreview(updateTfsaDeposit),
+    removeTfsaDeposit: guardPreview(removeTfsaDeposit), removeTfsaDeposits: guardPreview(removeTfsaDeposits),
+    addWatch: guardPreview(addWatch), removeWatch: guardPreview(removeWatch),
+    moveWatch: guardPreview(moveWatch), toggleWatchList: guardPreview(toggleWatchList),
+    addWatchGroup: guardPreview(addWatchGroup), renameWatchGroup: guardPreview(renameWatchGroup),
+    removeWatchGroup: guardPreview(removeWatchGroup),
+    addAlert: guardPreview(addAlert), removeAlert: guardPreview(removeAlert)
   };
 }
 const ToastContext = React.createContext(() => {});
@@ -2672,6 +2699,7 @@ const SETTINGS_SCHEMA = [
   { name: 'donutPalette',    key: 'pb.donutPalette.v1',    default: 'spectrum' },
   { name: 'donutTopN',       key: 'pb.donutTopN.v1',       default: 10 },
   { name: 'valueHidden',     key: 'pb.valueHidden.v1',     default: false },
+  { name: 'previewMode',     key: 'pb.previewMode.v1',     default: false },
   { name: 'ribbonItems',     key: 'pb.ribbonItems.v1',     default: DEFAULT_RIBBON_ITEMS },
   { name: 'ribbonMode',      key: 'pb.ribbonMode.v1',      default: 'rows' },
   { name: 'tabOrder',        key: 'pb.tabOrder.v2',        default: DEFAULT_TAB_ORDER },
@@ -2768,6 +2796,9 @@ function LoadingScreen({ visible }) {
 }
 function App() {
   const theme = PBStore.useSetting('theme');
+  // Demo-book flag — shows the header "Preview" pill so a demo can't be
+  // mistaken for the real portfolio (usePortfolio does the data swap).
+  const previewMode = PBStore.useSetting('previewMode');
   // Home-screen / favicon icon tile. Synced to the bootstrap in index.html via
   // window.applyIconTheme so the apple-touch-icon + manifest swap to match.
   const iconTheme = PBStore.useSetting('iconTheme');
@@ -3347,7 +3378,9 @@ function App() {
     theme: theme
   }), React.createElement("div", {
     className: "brand-title"
-  }, "Playbook")), React.createElement(RefreshControl, {
+  }, "Playbook"), previewMode && React.createElement("span", {
+    className: "preview-badge"
+  }, "Preview")), React.createElement(RefreshControl, {
     chipState: chipState,
     loading: loading,
     onRefresh: onChipRefresh
@@ -12372,6 +12405,7 @@ function SettingsModal({ fxRates, onRefreshFx,
   const theme = PBStore.useSetting('theme');
   const donutPalette = PBStore.useSetting('donutPalette');
   const donutTopN = PBStore.useSetting('donutTopN');
+  const previewMode = PBStore.useSetting('previewMode');
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -12425,6 +12459,7 @@ function SettingsModal({ fxRates, onRefreshFx,
     { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
     { key: 'holdings', label: 'Holdings', icon: 'briefcase' },
+    { key: 'preview', label: 'Preview', icon: 'eye' },
     { key: 'connections', label: 'Connections', icon: 'link' },
     { key: 'data', label: 'Data', icon: 'download' },
   ];
@@ -12513,6 +12548,31 @@ function SettingsModal({ fxRates, onRefreshFx,
             React.createElement("div", { className: "settings-info-body" },
               "When you add a position, the live exchange rate is stored. Price P/L tracks native-currency changes. FX impact shows how much your ", displayCurrency, " value has shifted purely from currency moves.")
           )
+        ),
+        activeSection === 'preview' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-row mb-3" },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, "Preview mode"),
+              React.createElement("div", { className: "settings-row-desc" },
+                "Show the app with a realistic demo portfolio — trendy stocks across every market and sector, live prices, invented sizes. Your real holdings stay untouched and hidden while it's on; editing is disabled.")
+            ),
+            React.createElement("div", { className: "seg-toggle", style: { flex: '0 0 auto', minWidth: 168 } },
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (!previewMode ? " active" : ""),
+                onClick: () => PBStore.setSetting('previewMode', false),
+                "aria-pressed": !previewMode
+              }, "Off"),
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (previewMode ? " active" : ""),
+                onClick: () => PBStore.setSetting('previewMode', true),
+                "aria-pressed": previewMode
+              }, "On")
+            )
+          ),
+          previewMode && React.createElement("div", { className: "settings-row-desc" },
+            "Preview is on — a \"Preview\" pill shows in the header. Alerts pause while it's on.")
         ),
         activeSection === 'appearance' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-row mb-3" },

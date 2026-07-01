@@ -226,6 +226,16 @@ a { color: inherit; text-decoration: none; }
   border-radius: 8px; display: flex; align-items: center; justify-content: center;
 }
 .badge.blue { background: var(--blue); }
+/* Preview-mode pill in the header — loud enough that a demo can't be mistaken
+   for the real book. */
+.preview-badge {
+  margin-left: 8px; padding: 2px 8px; border-radius: 999px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  flex-shrink: 0;
+}
 
 /* Hero */
 .hero { border-bottom: 1px solid var(--border); padding: 8px 0 8px; }
