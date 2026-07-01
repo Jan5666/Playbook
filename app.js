@@ -9826,9 +9826,11 @@ function PriceChart(_refChart) {
           (selData.up ? '+' : '') + selData.pct.toFixed(2) + '%'),
         React.createElement("div", { className: "chart-tooltip-date" }, fmtSpan(selData.tLo, selData.tHi))
       ),
-      // The scrub/date readout owns the top strip while active — the OPEN
-      // divider tag yields and returns on release.
-      hasPre && !hover && !sel && React.createElement("div", {
+      // The market-open divider tag yields to the scrub/compare readout: while a
+      // finger is down (single-point hover or two-finger selection) the price/date
+      // popup is what the user is reading, so the "OPEN" label is suppressed rather
+      // than left to paint over the top of it.
+      hasPre && hoverIdx == null && !selData && React.createElement("div", {
         className: "chart-open-tag",
         style: { left: `${(openX / W) * 100}%` }
       }, "OPEN")

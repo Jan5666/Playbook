@@ -913,10 +913,17 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
    so short forms don't strand their buttons mid-sheet. When content is tall enough
    to scroll, the auto margin collapses and the buttons flow naturally after it. */
 .modal-panel > .modal-body > .form-actions { margin-top: auto; }
-/* Stock detail keeps the same fixed height; its body manages its own layout. */
+/* Stock detail grows with its content instead of locking to a fixed height:
+   short cards (e.g. a bare ticker, or one whose fundamentals are still loading)
+   would otherwise leave a dead black band below the last section. It still caps
+   at the same ceiling, so rich cards fill the sheet and the body scrolls. */
 .modal-panel.stock-detail-panel {
-  height: calc(100vh - 48px); height: calc(100dvh - 48px);
+  height: auto;
+  max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px);
 }
+/* min-height:0 lets the scrolling body shrink under the max-height cap so a tall
+   card scrolls internally instead of pushing the panel past its ceiling. */
+.modal-panel.stock-detail-panel > .modal-body { min-height: 0; }
 .modal-panel.swiping { animation: none; transition: none; }
 .modal-panel.swipe-close { animation: slide-down 0.26s cubic-bezier(0.4, 0, 1, 1) forwards; }
 @keyframes slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
