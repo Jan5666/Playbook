@@ -1774,7 +1774,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   font-size: 11px; pointer-events: none;
   white-space: nowrap;
   box-shadow: 0 4px 14px var(--shadow-strong);
-  z-index: 2;
+  z-index: 3; /* above .chart-open-tag (2): the scrub readout always wins */
 }
 .chart-tooltip-date {
   font-size: 10px; color: var(--text-dim);

@@ -9793,7 +9793,9 @@ function PriceChart(_refChart) {
           (selData.up ? '+' : '') + selData.pct.toFixed(2) + '%'),
         React.createElement("div", { className: "chart-tooltip-date" }, fmtSpan(selData.tLo, selData.tHi))
       ),
-      hasPre && React.createElement("div", {
+      // The scrub/date readout owns the top strip while active — the OPEN
+      // divider tag yields and returns on release.
+      hasPre && !hover && !sel && React.createElement("div", {
         className: "chart-open-tag",
         style: { left: `${(openX / W) * 100}%` }
       }, "OPEN")
