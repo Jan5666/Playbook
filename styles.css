@@ -149,7 +149,10 @@ a { color: inherit; text-decoration: none; }
 /* The icon button sits on top; while peeking it dissolves (transparent bg +
    border) so the pill behind it reads as one continuous shape with the glyph
    as its right cap. */
-.refresh-btn { position: relative; z-index: 2; transition: background 0.2s ease, border-color 0.2s ease; }
+/* touch-action none: once a press starts on the button we own the gesture, so
+   iOS can't reclaim a slight finger drift for scrolling and pointercancel the
+   held peek — the pill stays until the finger lifts. */
+.refresh-btn { position: relative; z-index: 2; touch-action: none; transition: background 0.2s ease, border-color 0.2s ease; }
 .refresh-ctl.peeking .refresh-btn { background: transparent; border-color: transparent; }
 .refresh-btn:focus-visible { outline: 2px solid var(--emerald); outline-offset: 2px; }
 /* Status dot — a small badge punched into the icon's top-right corner, ringed
@@ -223,6 +226,16 @@ a { color: inherit; text-decoration: none; }
   border-radius: 8px; display: flex; align-items: center; justify-content: center;
 }
 .badge.blue { background: var(--blue); }
+/* Preview-mode pill in the header — loud enough that a demo can't be mistaken
+   for the real book. */
+.preview-badge {
+  margin-left: 8px; padding: 2px 8px; border-radius: 999px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  flex-shrink: 0;
+}
 
 /* Hero */
 .hero { border-bottom: 1px solid var(--border); padding: 8px 0 8px; }
@@ -780,10 +793,15 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   filter: blur(0);
   transition: filter 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.total-portfolio-card .val-blur { filter: blur(10px); user-select: none; -webkit-user-select: none; }
-.total-portfolio-card .stat-sub.val-blur,
-.total-portfolio-card .dash-today.val-blur { filter: blur(7px); }
-.total-portfolio-card .portfolio-summary-row.val-blur { filter: blur(6px); }
+/* Hide-value: blur any money figure marked val-blur (totals only — per-holding
+   rows and percentages stay readable). */
+.val-blur { filter: blur(10px); user-select: none; -webkit-user-select: none; }
+.stat-sub.val-blur, .dash-today.val-blur { filter: blur(7px); }
+.portfolio-summary-row.val-blur { filter: blur(6px); }
+.chart-pie-center-val.val-blur { filter: blur(9px); }
+.hsum-value.val-blur { filter: blur(9px); }
+.hsum-pl-amt.val-blur, .kv-val.val-blur, .growth-val.val-blur { filter: blur(7px); }
+.hsum-blur-inline { filter: blur(6px); }
 
 /* Portfolio summary row inside the card */
 .portfolio-summary-row {
@@ -872,6 +890,11 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px);
   display: flex; flex-direction: column;
   overflow: hidden;
+  /* Paint the sheet's surface over the home-indicator strip: on iOS standalone
+     the visual viewport can leave a black safe-area gap below the panel's
+     bottom edge; a solid offset shadow fills it without moving any layout
+     (box-shadow ignores the element's own overflow clip). */
+  box-shadow: 0 60px 0 0 var(--bg);
   animation: slide-up 0.46s cubic-bezier(0.22, 1, 0.36, 1);
   /* The safe-area inset is reserved INSIDE the scrolling body (see .modal-body),
      not here, so the last content always scrolls clear of the home indicator
@@ -1711,7 +1734,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap;
 }
 .chart-range-btn {
-  padding: 5px 9px;
+  padding: 5px 8px; /* 9 buttons (…6M YTD 1Y…) must fit one row on a 375px phone */
   font-family: var(--mono); font-size: 10px; font-weight: 600;
   letter-spacing: 0.08em; color: var(--text-dim);
   background: transparent; border: 1px solid transparent;
@@ -1776,7 +1799,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   font-size: 11px; pointer-events: none;
   white-space: nowrap;
   box-shadow: 0 4px 14px var(--shadow-strong);
-  z-index: 2;
+  z-index: 3; /* above .chart-open-tag (2): the scrub readout always wins */
 }
 .chart-tooltip-date {
   font-size: 10px; color: var(--text-dim);

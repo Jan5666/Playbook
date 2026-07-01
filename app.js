@@ -1734,6 +1734,7 @@ const MARKET_SESSIONS = PBCore.SESSIONS;
 const marketOpen = PBCore.marketOpen;
 const anyMarketOpen = PBCore.anyMarketOpen;
 const marketSession = PBCore.marketSession;
+const quoteTradedToday = PBCore.quoteTradedToday;
 const fmtAgo = PBCore.fmtAgo;
 const refreshChipState = PBCore.refreshChipState;
 // One shared ticking clock so the freshness chip can re-render "Updated Ns ago"
@@ -1866,6 +1867,9 @@ function useAlertEngine(alerts, fireNotification) {
   useEffect(() => { seenRef.current = alertSeenMap; }, [alertSeenMap]);
   useEffect(() => {
     const run = () => {
+      // Preview mode shows a demo book — don't fire real alerts from a demo
+      // session (background SW alerts keep running on the real config).
+      if (PBStore.getSetting('previewMode')) return;
       const { nextSeen, newTriggers, seenChanged } = evaluateTriggers(alerts, PBStore.getPrices(), seenRef.current);
       if (seenChanged) setAlertSeenMap(nextSeen);
       if (newTriggers.length) {
@@ -2226,6 +2230,19 @@ function usePortfolio(fxRates, toast) {
       else delete next[key];
       return next;
     });
+  };
+  // Preview mode (Settings → Preview): swap in the static demo book read-only.
+  // Real localStorage is never touched — the store keeps holding the real data,
+  // we just don't show it — and every mutator below short-circuits to a toast.
+  const previewMode = PBStore.useSetting('previewMode');
+  const DEMO = (typeof window !== 'undefined' && window.PB_DEMO) || null;
+  const inPreview = !!(previewMode && DEMO);
+  const guardPreview = (fn) => (...args) => {
+    if (inPreview) {
+      toast('Preview mode is on — turn it off in Settings to edit your real portfolio.');
+      return;
+    }
+    return fn(...args);
   };
   useEffect(() => {
     setPositions(prev => {
@@ -2595,20 +2612,31 @@ function usePortfolio(fxRates, toast) {
     setAlerts(prev => prev.filter(a => a.id !== id));
   };
   return {
-    positions, setPositions,
-    watchlist, setWatchlist,
-    watchlistGroups, setWatchlistGroups,
+    // Read side: preview substitutes the demo book; the store itself never
+    // changes, so flipping the setting off restores the real data instantly.
+    positions: inPreview ? DEMO.positions : positions, setPositions,
+    watchlist: inPreview ? DEMO.watchlist : watchlist, setWatchlist,
+    watchlistGroups: inPreview ? [] : watchlistGroups, setWatchlistGroups,
     alerts, setAlerts,
-    contributions, setContributions,
-    transactions, setTransactions,
-    tfsaDeposits, setTfsaDeposits,
+    contributions: inPreview ? DEMO.contributions : contributions, setContributions,
+    transactions: inPreview ? DEMO.transactions : transactions, setTransactions,
+    tfsaDeposits: inPreview ? DEMO.tfsaDeposits : tfsaDeposits, setTfsaDeposits,
     sectorCache, setSectorCache,
     sectorWeights, setSectorWeights, setSectorWeightsFor,
-    addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
-    addContribution, removeContribution, importContributions,
-    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit, removeTfsaDeposits,
-    addWatch, removeWatch, moveWatch, toggleWatchList, addWatchGroup, renameWatchGroup, removeWatchGroup,
-    addAlert, removeAlert
+    // Write side: every user-facing mutator is read-only in preview (raw
+    // setters stay live — cloud restore/import wiring uses them deliberately).
+    addPosition: guardPreview(addPosition), updatePosition: guardPreview(updatePosition),
+    removePosition: guardPreview(removePosition), removePositions: guardPreview(removePositions),
+    sellPosition: guardPreview(sellPosition), importPositions: guardPreview(importPositions),
+    addContribution: guardPreview(addContribution), removeContribution: guardPreview(removeContribution),
+    importContributions: guardPreview(importContributions),
+    addTfsaDeposit: guardPreview(addTfsaDeposit), updateTfsaDeposit: guardPreview(updateTfsaDeposit),
+    removeTfsaDeposit: guardPreview(removeTfsaDeposit), removeTfsaDeposits: guardPreview(removeTfsaDeposits),
+    addWatch: guardPreview(addWatch), removeWatch: guardPreview(removeWatch),
+    moveWatch: guardPreview(moveWatch), toggleWatchList: guardPreview(toggleWatchList),
+    addWatchGroup: guardPreview(addWatchGroup), renameWatchGroup: guardPreview(renameWatchGroup),
+    removeWatchGroup: guardPreview(removeWatchGroup),
+    addAlert: guardPreview(addAlert), removeAlert: guardPreview(removeAlert)
   };
 }
 const ToastContext = React.createContext(() => {});
@@ -2670,6 +2698,8 @@ const SETTINGS_SCHEMA = [
   { name: 'displayCurrency', key: 'pb.displayCurrency.v1', default: 'USD' },
   { name: 'donutPalette',    key: 'pb.donutPalette.v1',    default: 'spectrum' },
   { name: 'donutTopN',       key: 'pb.donutTopN.v1',       default: 10 },
+  { name: 'valueHidden',     key: 'pb.valueHidden.v1',     default: false },
+  { name: 'previewMode',     key: 'pb.previewMode.v1',     default: false },
   { name: 'ribbonItems',     key: 'pb.ribbonItems.v1',     default: DEFAULT_RIBBON_ITEMS },
   { name: 'ribbonMode',      key: 'pb.ribbonMode.v1',      default: 'rows' },
   { name: 'tabOrder',        key: 'pb.tabOrder.v2',        default: DEFAULT_TAB_ORDER },
@@ -2766,6 +2796,9 @@ function LoadingScreen({ visible }) {
 }
 function App() {
   const theme = PBStore.useSetting('theme');
+  // Demo-book flag — shows the header "Preview" pill so a demo can't be
+  // mistaken for the real portfolio (usePortfolio does the data swap).
+  const previewMode = PBStore.useSetting('previewMode');
   // Home-screen / favicon icon tile. Synced to the bootstrap in index.html via
   // window.applyIconTheme so the apple-touch-icon + manifest swap to match.
   const iconTheme = PBStore.useSetting('iconTheme');
@@ -3345,7 +3378,9 @@ function App() {
     theme: theme
   }), React.createElement("div", {
     className: "brand-title"
-  }, "Playbook")), React.createElement(RefreshControl, {
+  }, "Playbook"), previewMode && React.createElement("span", {
+    className: "preview-badge"
+  }, "Preview")), React.createElement(RefreshControl, {
     chipState: chipState,
     loading: loading,
     onRefresh: onChipRefresh
@@ -3780,6 +3815,7 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
 // SVG-based line chart for portfolio growth over time
 function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates }) {
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   const [range, setRange] = useState('1y');
   const [historyCache, setHistoryCache] = useState({});
   const [loading, setLoading] = useState(false);
@@ -3983,12 +4019,16 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
     yLabels.push({ val, y: y(val) });
   }
   const sym = CURRENCY_SYMBOLS[displayCurrency] || '$';
-  const fmtShort = v => {
+  const fmtShortRaw = v => {
     if (v >= 1e6) return sym + (v / 1e6).toFixed(1) + 'M';
     if (v >= 1e3) return sym + Math.round(v / 1e3).toLocaleString('en-US') + 'k';
     return sym + Math.round(v).toLocaleString('en-US');
   };
-  const fmtFull = v => sym + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtFullRaw = v => sym + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // Hide-value: the growth chart plots the portfolio total, so its money labels
+  // mask to dots while hidden (the line's shape stays visible).
+  const fmtShort = valueHidden ? (() => '••••') : fmtShortRaw;
+  const fmtFull = valueHidden ? (() => '••••••') : fmtFullRaw;
 
   const hoverPoint = hoverIdx != null ? points[hoverIdx] : null;
   const hoverElements = [];
@@ -4254,6 +4294,7 @@ function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, 
   const donutPalette = PBStore.useSetting('donutPalette');
   const donutTopN = PBStore.useSetting('donutTopN');
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   const [mode, setMode] = useState('ticker');
   const [hovered, setHovered] = useState(null);
   const [openSector, setOpenSector] = useState(null);
@@ -4497,7 +4538,7 @@ function PortfolioPieChart({ positions, displayCurrency, fxRates, onOpenDetail, 
               })()
             : React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "chart-pie-center-label" }, "Total"),
-                React.createElement("div", { className: "chart-pie-center-val" }, fmtTotal(total)))
+                React.createElement("div", { className: "chart-pie-center-val" + (valueHidden ? " val-blur" : "") }, fmtTotal(total)))
         )
       ),
       React.createElement("div", {
@@ -4704,10 +4745,14 @@ function DashboardView(_ref6) {
   // Today's movement across the whole book, in the display currency. Each
   // holding's day change (price − previous close) is valued in its market's
   // native currency then converted; yesterday's value anchors the percentage.
+  // Only markets that have actually TRADED during the user's current local
+  // calendar day count — a pre-open US book otherwise reports yesterday's US
+  // session as part of today's move.
   let todayChange = 0, todayPrevValue = 0, todayHasData = false;
   positions.forEach(p => {
     const q = prices[priceKey(p.market, p.ticker)];
     if (!q || !isFinite(q.price) || typeof q.prevClose !== 'number' || !(q.prevClose > 0)) return;
+    if (!quoteTradedToday(q, p.market)) return;
     const native = marketCurrency(p.market);
     const valNow = convertCcy(p.shares * q.price, native, displayCurrency, rates);
     const valPrev = convertCcy(p.shares * q.prevClose, native, displayCurrency, rates);
@@ -4722,7 +4767,9 @@ function DashboardView(_ref6) {
   const [showContribHistory, setShowContribHistory] = useState(false);
   const [showTxHistory, setShowTxHistory] = useState(false);
   const [txFilter, setTxFilter] = useState('all');
-  const [valueHidden, setValueHidden] = usePersistedState('pb.valueHidden.v1', false);
+  // App-wide hide-value flag (also read by the donut, Holdings summaries, TFSA
+  // totals and the growth chart) — the eye button here is the single toggle.
+  const valueHidden = PBStore.useSetting('valueHidden');
   // "Money put in" = each deposit valued at the rate locked when it was made
   // (the real rate when USD-landed was recorded), not today's market rate — so
   // overall return compares what you contributed to what you now hold.
@@ -4744,7 +4791,7 @@ function DashboardView(_ref6) {
           React.createElement("div", { className: "stat-label" }, "Total Portfolio Value \xB7 " + displayCurrency),
           React.createElement("button", {
             className: "icon-btn",
-            onClick: () => setValueHidden(v => !v),
+            onClick: () => PBStore.setSetting('valueHidden', !valueHidden),
             'aria-label': valueHidden ? "Show value" : "Hide value",
             style: { marginTop: -4, marginBottom: -4 }
           }, React.createElement(Icon, { name: valueHidden ? 'eye-off' : 'eye', size: 14 }))),
@@ -4811,7 +4858,7 @@ function DashboardView(_ref6) {
             totalContribDisplay > 0
               ? React.createElement("div", { className: "growth-currency-row" },
                   React.createElement("span", { className: "market-badge" }, displayCurrency),
-                  React.createElement("span", { className: `growth-val ${overallReturn >= 0 ? 'up' : 'down'}` },
+                  React.createElement("span", { className: `growth-val ${overallReturn >= 0 ? 'up' : 'down'}` + (valueHidden ? " val-blur" : "") },
                     overallReturn >= 0 ? '+' : '\u2212',
                     fmtCcy(Math.abs(overallReturn), displayCurrency)),
                   React.createElement("span", { className: `growth-pct ${overallReturnPct >= 0 ? 'up' : 'down'}` },
@@ -4821,7 +4868,7 @@ function DashboardView(_ref6) {
               className: "growth-contrib-total",
               onClick: () => setShowContribHistory(true)
             }, React.createElement("span", { className: "text-dim" }, "Total contributions"),
-              React.createElement("span", { className: "mono" }, fmtCcy(totalContribDisplay, displayCurrency)),
+              React.createElement("span", { className: "mono" + (valueHidden ? " hsum-blur-inline" : "") }, fmtCcy(totalContribDisplay, displayCurrency)),
               React.createElement(Icon, { name: "chevron", size: 12 }))),
           React.createElement("div", { className: "growth-stat" },
             React.createElement("div", { className: "growth-stat-header" },
@@ -4830,7 +4877,7 @@ function DashboardView(_ref6) {
             currencyGroups.length > 0
               ? currencyGroups.map(g => React.createElement("div", { key: g.code, className: "growth-currency-row" },
                   React.createElement("span", { className: "market-badge" }, g.label),
-                  React.createElement("span", { className: `growth-val ${g.pnl >= 0 ? 'up' : 'down'}` }, g.pnl >= 0 ? '+' : '\u2212', fmt(Math.abs(g.pnl), g.fmtMarket)),
+                  React.createElement("span", { className: `growth-val ${g.pnl >= 0 ? 'up' : 'down'}` + (valueHidden ? " val-blur" : "") }, g.pnl >= 0 ? '+' : '\u2212', fmt(Math.abs(g.pnl), g.fmtMarket)),
                   React.createElement("span", { className: `growth-pct ${g.pnlPct >= 0 ? 'up' : 'down'}` }, g.pnlPct >= 0 ? '+' : '', g.pnlPct.toFixed(1), "%")))
               : React.createElement("div", { className: "text-dim text-sm", style: { padding: '10px 14px', background: 'var(--bg-elev)', borderRadius: 10 } }, "Add positions to see P/L."),
             (positions.length > 0 || transactions.length > 0) && React.createElement("button", {
@@ -5022,6 +5069,7 @@ function CurrentView(_ref7) {
     onSellPosition
   } = _ref7;
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   // Always offer the three primary US/SA tabs, then surface any other market
   // the user actually holds (LSE, ASX, FRA, PAR, AMS…) so imported non-US
   // holdings don't silently disappear from the Holdings view.
@@ -5086,7 +5134,8 @@ function CurrentView(_ref7) {
       cost += (c != null ? c : p.shares * p.costBasis);
       if (q && isFinite(q.price)) {
         value += p.shares * q.price; anyPrice = true;
-        if (typeof q.prevClose === 'number' && q.prevClose > 0) {
+        // Day line only counts once this market has traded today.
+        if (typeof q.prevClose === 'number' && q.prevClose > 0 && quoteTradedToday(q, market)) {
           prevValue += p.shares * q.prevClose;
           dayChange += p.shares * (q.price - q.prevClose);
           anyDay = true;
@@ -5118,9 +5167,9 @@ function CurrentView(_ref7) {
       React.createElement("div", { className: "hsum-top" },
         React.createElement("div", { className: "hsum-main" },
           React.createElement("div", { className: "hsum-label" }, "Market value · " + ccy),
-          React.createElement("div", { className: "hsum-value mono" }, fmtCcy(s.value, ccy))),
+          React.createElement("div", { className: "hsum-value mono" + (valueHidden ? " val-blur" : "") }, fmtCcy(s.value, ccy))),
         React.createElement("div", { className: `hsum-pl ${up ? 'up' : 'down'}` },
-          React.createElement("div", { className: "hsum-pl-amt mono" }, fmtCcySigned(s.gain, ccy)),
+          React.createElement("div", { className: "hsum-pl-amt mono" + (valueHidden ? " val-blur" : "") }, fmtCcySigned(s.gain, ccy)),
           s.gainPct != null ? React.createElement("div", { className: "hsum-pl-pct mono" },
             (up ? '+' : '') + s.gainPct.toFixed(2) + '%') : null)),
       React.createElement("div", { className: "hsum-bar" },
@@ -5129,10 +5178,12 @@ function CurrentView(_ref7) {
       React.createElement("div", { className: "hsum-foot" },
         React.createElement("div", { className: "hsum-foot-legend" },
           React.createElement("span", { className: "hsum-dot invested" }),
-          React.createElement("span", null, "Invested ", fmtCcy(s.cost, ccy))),
+          React.createElement("span", null, "Invested ",
+            React.createElement("span", { className: valueHidden ? "hsum-blur-inline" : "" }, fmtCcy(s.cost, ccy)))),
         s.dayPct != null ? React.createElement("div", { className: `hsum-today ${dayUp ? 'up' : 'down'}` },
           React.createElement("span", { className: "hsum-today-arrow" }, dayUp ? '▲' : '▼'),
-          React.createElement("span", { className: "mono" }, "Today ", fmtCcySigned(s.dayChange, ccy),
+          React.createElement("span", { className: "mono" }, "Today ",
+            React.createElement("span", { className: valueHidden ? "hsum-blur-inline" : "" }, fmtCcySigned(s.dayChange, ccy)),
             " · ", (dayUp ? '+' : '') + s.dayPct.toFixed(2) + '%')) : null));
   };
 
@@ -9069,6 +9120,7 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
                    fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights }) {
   const prices = PBStore.usePricesMap();
+  const valueHidden = PBStore.useSetting('valueHidden');
   const totalValue = positions.reduce((s, p) => {
     const q = prices['TFSA:' + p.ticker];
     return s + (q ? p.shares * q.price : p.shares * p.costBasis);
@@ -9098,16 +9150,16 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
     React.createElement("div", { className: "kv-row tfsa-holdings-stats" },
       React.createElement("div", { className: "kv" },
         React.createElement("div", { className: "kv-label" }, "Value"),
-        React.createElement("div", { className: "kv-val mono" }, fmtRand(totalValue, 2))),
+        React.createElement("div", { className: "kv-val mono" + (valueHidden ? " val-blur" : "") }, fmtRand(totalValue, 2))),
       React.createElement("div", { className: "kv" },
         React.createElement("div", { className: "kv-label" }, "Cost"),
-        React.createElement("div", { className: "kv-val mono" }, fmtRand(totalCost, 2))),
+        React.createElement("div", { className: "kv-val mono" + (valueHidden ? " val-blur" : "") }, fmtRand(totalCost, 2))),
       React.createElement("div", { className: "kv" },
         React.createElement("div", { className: "kv-label" }, "P/L"),
         // Currency amount stays the prominent figure; the % rides below it as a
         // smaller tinted pill, mirroring the dashboard's green return boxes.
         React.createElement("div", { className: "tfsa-pnl-val" },
-          React.createElement("span", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` },
+          React.createElement("span", { className: `kv-val mono ${pnl >= 0 ? 'text-up' : 'text-down'}` + (valueHidden ? " val-blur" : "") },
             (pnl >= 0 ? '+' : '−') + fmtRand(pnl, 2)),
           React.createElement("span", { className: `tfsa-pnl-pct ${pnlPct >= 0 ? 'up' : 'down'}` },
             (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(1) + "%"))))
@@ -9443,6 +9495,7 @@ function PriceChart(_refChart) {
     { key: '1mo', label: '1M' },
     { key: '3mo', label: '3M' },
     { key: '6mo', label: '6M' },
+    { key: 'ytd', label: 'YTD' },
     { key: '1y', label: '1Y' },
     { key: '5y', label: '5Y' },
     { key: 'max', label: 'Max' }
@@ -12354,6 +12407,7 @@ function SettingsModal({ fxRates, onRefreshFx,
   const theme = PBStore.useSetting('theme');
   const donutPalette = PBStore.useSetting('donutPalette');
   const donutTopN = PBStore.useSetting('donutTopN');
+  const previewMode = PBStore.useSetting('previewMode');
   const [refreshing, setRefreshing] = useState(false);
   const [activeSection, setActiveSection] = useState('display');
   const [selectedDel, setSelectedDel] = useState(() => new Set());
@@ -12407,6 +12461,7 @@ function SettingsModal({ fxRates, onRefreshFx,
     { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh' },
     { key: 'holdings', label: 'Holdings', icon: 'briefcase' },
+    { key: 'preview', label: 'Preview', icon: 'eye' },
     { key: 'connections', label: 'Connections', icon: 'link' },
     { key: 'data', label: 'Data', icon: 'download' },
   ];
@@ -12495,6 +12550,31 @@ function SettingsModal({ fxRates, onRefreshFx,
             React.createElement("div", { className: "settings-info-body" },
               "When you add a position, the live exchange rate is stored. Price P/L tracks native-currency changes. FX impact shows how much your ", displayCurrency, " value has shifted purely from currency moves.")
           )
+        ),
+        activeSection === 'preview' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-row mb-3" },
+            React.createElement("div", { className: "settings-row-label" },
+              React.createElement("div", { className: "settings-row-title" }, "Preview mode"),
+              React.createElement("div", { className: "settings-row-desc" },
+                "Show the app with a realistic demo portfolio — trendy stocks across every market and sector, live prices, invented sizes. Your real holdings stay untouched and hidden while it's on; editing is disabled.")
+            ),
+            React.createElement("div", { className: "seg-toggle", style: { flex: '0 0 auto', minWidth: 168 } },
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (!previewMode ? " active" : ""),
+                onClick: () => PBStore.setSetting('previewMode', false),
+                "aria-pressed": !previewMode
+              }, "Off"),
+              React.createElement("button", {
+                type: "button",
+                className: "seg-opt" + (previewMode ? " active" : ""),
+                onClick: () => PBStore.setSetting('previewMode', true),
+                "aria-pressed": previewMode
+              }, "On")
+            )
+          ),
+          previewMode && React.createElement("div", { className: "settings-row-desc" },
+            "Preview is on — a \"Preview\" pill shows in the header. Alerts pause while it's on.")
         ),
         activeSection === 'appearance' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-row mb-3" },
