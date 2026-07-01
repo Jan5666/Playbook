@@ -21,10 +21,15 @@ function deriveExt(result, market) {
   if (ctp.post && now >= ctp.post.start && now < ctp.post.end) { kind = 'post'; sess = ctp.post; }
   else if (ctp.pre && now >= ctp.pre.start && now < ctp.pre.end) { kind = 'pre'; sess = ctp.pre; }
   else return null;
-  let raw = null; for (let i = ts.length - 1; i >= 0; i--) { const c = closes[i]; if (c == null || !isFinite(c)) continue; if (ts[i] >= sess.start && ts[i] < sess.end) { raw = c; break; } }
-  if (raw == null) return null;
+  // Mirror pb-core.deriveIntradayExt: latest in-window close is the live ext
+  // price; surface it whenever the session shows real activity (any close differs
+  // from the regular close), regardless of move size — Yahoo leaves ext-bar
+  // volume null, so price activity is the only "did it trade" signal.
+  let raw = null, moved = false;
+  for (let i = ts.length - 1; i >= 0; i--) { const c = closes[i]; if (c == null || !isFinite(c)) continue; if (ts[i] < sess.start || ts[i] >= sess.end) continue; if (raw == null) raw = c; if (c !== meta.regularMarketPrice) moved = true; if (raw != null && moved) break; }
+  if (raw == null || !moved) return null;
   const div = centDivisor(market, meta.currency); const extPrice = raw / div, reg = meta.regularMarketPrice / div;
-  if (!(reg > 0) || !(extPrice > 0) || Math.abs(extPrice - reg) < 0.0005 * reg) return null;
+  if (!(reg > 0) || !(extPrice > 0)) return null;
   return { extPrice, extChangePct: (extPrice - reg) / reg * 100, extKind: kind };
 }
 let expectedExt = null;

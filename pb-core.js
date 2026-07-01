@@ -489,21 +489,35 @@
     if (ctp.post && nowSec >= ctp.post.start && nowSec < ctp.post.end) { kind = 'post'; sess = ctp.post; }
     else if (ctp.pre && nowSec >= ctp.pre.start && nowSec < ctp.pre.end) { kind = 'pre'; sess = ctp.pre; }
     else return null;
-    // Latest non-null close that falls inside the active extended session.
-    let raw = null;
+    // Latest non-null close inside the active extended session = the live ext
+    // price. Yahoo's chart API leaves `volume` null on pre/post minute bars
+    // (only the closing-auction bar carries volume), so "did it really trade
+    // after hours" can't be read from volume. We infer a genuine ext session
+    // from price ACTIVITY instead: a live session moves the close off the
+    // regular close, whereas a symbol with no after-hours market is forward-
+    // filled flat at that close.
+    let raw = null;      // latest in-window close → the live ext price
+    let moved = false;   // any in-window close that differs from the reg close
     for (let i = ts.length - 1; i >= 0; i--) {
       const c = closes[i];
       if (c == null || !isFinite(c)) continue;
-      if (ts[i] >= sess.start && ts[i] < sess.end) { raw = c; break; }
+      if (ts[i] < sess.start || ts[i] >= sess.end) continue;
+      if (raw == null) raw = c;
+      if (c !== meta.regularMarketPrice) moved = true;
+      if (raw != null && moved) break;
     }
     if (raw == null) return null;
+    // No genuine after-hours activity (every bar forward-filled at the close) →
+    // nothing meaningful to show. We deliberately do NOT gate on the *size* of
+    // the move: a stock trading flat (±0.01%) after hours is still real, live
+    // information, and hiding small moves is exactly what made the readout appear
+    // for some holdings (movers) but not others (steady names).
+    if (!moved) return null;
     const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
     const divisor = centDivisor(market, currency);
     const extPrice = raw / divisor;
     const regularPrice = meta.regularMarketPrice / divisor;
     if (!(regularPrice > 0) || !(extPrice > 0)) return null;
-    // No move yet (first ext bar equals the close) → nothing meaningful to show.
-    if (Math.abs(extPrice - regularPrice) < 0.0005 * regularPrice) return null;
     return {
       extPrice,
       extChange: extPrice - regularPrice,
