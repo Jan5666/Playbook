@@ -1734,6 +1734,7 @@ const MARKET_SESSIONS = PBCore.SESSIONS;
 const marketOpen = PBCore.marketOpen;
 const anyMarketOpen = PBCore.anyMarketOpen;
 const marketSession = PBCore.marketSession;
+const quoteTradedToday = PBCore.quoteTradedToday;
 const fmtAgo = PBCore.fmtAgo;
 const refreshChipState = PBCore.refreshChipState;
 // One shared ticking clock so the freshness chip can re-render "Updated Ns ago"
@@ -4704,10 +4705,14 @@ function DashboardView(_ref6) {
   // Today's movement across the whole book, in the display currency. Each
   // holding's day change (price − previous close) is valued in its market's
   // native currency then converted; yesterday's value anchors the percentage.
+  // Only markets that have actually TRADED during the user's current local
+  // calendar day count — a pre-open US book otherwise reports yesterday's US
+  // session as part of today's move.
   let todayChange = 0, todayPrevValue = 0, todayHasData = false;
   positions.forEach(p => {
     const q = prices[priceKey(p.market, p.ticker)];
     if (!q || !isFinite(q.price) || typeof q.prevClose !== 'number' || !(q.prevClose > 0)) return;
+    if (!quoteTradedToday(q, p.market)) return;
     const native = marketCurrency(p.market);
     const valNow = convertCcy(p.shares * q.price, native, displayCurrency, rates);
     const valPrev = convertCcy(p.shares * q.prevClose, native, displayCurrency, rates);
@@ -5086,7 +5091,8 @@ function CurrentView(_ref7) {
       cost += (c != null ? c : p.shares * p.costBasis);
       if (q && isFinite(q.price)) {
         value += p.shares * q.price; anyPrice = true;
-        if (typeof q.prevClose === 'number' && q.prevClose > 0) {
+        // Day line only counts once this market has traded today.
+        if (typeof q.prevClose === 'number' && q.prevClose > 0 && quoteTradedToday(q, market)) {
           prevValue += p.shares * q.prevClose;
           dayChange += p.shares * (q.price - q.prevClose);
           anyDay = true;
