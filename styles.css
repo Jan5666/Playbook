@@ -1709,7 +1709,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap;
 }
 .chart-range-btn {
-  padding: 5px 9px;
+  padding: 5px 8px; /* 9 buttons (…6M YTD 1Y…) must fit one row on a 375px phone */
   font-family: var(--mono); font-size: 10px; font-weight: 600;
   letter-spacing: 0.08em; color: var(--text-dim);
   background: transparent; border: 1px solid transparent;

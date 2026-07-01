@@ -282,6 +282,7 @@
       case '1mo': d.setMonth(d.getMonth() - 1); break;
       case '3mo': d.setMonth(d.getMonth() - 3); break;
       case '6mo': d.setMonth(d.getMonth() - 6); break;
+      case 'ytd': d.setMonth(0, 1); break;
       case '1y': d.setFullYear(d.getFullYear() - 1); break;
       case '5y': d.setFullYear(d.getFullYear() - 5); break;
       case 'max': d.setFullYear(d.getFullYear() - 25); break;
@@ -385,6 +386,10 @@
       case '1mo': return 31 * day;    case '3mo': return 92 * day;
       case '6mo': return 184 * day;   case '1y': return 366 * day;
       case '2y': return 731 * day;    case '5y': return 1827 * day;
+      case 'ytd': {
+        const jan1 = new Date(new Date().getFullYear(), 0, 1).getTime();
+        return Math.max(day, Date.now() - jan1);   // ≥1 day so early-January still charts
+      }
       default: return Infinity;       // max / all
     }
   }
@@ -749,7 +754,7 @@
     if (isUnitTrustId(ticker)) return fetchUnitTrustHistory(ticker, range);
     const sym = yahooSymbol(ticker, market);
     const r = range || '1y';
-    const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === '1y') ? '1d' : '1wk');
+    const interval = r === '1d' ? '5m' : (r === '5d' ? '15m' : (r === '1mo' || r === '3mo' || r === '6mo' || r === 'ytd' || r === '1y') ? '1d' : '1wk');
     // Pre/post-market bars belong ONLY on the 1-day chart. Every other range
     // shows actual regular-session trading only.
     const includePrePost = r === '1d' ? '&includePrePost=true' : '';
