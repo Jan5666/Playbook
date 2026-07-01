@@ -112,6 +112,29 @@
     }
   }
 
+  // "Has this instrument actually traded during the user's current local
+  // calendar day?" — the kernel behind the dashboard's "Today" aggregates.
+  // Before a market opens for the day, its quotes still carry yesterday's
+  // session (price = last close, prevClose = the close before), so summing
+  // price−prevClose would report YESTERDAY's move as part of today's. Gating
+  // on the last regular tick's local day keeps "Today" meaning the user's
+  // today across US/JSE/LSE sessions.
+  function tradedToday(tickMs, nowMs = Date.now()) {
+    if (typeof tickMs !== 'number' || !isFinite(tickMs)) return false;
+    const a = new Date(tickMs), b = new Date(nowMs);
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+  // Quote-level wrapper: trust the quote's own last-tick timestamp when
+  // present; fall back to the session clock (open now ⇒ trading today) for
+  // sources that don't carry one (e.g. Stooq).
+  function quoteTradedToday(quote, market, nowMs = Date.now()) {
+    if (!quote) return false;
+    if (typeof quote.regularMarketTime === 'number' && isFinite(quote.regularMarketTime)) {
+      return tradedToday(quote.regularMarketTime, nowMs);
+    }
+    return marketSession(market, nowMs).phase === 'open';
+  }
+
   // Relative "time since" for the freshness chip; coarsens as it ages so the
   // user always sees movement within a few seconds of a refresh.
   function fmtAgo(fromMs, nowMs = Date.now()) {
@@ -595,6 +618,8 @@
     marketOpen,
     anyMarketOpen,
     marketSession,
+    tradedToday,
+    quoteTradedToday,
     fmtAgo,
     refreshChipState,
     priceKey,
