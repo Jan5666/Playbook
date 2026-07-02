@@ -796,6 +796,10 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 /* Hide-value: blur any money figure marked val-blur (totals only — per-holding
    rows and percentages stay readable). */
 .val-blur { filter: blur(10px); user-select: none; -webkit-user-select: none; }
+/* The blur(0) baseline above selects `.total-portfolio-card .stat-value` (0,2,0),
+   which outweighs plain `.val-blur` (0,1,0) — without this restatement the big
+   headline total is the one figure that never blurs. */
+.total-portfolio-card .stat-value.val-blur { filter: blur(12px); }
 .stat-sub.val-blur, .dash-today.val-blur { filter: blur(7px); }
 .portfolio-summary-row.val-blur { filter: blur(6px); }
 .chart-pie-center-val.val-blur { filter: blur(9px); }
@@ -2529,26 +2533,41 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .settings-dialog-sub { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
 .settings-dialog-body { flex: 1; min-height: 0; display: flex; }
+/* iOS-Settings-style rail: labelled clusters of rows, each row led by a colored
+   icon tile. The rail sits a shade off the content pane so the split reads. */
 .settings-nav {
-  flex-shrink: 0; width: 196px; padding: 12px;
+  flex-shrink: 0; width: 208px; padding: 14px 10px;
   border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 2px;
+  background: color-mix(in srgb, var(--bg-raised) 42%, var(--bg));
+  display: flex; flex-direction: column; gap: 18px;
   overflow-y: auto;
 }
+.settings-nav-group { display: flex; flex-direction: column; gap: 2px; }
+.settings-nav-group-title {
+  padding: 0 10px 5px; font-family: var(--mono); font-size: 9px; font-weight: 600;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim);
+}
 .settings-nav-item {
-  display: flex; align-items: center; gap: 11px;
-  width: 100%; padding: 10px 12px; border-radius: 11px;
-  font-family: var(--sans); font-size: 13.5px; font-weight: 500;
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 7px 10px; border-radius: 10px;
+  font-family: var(--sans); font-size: 13px; font-weight: 500;
   color: var(--text-muted); text-align: left; cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
-.settings-nav-item svg { flex-shrink: 0; opacity: 0.7; transition: opacity 0.15s, color 0.15s; }
+.settings-nav-ico {
+  flex-shrink: 0; width: 25px; height: 25px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.12);
+}
+.settings-nav-ico svg { width: 13px; height: 13px; }
+.settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-nav-item:hover { background: var(--bg-raised); color: var(--text); }
 .settings-nav-item.active {
-  background: color-mix(in srgb, var(--blue) 12%, var(--bg-raised));
+  background: color-mix(in srgb, var(--brand) 14%, var(--bg-raised));
   color: var(--text); font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 30%, transparent);
 }
-.settings-nav-item.active svg { opacity: 1; color: var(--blue); }
 .settings-content {
   flex: 1; min-width: 0; overflow-y: auto;
   padding: 22px 24px; -webkit-overflow-scrolling: touch;
@@ -2575,9 +2594,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
     scrollbar-width: none;
   }
   .settings-nav::-webkit-scrollbar { display: none; }
+  /* Flatten the clusters into one scrollable chip row on phones. */
+  .settings-nav-group { display: contents; }
+  .settings-nav-group-title { display: none; }
   .settings-nav-item {
-    flex-direction: column; gap: 5px; width: auto;
-    padding: 9px 14px; font-size: 11px; white-space: nowrap;
+    flex-direction: column; gap: 6px; width: auto;
+    padding: 8px 13px 7px; font-size: 10.5px; white-space: nowrap;
     border-radius: 12px;
   }
   .settings-content { padding: 18px 16px calc(26px + var(--safe-bottom)); }

@@ -2235,6 +2235,25 @@ function usePortfolio(fxRates, toast) {
   // Real localStorage is never touched — the store keeps holding the real data,
   // we just don't show it — and every mutator below short-circuits to a toast.
   const previewMode = PBStore.useSetting('previewMode');
+  const [, setDemoTick] = useState(0);
+  // Self-heal: an installed PWA can launch on a stale cached index.html that
+  // predates the demo-data.js script tag (iOS keeps old start pages around long
+  // after app.js itself has updated). Without PB_DEMO the toggle and badge show
+  // but the swap silently never happens — so pull the dataset in on demand the
+  // moment preview is requested, and say so if it can't be fetched.
+  useEffect(() => {
+    if (!previewMode || (typeof window !== 'undefined' && window.PB_DEMO)) return;
+    if (document.querySelector('script[data-pb-demo]')) return;
+    const el = document.createElement('script');
+    el.src = './demo-data.js';
+    el.setAttribute('data-pb-demo', '1');
+    el.onload = () => setDemoTick(t => t + 1);
+    el.onerror = () => {
+      el.remove();
+      toast('Couldn’t load the demo portfolio — check your connection and toggle Preview again.');
+    };
+    document.head.appendChild(el);
+  }, [previewMode]);
   const DEMO = (typeof window !== 'undefined' && window.PB_DEMO) || null;
   const inPreview = !!(previewMode && DEMO);
   const guardPreview = (fn) => (...args) => {
@@ -3813,6 +3832,79 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
      (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + sym + fmtNum(Math.abs(extChgAbs)) : ''))));
 });
 // SVG-based line chart for portfolio growth over time
+const CHART_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// "2 Apr" (optionally "2 Apr ’25") — how a person reads a date, vs raw MM-DD.
+function chartDayLabel(dateStr, withYear) {
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.getDate() + ' ' + CHART_MONTHS[d.getMonth()] + (withYear ? ' ’' + String(d.getFullYear()).slice(2) : '');
+}
+// Time ticks for the growth chart's x axis: calendar-aligned boundaries (weeks →
+// month starts → year starts, scaled to the visible span) labelled "7 Apr",
+// "1 May", "Jun", "2026". Returns point indices because the x scale is
+// index-based (one slot per sampled day), not time-based; a tick is dropped when
+// the nearest point drifts too far from the boundary (sparse fallback data), and
+// if none survive the endpoints are labelled instead so the axis never goes mute.
+function buildTimeAxisTicks(points) {
+  if (points.length < 2) return [];
+  const parse = s => new Date(s + 'T00:00:00');
+  const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const first = parse(points[0].date), last = parse(points[points.length - 1].date);
+  const spanDays = Math.max(1, (last - first) / 864e5);
+  const maxDrift = Math.max(3, spanDays / 8);
+  const ticks = [];
+  const push = (dateStr, label) => {
+    const i = points.findIndex(p => p.date >= dateStr);
+    if (i < 0) return;
+    if ((parse(points[i].date) - parse(dateStr)) / 864e5 > maxDrift) return;
+    if (ticks.length && ticks[ticks.length - 1].idx === i) return;
+    ticks.push({ idx: i, label });
+  };
+  if (spanDays <= 70) {
+    // Weekly, anchored to Mondays: "7 Apr"
+    const d = new Date(first);
+    d.setDate(d.getDate() + ((8 - d.getDay()) % 7));
+    const stepDays = spanDays <= 35 ? 7 : 14;
+    while (d <= last) {
+      push(iso(d), d.getDate() + ' ' + CHART_MONTHS[d.getMonth()]);
+      d.setDate(d.getDate() + stepDays);
+    }
+  } else if (spanDays <= 140) {
+    // Semi-monthly: "1 May" / "15 May" — walk to the first 1st-or-15th after
+    // the window opens, then alternate boundaries.
+    const d = new Date(first);
+    do { d.setDate(d.getDate() + 1); } while (d.getDate() !== 1 && d.getDate() !== 15);
+    while (d <= last) {
+      push(iso(d), d.getDate() + ' ' + CHART_MONTHS[d.getMonth()]);
+      if (d.getDate() === 1) d.setDate(15); else { d.setDate(1); d.setMonth(d.getMonth() + 1); }
+    }
+  } else if (spanDays <= 430) {
+    // Month starts, stepped to ≤6 labels: "1 Apr" when every month shows,
+    // otherwise "Apr" with January carrying the year ("Jan ’26").
+    const monthStarts = [];
+    const d = new Date(first.getFullYear(), first.getMonth() + 1, 1);
+    while (d <= last) { monthStarts.push(new Date(d)); d.setMonth(d.getMonth() + 1); }
+    const stepM = Math.max(1, Math.ceil(monthStarts.length / 6));
+    monthStarts.forEach((m, i) => {
+      if (i % stepM !== 0) return;
+      const label = stepM === 1 ? '1 ' + CHART_MONTHS[m.getMonth()]
+        : m.getMonth() === 0 ? 'Jan ’' + String(m.getFullYear()).slice(2)
+        : CHART_MONTHS[m.getMonth()];
+      push(iso(m), label);
+    });
+  } else {
+    // Year starts: "2025"
+    const years = [];
+    for (let yy = first.getFullYear() + 1; yy <= last.getFullYear(); yy++) years.push(yy);
+    const stepY = Math.max(1, Math.ceil(years.length / 6));
+    years.forEach((yy, i) => { if (i % stepY === 0) push(yy + '-01-01', String(yy)); });
+  }
+  if (ticks.length === 0) {
+    const withYear = points[0].date.slice(0, 4) !== points[points.length - 1].date.slice(0, 4);
+    ticks.push({ idx: 0, label: chartDayLabel(points[0].date, withYear) });
+    ticks.push({ idx: points.length - 1, label: chartDayLabel(points[points.length - 1].date, withYear) });
+  }
+  return ticks;
+}
 function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates }) {
   const prices = PBStore.usePricesMap();
   const valueHidden = PBStore.useSetting('valueHidden');
@@ -4004,24 +4096,36 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
         React.createElement("div", { className: "text-dim text-sm" }, emptyMsg)));
   }
   const allVals = points.flatMap(p => [p.value, p.contributed].filter(v => v != null && isFinite(v)));
-  const minV = Math.min(...allVals) * 0.95;
-  const maxV = Math.max(...allVals) * 1.05;
-  const rangeV = maxV - minV || 1;
+  // Nice-number Y axis: snap the scale to a round step (1 / 2 / 2.5 / 5 × 10ⁿ)
+  // so gridlines land on amounts like R250k · R300k, not raw data-min/max splits.
+  const rawMinV = Math.min(...allVals), rawMaxV = Math.max(...allVals);
+  const roughStep = ((rawMaxV - rawMinV) || Math.max(Math.abs(rawMaxV), 1)) / 4;
+  const stepMag = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const stepNorm = roughStep / stepMag;
+  const yStep = (stepNorm <= 1 ? 1 : stepNorm <= 2 ? 2 : stepNorm <= 2.5 ? 2.5 : stepNorm <= 5 ? 5 : 10) * stepMag;
+  let minV = Math.floor(rawMinV / yStep) * yStep;
+  if (minV < 0 && rawMinV >= 0) minV = 0;
+  let maxV = Math.ceil(rawMaxV / yStep) * yStep;
+  if (maxV === minV) maxV += yStep;
+  const rangeV = maxV - minV;
   const x = i => PAD_L + (i / (points.length - 1)) * chartW;
   const y = v => PAD_T + chartH - ((v - minV) / rangeV) * chartH;
   const valuePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join('');
   const contribPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p.contributed).toFixed(1)}`).join('');
   const areaPath = valuePath + `L${x(points.length - 1).toFixed(1)},${(PAD_T + chartH).toFixed(1)}L${PAD_L},${(PAD_T + chartH).toFixed(1)}Z`;
-  const yTicks = 4;
   const yLabels = [];
-  for (let i = 0; i <= yTicks; i++) {
-    const val = minV + (rangeV * i / yTicks);
+  for (let i = 0, n = Math.round(rangeV / yStep); i <= n; i++) {
+    const val = minV + yStep * i;
     yLabels.push({ val, y: y(val) });
   }
+  const xTicks = buildTimeAxisTicks(points);
+  const crossesYears = points[0].date.slice(0, 4) !== points[points.length - 1].date.slice(0, 4);
   const sym = CURRENCY_SYMBOLS[displayCurrency] || '$';
+  // Ticks land on round steps; the unary + trims trailing zeros so labels stay
+  // compact (R250k, R2.5M, R487.5k).
   const fmtShortRaw = v => {
-    if (v >= 1e6) return sym + (v / 1e6).toFixed(1) + 'M';
-    if (v >= 1e3) return sym + Math.round(v / 1e3).toLocaleString('en-US') + 'k';
+    if (Math.abs(v) >= 1e6) return sym + (+(v / 1e6).toFixed(2)) + 'M';
+    if (Math.abs(v) >= 1e3) return sym + (+(v / 1e3).toFixed(2)) + 'k';
     return sym + Math.round(v).toLocaleString('en-US');
   };
   const fmtFullRaw = v => sym + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -4055,9 +4159,9 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
         textAnchor: "middle", fill: "var(--text)", fontSize: "11", fontFamily: "var(--mono)", fontWeight: "600" },
         label)
     );
-    const dateLabel = hoverPoint.date.slice(5);
+    const dateLabel = chartDayLabel(hoverPoint.date, crossesYears);
     hoverElements.push(
-      React.createElement("text", { key: "hd", x: hx, y: PAD_T + chartH + 14,
+      React.createElement("text", { key: "hd", x: hx, y: H - 7,
         textAnchor: "middle", fill: "var(--text)", fontSize: "10", fontFamily: "var(--mono)", fontWeight: "600" },
         dateLabel)
     );
@@ -4106,12 +4210,15 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
         key: 'yl' + i, x: PAD_L - 6, y: l.y + 3.5,
         textAnchor: "end", fill: "var(--text-dim)", fontSize: "10", fontFamily: "var(--mono)" },
         fmtShort(l.val))),
-      hoverIdx == null && React.createElement("text", {
-        x: PAD_L, y: H - 6, fill: "var(--text-dim)", fontSize: "10", fontFamily: "var(--mono)" },
-        points[0].date.slice(5)),
-      hoverIdx == null && React.createElement("text", {
-        x: W - PAD_R, y: H - 6, textAnchor: "end", fill: "var(--text-dim)", fontSize: "10", fontFamily: "var(--mono)" },
-        points[points.length - 1].date.slice(5)),
+      // Time axis: calendar-aligned tick marks stay put; their labels step aside
+      // while scrubbing so the hover date reads cleanly.
+      ...xTicks.filter(t => { const tx = x(t.idx); return tx >= PAD_L + 6 && tx <= W - PAD_R - 6; }).map((t, i) =>
+        React.createElement("g", { key: 'xt' + i },
+          React.createElement("line", { x1: x(t.idx), x2: x(t.idx), y1: PAD_T + chartH, y2: PAD_T + chartH + 4,
+            stroke: "var(--border)", strokeWidth: "1" }),
+          hoverIdx == null && React.createElement("text", { x: x(t.idx), y: H - 7, textAnchor: "middle",
+            fill: "var(--text-dim)", fontSize: "9.5", fontFamily: "var(--mono)", letterSpacing: "0.03em" },
+            t.label))),
       React.createElement("path", { d: areaPath, fill: "url(#areaGrad)" }),
       React.createElement("path", { d: contribPath, fill: "none", stroke: "var(--text-dim)", strokeWidth: "1.5", strokeDasharray: "4,3", opacity: "0.4" }),
       React.createElement("path", { d: valuePath, fill: "none", stroke: "url(#lineGrad)", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" }),
@@ -12454,17 +12561,26 @@ function SettingsModal({ fxRates, onRefreshFx,
     try { await cb.restore(restoreCode); /* reloads on success */ }
     catch (e) { setRestoreErr(e.message || 'Restore failed'); setRestoreBusy(false); }
   };
+  // iOS-Settings-style sidebar: each section carries a colored icon tile and
+  // lives in a labelled cluster. Tints stay inside the app palette so the rail
+  // reads branded, not candy.
   const sections = [
-    { key: 'display', label: 'Currency', icon: 'globe' },
-    { key: 'appearance', label: 'Appearance', icon: 'image' },
-    { key: 'tabs', label: 'Tabs', icon: 'list' },
-    { key: 'ribbon', label: 'Ribbon', icon: 'activity' },
-    { key: 'fx', label: 'FX Rates', icon: 'refresh' },
-    { key: 'holdings', label: 'Holdings', icon: 'briefcase' },
-    { key: 'preview', label: 'Preview', icon: 'eye' },
-    { key: 'connections', label: 'Connections', icon: 'link' },
-    { key: 'data', label: 'Data', icon: 'download' },
+    { key: 'display', label: 'Currency', icon: 'globe', tint: 'var(--blue)', group: 'General' },
+    { key: 'appearance', label: 'Appearance', icon: 'image', tint: 'var(--purple)', group: 'General' },
+    { key: 'tabs', label: 'Tabs', icon: 'list', tint: '#64748b', group: 'General' },
+    { key: 'ribbon', label: 'Ribbon', icon: 'activity', tint: 'var(--amber)', group: 'General' },
+    { key: 'fx', label: 'FX Rates', icon: 'refresh', tint: 'var(--emerald)', group: 'Portfolio' },
+    { key: 'holdings', label: 'Holdings', icon: 'briefcase', tint: 'var(--brand)', group: 'Portfolio' },
+    { key: 'preview', label: 'Preview', icon: 'eye', tint: '#0ea5e9', group: 'Portfolio' },
+    { key: 'connections', label: 'Connections', icon: 'link', tint: 'var(--rose)', group: 'Data & sync' },
+    { key: 'data', label: 'Data', icon: 'download', tint: '#71717a', group: 'Data & sync' },
   ];
+  const navGroups = [];
+  sections.forEach(s => {
+    const last = navGroups[navGroups.length - 1];
+    if (!last || last.title !== s.group) navGroups.push({ title: s.group, items: [s] });
+    else last.items.push(s);
+  });
   const toggleTabHidden = (key) => {
     if (key === TAB_ALWAYS_VISIBLE) return;
     const hidden = (hiddenTabs || []);
@@ -12521,12 +12637,17 @@ function SettingsModal({ fxRates, onRefreshFx,
       ),
       React.createElement("div", { className: "settings-dialog-body" },
         React.createElement("nav", { className: "settings-nav", "aria-label": "Settings sections" },
-          sections.map(s => React.createElement("button", {
-            key: s.key,
-            className: `settings-nav-item ${activeSection === s.key ? 'active' : ''}`,
-            "aria-current": activeSection === s.key ? 'page' : undefined,
-            onClick: () => setActiveSection(s.key)
-          }, React.createElement(Icon, { name: s.icon, size: 16 }), React.createElement("span", null, s.label)))
+          navGroups.map(g => React.createElement("div", { className: "settings-nav-group", key: g.title },
+            React.createElement("div", { className: "settings-nav-group-title" }, g.title),
+            g.items.map(s => React.createElement("button", {
+              key: s.key,
+              className: `settings-nav-item ${activeSection === s.key ? 'active' : ''}`,
+              "aria-current": activeSection === s.key ? 'page' : undefined,
+              onClick: () => setActiveSection(s.key)
+            },
+              React.createElement("span", { className: "settings-nav-ico", style: { background: s.tint } },
+                React.createElement(Icon, { name: s.icon, size: 13 })),
+              React.createElement("span", { className: "settings-nav-label" }, s.label)))))
         ),
         React.createElement("div", { className: "settings-content" + (activeSection === 'holdings' && positions.length > 0 && !confirmDel ? " has-sticky-bar" : "") },
         React.createElement("div", { className: "settings-content-title" }, activeLabel),
