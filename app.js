@@ -2184,6 +2184,13 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
 // Owns positions/watchlist/contributions/alerts + CRUD. fxRates is needed for
 // purchase-date FX resolution; toast is injected for user-facing feedback.
 // Raw setters are exposed so importData / cloud sync can replace state wholesale.
+// What the book reads as while preview mode is on but the demo dataset hasn't
+// loaded (stale shell / offline): EMPTY, never the real data. Module-level so
+// the references are stable across renders.
+const PREVIEW_EMPTY_BOOK = {
+  positions: [], watchlist: [], watchlistGroups: [], alerts: [],
+  contributions: [], transactions: [], tfsaDeposits: []
+};
 function usePortfolio(fxRates, toast) {
   const positions = PBStore.useCollection('positions');
   const setPositions = useCallback(v => PBStore.setCollection('positions', v), []);
@@ -2255,7 +2262,13 @@ function usePortfolio(fxRates, toast) {
     document.head.appendChild(el);
   }, [previewMode]);
   const DEMO = (typeof window !== 'undefined' && window.PB_DEMO) || null;
-  const inPreview = !!(previewMode && DEMO);
+  // DATA SAFETY: the SETTING alone decides preview, never DEMO presence. If the
+  // demo dataset hasn't arrived (stale shell / offline), the app must still lock
+  // every mutator and take the real book off the screen — a "Preview" badge over
+  // the real, editable portfolio is how real holdings get deleted by someone who
+  // thinks they're touring the demo. Until DEMO lands the book reads empty.
+  const inPreview = !!previewMode;
+  const demoBook = DEMO || PREVIEW_EMPTY_BOOK;
   const guardPreview = (fn) => (...args) => {
     if (inPreview) {
       toast('Preview mode is on — turn it off in Settings to edit your real portfolio.');
@@ -2631,19 +2644,24 @@ function usePortfolio(fxRates, toast) {
     setAlerts(prev => prev.filter(a => a.id !== id));
   };
   return {
-    // Read side: preview substitutes the demo book; the store itself never
-    // changes, so flipping the setting off restores the real data instantly.
-    positions: inPreview ? DEMO.positions : positions, setPositions,
-    watchlist: inPreview ? DEMO.watchlist : watchlist, setWatchlist,
-    watchlistGroups: inPreview ? [] : watchlistGroups, setWatchlistGroups,
-    alerts, setAlerts,
-    contributions: inPreview ? DEMO.contributions : contributions, setContributions,
-    transactions: inPreview ? DEMO.transactions : transactions, setTransactions,
-    tfsaDeposits: inPreview ? DEMO.tfsaDeposits : tfsaDeposits, setTfsaDeposits,
+    // Read side: preview substitutes the demo book (or an EMPTY one until the
+    // dataset loads); the store itself never changes, so flipping the setting
+    // off restores the real data instantly. Alerts also read empty in preview
+    // so a demo tour never shows real alert tickers.
+    positions: inPreview ? demoBook.positions : positions, setPositions: guardPreview(setPositions),
+    watchlist: inPreview ? demoBook.watchlist : watchlist, setWatchlist: guardPreview(setWatchlist),
+    watchlistGroups: inPreview ? PREVIEW_EMPTY_BOOK.watchlistGroups : watchlistGroups, setWatchlistGroups: guardPreview(setWatchlistGroups),
+    alerts: inPreview ? PREVIEW_EMPTY_BOOK.alerts : alerts, setAlerts,
+    contributions: inPreview ? demoBook.contributions : contributions, setContributions: guardPreview(setContributions),
+    transactions: inPreview ? demoBook.transactions : transactions, setTransactions: guardPreview(setTransactions),
+    tfsaDeposits: inPreview ? demoBook.tfsaDeposits : tfsaDeposits, setTfsaDeposits: guardPreview(setTfsaDeposits),
     sectorCache, setSectorCache,
-    sectorWeights, setSectorWeights, setSectorWeightsFor,
-    // Write side: every user-facing mutator is read-only in preview (raw
-    // setters stay live — cloud restore/import wiring uses them deliberately).
+    sectorWeights, setSectorWeights: guardPreview(setSectorWeights), setSectorWeightsFor: guardPreview(setSectorWeightsFor),
+    // Write side: every path out of this hook that can touch user data is
+    // preview-guarded — including the raw setters (the watchlist drag-reorder
+    // passes setWatchlist straight to a view, which would otherwise persist
+    // DEMO rows over the real list). PBStore.setCollection carries a second,
+    // store-level fence in case a future call site bypasses this hook.
     addPosition: guardPreview(addPosition), updatePosition: guardPreview(updatePosition),
     removePosition: guardPreview(removePosition), removePositions: guardPreview(removePositions),
     sellPosition: guardPreview(sellPosition), importPositions: guardPreview(importPositions),
@@ -3384,7 +3402,10 @@ function App() {
     rules: React.createElement(RulesView, null),
     overview: React.createElement(OverviewView, null)
   };
-  const recentTriggered24h = triggered.filter(t => Date.now() - new Date(t.triggeredAt).getTime() < 24 * 3600 * 1000).length;
+  // Preview: the bell menu and its badge read empty — a demo tour must not
+  // surface real triggered-alert tickers (the live evaluator is paused anyway).
+  const triggeredShown = previewMode ? [] : triggered;
+  const recentTriggered24h = triggeredShown.filter(t => Date.now() - new Date(t.triggeredAt).getTime() < 24 * 3600 * 1000).length;
   return React.createElement("div", {
     className: "app"
   }, React.createElement("header", {
@@ -3479,7 +3500,7 @@ function App() {
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
     alerts: alerts,
-    triggered: triggered,
+    triggered: triggeredShown,
     notifPerm: notifPerm,
     onClose: () => setShowAlerts(false),
     onRemoveAlert: removeAlert,

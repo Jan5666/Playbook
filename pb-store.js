@@ -87,11 +87,24 @@
     appStore.setState({ portfolio: seeded });
   }
   function getCollection(name) { return appStore.getState().portfolio[name]; }
+  // Preview-mode write fence. While the demo book is shown (pb.previewMode.v1),
+  // NO code path may overwrite the user's real collections — the UI shows demo
+  // data, so any write reaching here would persist demo (or demo-derived) rows
+  // over real ones. usePortfolio guards every mutator it hands out; this is the
+  // store-level backstop for anything that bypasses the hook.
+  const PREVIEW_LOCKED = {
+    positions: 1, watchlist: 1, watchlistGroups: 1, alerts: 1,
+    contributions: 1, transactions: 1, tfsaDeposits: 1, sectorWeights: 1
+  };
   // Replace only the changed key (siblings keep refs). valueOrFn may be a value or
   // an updater applied to the current value.
   function setCollection(name, valueOrFn) {
     const key = _collKeyByName[name];
     if (!key) return;             // unknown collection: no-op
+    if (PREVIEW_LOCKED[name] && appStore.getState().settings.previewMode) {
+      if (typeof console !== 'undefined') console.warn('PBStore: write to "' + name + '" blocked — preview mode is on');
+      return;
+    }
     const prev = appStore.getState().portfolio[name];
     const value = typeof valueOrFn === 'function' ? valueOrFn(prev) : valueOrFn;
     if (_collStorage) _collStorage.set(key, value);
