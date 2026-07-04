@@ -2658,6 +2658,65 @@ function usePortfolio(fxRates, toast) {
     addAlert: guardPreview(addAlert), removeAlert: guardPreview(removeAlert)
   };
 }
+
+// ─── Toast copy: the single place user-facing outcome messages live ───────────
+// Data-layer mutators/actions return { ok, code, ...data } outcomes (no strings).
+// The App edge maps each outcome to copy here and shows the toast. Returns null
+// for outcomes that must not toast (no-ops, silent success, unknown codes).
+function describeOutcome(o) {
+  if (!o || typeof o.code !== 'string') return null;
+  const d = o;
+  switch (o.code) {
+    // positions
+    case 'position-added':         return 'Position added';
+    case 'shares-added':           return 'Shares added to existing position';
+    case 'positions-imported':     return `Imported ${d.added} position${d.added !== 1 ? 's' : ''}` + (d.merged ? `, merged ${d.merged}` : '');
+    case 'sale-recorded':          return 'Sale recorded';
+    case 'position-updated':       return 'Position updated';
+    case 'position-removed':       return 'Position removed';
+    case 'holdings-deleted':       return d.count === 1 ? 'Holding deleted' : `${d.count} holdings deleted`;
+    // contributions
+    case 'contribution-logged':    return 'Contribution logged';
+    case 'contribution-removed':   return 'Contribution removed';
+    case 'contributions-imported': return `Imported ${d.count} ${d.count === 1 ? 'entry' : 'entries'}`;
+    // TFSA deposits
+    case 'deposit-missing-fields': return 'Enter an amount and date';
+    case 'deposit-logged':         return 'Deposit logged';
+    case 'deposit-updated':        return 'Deposit updated';
+    case 'deposit-removed':        return 'Deposit removed';
+    case 'deposits-removed':       return d.count === 1 ? 'Deposit removed' : `${d.count} deposits removed`;
+    // watchlist
+    case 'watch-added':            return 'Added ' + d.ticker;
+    case 'watch-already':          return 'Already on ' + (d.list === 'default' ? 'watchlist' : 'that list');
+    case 'watch-removed':          return 'Removed ' + d.ticker;
+    case 'watch-removed-list':     return 'Removed from list';
+    case 'watch-added-list':       return 'Added to list';
+    case 'watchgroup-created':     return `List "${d.name}" created`;
+    case 'watchgroup-deleted':     return 'List deleted';
+    // alerts
+    case 'alert-set':              return 'Alert set';
+    // preview
+    case 'preview-readonly':       return 'Preview mode is on — turn it off in Settings to edit your real portfolio.';
+    case 'preview-load-failed':    return 'Couldn’t load the demo portfolio — check your connection and toggle Preview again.';
+    // push backend
+    case 'push-no-url':            return 'Enter your push server URL';
+    case 'push-not-https':         return 'Push server must be an https:// URL';
+    case 'push-unsupported':       return d.isIOS ? 'On iPhone, install to Home Screen first' : 'Push not supported in this browser';
+    case 'push-no-perm':           return 'Enable notifications first';
+    case 'push-connected':         return 'Background push connected';
+    case 'push-connect-failed':    return 'Could not connect: ' + (d.detail || 'error');
+    case 'push-test-sent':         return 'Test push sent — check your lock screen';
+    case 'push-test-failed':       return 'Test failed (' + (d.status || '?') + ')';
+    case 'push-test-error':        return 'Test failed — is the server reachable?';
+    case 'push-disconnected':      return 'Background push disconnected';
+    // price feed (rationalized to one message)
+    case 'feed-unreachable':       return 'Price feed unreachable — showing last known prices';
+    // backup
+    case 'backup-saved':           return 'Backup saved';
+    default:                       return null;
+  }
+}
+
 const ToastContext = React.createContext(() => {});
 function ToastProvider(_ref2) {
   let {
