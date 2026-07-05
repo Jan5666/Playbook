@@ -85,3 +85,30 @@ test('describeOutcome: every emitted code has copy (catalog guard)', () => {
     assert.ok(typeof s === 'string' && s.length > 0, `${code} must map to non-empty copy`);
   }
 });
+
+// ── anti-drift: usePortfolio decoupled from toast (Task 2) ────────────────────
+function sliceFn(marker) {
+  const s = src.indexOf(marker);
+  if (s < 0) return null;
+  const e = src.indexOf('\n}', s);
+  return src.slice(s, e);
+}
+
+test('anti-drift: usePortfolio takes no toast param and calls no toast()', () => {
+  assert.ok(/function usePortfolio\(fxRates\)\s*\{/.test(src), 'usePortfolio signature should be (fxRates)');
+  const body = sliceFn('function usePortfolio(fxRates)');
+  assert.ok(body && !/\btoast\(/.test(body), 'usePortfolio body must not call toast()');
+});
+
+test('anti-drift: App defines withToast and calls usePortfolio(fxRates)', () => {
+  assert.ok(/const withToast = useCallback\(/.test(src), 'App should define withToast via useCallback');
+  assert.ok(/usePortfolio\(fxRates\)/.test(src), 'App should call usePortfolio(fxRates) (no toast arg)');
+  assert.ok(!/usePortfolio\(fxRates, toast\)/.test(src), 'the old usePortfolio(fxRates, toast) call must be gone');
+});
+
+test('anti-drift: addPosition reads live store for C4, not the stale closure', () => {
+  const body = sliceFn('const addPosition = async');
+  assert.ok(body && /PBStore\.getCollection\('positions'\)/.test(body),
+    'addPosition should derive existed from the live store');
+  assert.ok(body && !/toast\(positions\.find/.test(body), 'the C4 stale-closure toast must be gone');
+});
