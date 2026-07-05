@@ -1,0 +1,140 @@
+// Playbook static content — the indicator/index catalog, plain-English indicator
+// explanations, and the built-in macro calendar. Pure data (no logic, no React,
+// no DOM). Dual-mode: browser global `window.PBContent` + CommonJS for Node tests.
+// Loaded before app.js; app.js binds each value via `const X = PBContent.X`.
+(function (root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  root.PBContent = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+
+const RIBBON_CATALOG = [
+  { key: 'US:^SPX',    ticker: '^SPX',    market: 'US', label: 'S&P 500',         short: 'S&P',  decimals: 0, invertColor: false },
+  { key: 'US:^VIX',    ticker: '^VIX',    market: 'US', label: 'VIX',             short: 'VIX',  decimals: 2, invertColor: true  },
+  { key: 'US:^DJI',    ticker: '^DJI',    market: 'US', label: 'Dow Jones',       short: 'DOW',  decimals: 0, invertColor: false },
+  { key: 'US:^IXIC',   ticker: '^IXIC',   market: 'US', label: 'Nasdaq',          short: 'NDQ',  decimals: 0, invertColor: false },
+  { key: 'US:^FTSE',   ticker: '^FTSE',   market: 'US', label: 'FTSE 100',        short: 'FTSE', decimals: 0, invertColor: false },
+  { key: 'US:^N225',   ticker: '^N225',   market: 'US', label: 'Nikkei 225',      short: 'N225', decimals: 0, invertColor: false },
+  { key: 'US:^GDAXI',  ticker: '^GDAXI',  market: 'US', label: 'DAX',             short: 'DAX',  decimals: 0, invertColor: false },
+  { key: 'US:GC=F',    ticker: 'GC=F',    market: 'US', label: 'Gold',            short: 'GOLD', decimals: 2, invertColor: false },
+  { key: 'US:SI=F',    ticker: 'SI=F',    market: 'US', label: 'Silver',          short: 'SLVR', decimals: 2, invertColor: false },
+  { key: 'US:CL=F',    ticker: 'CL=F',    market: 'US', label: 'Crude Oil (WTI)', short: 'OIL',  decimals: 2, invertColor: false },
+  { key: 'US:BZ=F',    ticker: 'BZ=F',    market: 'US', label: 'Brent Crude',     short: 'BRNT', decimals: 2, invertColor: false },
+  { key: 'US:NG=F',    ticker: 'NG=F',    market: 'US', label: 'Natural Gas',     short: 'NGAS', decimals: 3, invertColor: false },
+  { key: 'US:HG=F',    ticker: 'HG=F',    market: 'US', label: 'Copper',          short: 'CPPR', decimals: 3, invertColor: false },
+  { key: 'US:PL=F',    ticker: 'PL=F',    market: 'US', label: 'Platinum',        short: 'PLAT', decimals: 2, invertColor: false },
+  { key: 'US:BTC-USD', ticker: 'BTC-USD', market: 'US', label: 'Bitcoin',         short: 'BTC',  decimals: 0, invertColor: false },
+  { key: 'US:ETH-USD', ticker: 'ETH-USD', market: 'US', label: 'Ethereum',        short: 'ETH',  decimals: 0, invertColor: false },
+  // ── Macro & rates ──────────────────────────────────────────────────────────
+  // These carry a `unit` (so the app formats them as %/points/score, not "$…"),
+  // an optional non-Yahoo `source`, and chart range hints. `unit` is also the
+  // flag the UI uses to switch a card into "indicator" mode (explanation card,
+  // unit-aware price block, no fundamentals/news).
+  { key: 'US:^TNX', ticker: '^TNX', market: 'US', label: '10-Year Treasury Yield', short: 'US10Y', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'pct',   defaultRange: '1y' },
+  { key: 'US:DX-Y.NYB', ticker: 'DX-Y.NYB', market: 'US', label: 'U.S. Dollar Index (DXY)', short: 'DXY', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'index', defaultRange: '1y' },
+  { key: 'US:^DJT', ticker: '^DJT', market: 'US', label: 'Dow Jones Transports (DJT)', short: 'DJT', decimals: 0, invertColor: false,
+    group: 'macro', unit: 'index', defaultRange: '1y' },
+  { key: 'MACRO:FEDFUNDS', ticker: 'FEDFUNDS', market: 'MACRO', label: 'Federal Funds Rate', short: 'FEDFUNDS', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'pct',   source: 'fred', fredSeries: 'DFF',       fredTransform: 'level',      defaultRange: '1y', chartRanges: ['3mo','6mo','1y','5y','max'] },
+  { key: 'MACRO:CPI', ticker: 'CPI', market: 'MACRO', label: 'Inflation — CPI (YoY)', short: 'CPI', decimals: 1, invertColor: false,
+    group: 'macro', unit: 'pct',   source: 'fred', fredSeries: 'CPIAUCSL',  fredTransform: 'yoy',        defaultRange: '5y', chartRanges: ['1y','5y','max'] },
+  { key: 'MACRO:NFP', ticker: 'NFP', market: 'MACRO', label: 'Non-Farm Payrolls', short: 'NFP', decimals: 0, invertColor: false,
+    group: 'macro', unit: 'k_jobs', source: 'fred', fredSeries: 'PAYEMS',   fredTransform: 'mom_change', defaultRange: '5y', chartRanges: ['1y','5y','max'] },
+  { key: 'MACRO:GLI', ticker: 'GLI', market: 'MACRO', label: 'Global Liquidity (proxy)', short: 'GLI', decimals: 2, invertColor: false,
+    group: 'macro', unit: 'usd_t', source: 'gli',                                                        defaultRange: '5y', chartRanges: ['1y','5y','max'] },
+  { key: 'MACRO:FNG', ticker: 'FNG', market: 'MACRO', label: 'Fear & Greed (VIX-based)', short: 'F&G', decimals: 0, invertColor: false,
+    group: 'macro', unit: 'score', source: 'vixmood',                                                    defaultRange: '1y', chartRanges: ['1mo','3mo','6mo','1y','5y','max'] },
+];
+const RIBBON_CATALOG_MAP = Object.fromEntries(RIBBON_CATALOG.map(r => [r.key, r]));
+
+// Plain-English deep-dives shown on each indicator's card. Kept short and
+// jargon-light on purpose — the goal is to help a retail investor understand
+// what the number means and how to read it. Keyed by the catalog `key`.
+const INDICATOR_INFO = {
+  'US:^TNX': {
+    what: "The interest rate the U.S. government pays to borrow money for 10 years. It's the world's benchmark “risk-free” rate — it sets the tone for mortgages, loans, and how every other asset (stocks included) gets valued.",
+    interpret: "Rising yields make borrowing pricier and bonds more competitive with stocks — usually a headwind, especially for expensive growth names. Falling yields mean cheaper money and are generally supportive for stocks. Watch the trend more than today's exact number.",
+    levels: [{ label: 'Low', range: 'below 3%' }, { label: 'Normal (recent years)', range: '3–4.5%' }, { label: 'Elevated', range: 'above 5%' }]
+  },
+  'US:DX-Y.NYB': {
+    what: "Measures the U.S. dollar's strength against a basket of major currencies (euro, yen, pound and others). Around 100 is the long-run baseline.",
+    interpret: "A rising dollar (higher DXY) tends to pressure commodities like gold and oil, emerging markets, and U.S. companies that earn a lot overseas. A falling dollar is usually a tailwind for those same assets.",
+    levels: [{ label: 'Weak', range: 'below ~95' }, { label: 'Neutral', range: '~100' }, { label: 'Strong', range: 'above ~105' }]
+  },
+  'US:^DJT': {
+    what: "Tracks 20 major U.S. transport companies — airlines, railroads, trucking and delivery firms. Because they physically move goods, they're an early read on real economic activity.",
+    interpret: "When transports rise alongside the broader market it confirms a healthy economy (the old “Dow Theory”). When they fall or lag while the Dow keeps climbing, it can be an early warning that growth is slowing."
+  },
+  'MACRO:FEDFUNDS': {
+    what: "The Federal Reserve's key short-term interest rate — what U.S. banks charge each other overnight. The Fed raises it to cool inflation and cuts it to support growth. (Shown here is the effective rate; the Fed actually sets a target range.)",
+    interpret: "Higher rates make borrowing more expensive and slow the economy — generally a headwind for stocks, especially growth. Lower rates mean cheaper money and are usually supportive. Markets care most about the direction and the Fed's next likely move."
+  },
+  'MACRO:CPI': {
+    what: "The main inflation gauge: how much prices for everyday goods and services have risen over the past 12 months (year-over-year). Updated monthly.",
+    interpret: "The Fed targets about 2%. Hotter CPI pushes the Fed toward higher rates (a headwind for stocks and bonds); cooling CPI gives the Fed room to ease, which markets usually welcome.",
+    levels: [{ label: 'Fed target', range: '~2%' }, { label: 'Elevated', range: '3–5%' }, { label: 'Hot', range: 'above 5%' }]
+  },
+  'MACRO:NFP': {
+    what: "The number of jobs the U.S. economy added (or lost) last month, excluding farms. Released the first Friday of each month — one of the most market-moving data points there is.",
+    interpret: "Strong job growth signals a healthy economy, but if it runs too hot it can keep the Fed hawkish (rates higher for longer). Weak or negative payrolls point to a slowing economy and can push the Fed to cut. Markets judge it against expectations.",
+    levels: [{ label: 'Soft', range: 'below ~100K' }, { label: 'Solid', range: '~150–250K' }, { label: 'Hot', range: 'above ~300K' }]
+  },
+  'MACRO:GLI': {
+    what: "A transparent proxy for “global liquidity” — the combined balance sheets of the world's three biggest central banks (U.S. Fed, European Central Bank, Bank of Japan), converted to U.S. dollars. (A do-it-yourself proxy, not the proprietary CrossBorder Capital index.)",
+    interpret: "Rising liquidity (central banks expanding) tends to lift risk assets — stocks, crypto, gold. Falling liquidity (tightening / quantitative tightening) is often a headwind. Think of it as a slow-moving tide: watch the direction over months, not days."
+  },
+  'MACRO:FNG': {
+    what: "A 0–100 market-mood gauge built from the VIX (Wall Street's “fear index”): 0 = extreme fear, 100 = extreme greed. A transparent VIX-based stand-in for the popular Fear & Greed gauge.",
+    interpret: "Extreme fear (low readings) often marks moments of maximum pessimism — historically closer to bottoms than tops. Extreme greed (high readings) suggests complacency and can precede pullbacks. The classic contrarian rule: be cautious when others are greedy, look for opportunity when others are fearful. Use it as a sentiment check, not a precise timing tool.",
+    levels: [{ label: 'Extreme fear', range: '0–24' }, { label: 'Neutral', range: '~50' }, { label: 'Extreme greed', range: '76–100' }]
+  }
+};
+
+// Scheduled 2026 central-bank decision days + recurring data, as an offline
+// baseline. Dates are published a year ahead; refresh this list annually. When a
+// Perplexity key is set, live AI events are merged in and take precedence.
+const BUILTIN_MACRO_2026 = [
+  { date: '2026-01-28', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-03-18', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-04-29', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-06-17', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-07-29', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-09-16', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-10-28', title: 'FOMC rate decision', type: 'Fed' },
+  { date: '2026-12-09', title: 'FOMC rate decision + projections', type: 'Fed' },
+  { date: '2026-01-23', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-03-19', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-04-28', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-06-16', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-07-31', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-09-18', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-10-30', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-12-18', title: 'Bank of Japan policy decision', type: 'BOJ' },
+  { date: '2026-01-29', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-03-12', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-04-30', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-06-04', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-07-16', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-09-10', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-10-29', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-12-17', title: 'ECB monetary policy decision', type: 'ECB' },
+  { date: '2026-02-05', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-03-19', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-05-07', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-06-18', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-08-06', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-09-17', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-11-05', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-12-17', title: 'Bank of England Bank Rate decision', type: 'BOE' },
+  { date: '2026-01-29', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-03-19', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-05-21', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-07-23', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-09-17', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' },
+  { date: '2026-11-19', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' }
+];
+
+return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026 };
+});
