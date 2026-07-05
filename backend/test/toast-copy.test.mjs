@@ -120,3 +120,23 @@ test('anti-drift: usePushBackend takes no toast param and calls no toast()', () 
   const body = sliceFn('function usePushBackend(');
   assert.ok(body && !/\btoast\(/.test(body), 'usePushBackend body must not call toast()');
 });
+
+// ── anti-drift: usePriceFeed + saveBackupFile decoupled (Task 4) ──────────────
+test('anti-drift: usePriceFeed takes no toast param and calls no toast()', () => {
+  assert.ok(/function usePriceFeed\(order, fetchKey\)\s*\{/.test(src),
+    'usePriceFeed signature should be (order, fetchKey)');
+  const body = sliceFn('function usePriceFeed(');
+  assert.ok(body && !/\btoast\(/.test(body), 'usePriceFeed body must not call toast()');
+});
+
+test('anti-drift: saveBackupFile takes no toast param and calls no toast()', () => {
+  assert.ok(/async function saveBackupFile\(jsonString\)\s*\{/.test(src),
+    'saveBackupFile signature should be (jsonString)');
+  const body = sliceFn('async function saveBackupFile(');
+  assert.ok(body && !/\btoast\(/.test(body), 'saveBackupFile body must not call toast()');
+});
+
+test('anti-drift: App toasts the one feed-unreachable message off failStreak', () => {
+  assert.ok(/failStreak === 2/.test(src), 'App should key the feed toast off failStreak === 2');
+  assert.ok(!/toast\('Price refresh failed'\)/.test(src), "the separate 'Price refresh failed' toast must be gone");
+});

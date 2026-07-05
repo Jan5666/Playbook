@@ -159,7 +159,7 @@ async function decryptBlob(code, blob) {
 // Save a backup to disk. In an iOS standalone PWA an `<a download>` is silently
 // ignored, so prefer the Web Share sheet (saves into Files / iCloud Drive);
 // fall back to a download anchor on desktop and browsers without file sharing.
-async function saveBackupFile(jsonString, toast) {
+async function saveBackupFile(jsonString) {
   const filename = `playbook-backup-${new Date().toISOString().slice(0, 10)}.json`;
   try {
     const file = new File([jsonString], filename, { type: 'application/json' });
@@ -178,7 +178,7 @@ async function saveBackupFile(jsonString, toast) {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  if (toast) toast('Backup saved');
+  return { ok: true, code: 'backup-saved' };
 }
 function usePersistedState(key, defaultValue) {
   const [value, setValue] = useState(() => LS.get(key, defaultValue));
@@ -1748,7 +1748,7 @@ function useNow(intervalMs = 5000) {
   }, [intervalMs]);
   return now;
 }
-function usePriceFeed(order, fetchKey, toast) {
+function usePriceFeed(order, fetchKey) {
   // Seed the store's prices slice once from the rehydrated localStorage cache so
   // the app paints real numbers on open. The map now lives in PBStore, not React
   // state — so a batch merge re-renders only store subscribers, not all of App.
@@ -1808,21 +1808,16 @@ function usePriceFeed(order, fetchKey, toast) {
           setLastUpdate(new Date());
           setFailStreak(0);
         } else if (orderRef.current.length > 0) {
-          setFailStreak(prev => {
-            const next = prev + 1;
-            if (next === 2 && toast) toast('Price feed unreachable — using last known prices');
-            return next;
-          });
+          setFailStreak(prev => prev + 1);
         }
       } while (pendingForceRef.current);
     } catch (e) {
       console.error('Refresh failed:', e);
-      if (toast) toast('Price refresh failed');
       setFailStreak(prev => prev + 1);
     }
     loadingRef.current = false;
     setLoading(false);
-  }, [toast, persistPrices]);
+  }, [persistPrices]);
   // Auto-poll: skip if a fetch is already running (no point double-polling).
   const refresh = useCallback(() => {
     if (loadingRef.current) return;
@@ -3111,7 +3106,10 @@ function App() {
     warmed: warmedLists,
     activeView: view,
   }), [positions, watchlist, alerts, ribbonItems, warmedLists, view]);
-  const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey, toast);
+  const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey);
+  useEffect(() => {
+    if (failStreak === 2) { const m = describeOutcome({ code: 'feed-unreachable' }); if (m) toast(m); }
+  }, [failStreak]);
   // Entering a lazy tab: warm its list on first visit (so it joins the poll set)
   // and force an immediate, prioritized refresh so its prices are fresh within a
   // tick (the rehydrated cache paints last-known meanwhile). refreshPricesNow never
@@ -3347,7 +3345,7 @@ function App() {
     // Full snapshot of every durable pb.* key (not a hand-picked subset), so the
     // file captures holdings, watchlists, alerts, contributions, transactions,
     // sector weights, TFSA targets and all settings.
-    saveBackupFile(JSON.stringify(gatherBackup(), null, 2), toast);
+    withToast(saveBackupFile)(JSON.stringify(gatherBackup(), null, 2));
   };
   const importData = file => {
     const reader = new FileReader();
