@@ -100,9 +100,20 @@ test('anti-drift: usePortfolio takes no toast param and calls no toast()', () =>
   assert.ok(body && !/\btoast\(/.test(body), 'usePortfolio body must not call toast()');
 });
 
-test('anti-drift: App defines withToast and calls usePortfolio(fxRates)', () => {
-  assert.ok(/const withToast = useCallback\(/.test(src), 'App should define withToast via useCallback');
-  assert.ok(/usePortfolio\(fxRates\)/.test(src), 'App should call usePortfolio(fxRates) (no toast arg)');
+test('anti-drift: Piece 1 — useToastEvents replaces the per-render withToast wrappers', () => {
+  // the standalone withToast factory and all its per-render wrappers are gone
+  assert.ok(!/const withToast = useCallback\(/.test(src), 'the standalone withToast useCallback helper must be gone');
+  assert.ok(!/=\s*withToast\(/.test(src), 'no per-render withToast(...) wrappers may remain');
+  // the helper exists and builds its wrappers once, keeping impls+toast current via refs
+  assert.ok(/function useToastEvents\(impls, toast\)\s*\{/.test(src), 'useToastEvents(impls, toast) helper should exist');
+  const body = sliceFn('function useToastEvents(');
+  assert.ok(body && /useMemo\(\(\)\s*=>/.test(body) && /\},\s*\[\]\);/.test(body),
+    'useToastEvents should build its wrappers in a useMemo([]) (stable identity)');
+  assert.ok(body && /implsRef\.current\s*=\s*impls/.test(body) && /toastRef\.current\s*=\s*toast/.test(body),
+    'useToastEvents should keep impls + toast current via refs');
+  // App wires actions through the helper and still calls usePortfolio at the CALL SITE (fixes nit #2)
+  assert.ok(/useToastEvents\(/.test(src), 'App should wire actions through useToastEvents(...)');
+  assert.ok(/const _p = usePortfolio\(fxRates\);/.test(src), 'App should call usePortfolio(fxRates) at the call site');
   assert.ok(!/usePortfolio\(fxRates, toast\)/.test(src), 'the old usePortfolio(fxRates, toast) call must be gone');
 });
 

@@ -2707,6 +2707,31 @@ function describeOutcome(o) {
   }
 }
 
+// ─── Stable edge action wrappers ──────────────────────────────────────────────
+// Given an object of (possibly-churning) action impls, return an object of
+// STABLE-identity wrappers. Each wrapper always calls the latest impl and toasts
+// describeOutcome(result) at the edge — impls + toast are read through refs so the
+// wrapper identities never change (latest-ref / useEffectEvent pattern). Built once,
+// so the wrappers are safe to hand to React.memo'd children. Async impls toast after
+// they resolve and the wrapper returns the impl's own value unchanged.
+function useToastEvents(impls, toast) {
+  const implsRef = useRef(impls); useLayoutEffect(() => { implsRef.current = impls; });
+  const toastRef = useRef(toast); useLayoutEffect(() => { toastRef.current = toast; });
+  return useMemo(() => {
+    const out = {};
+    for (const name of Object.keys(implsRef.current)) {
+      out[name] = (...args) => {
+        const r = implsRef.current[name](...args);
+        if (r && typeof r.then === 'function')
+          return r.then(o => { const m = describeOutcome(o); if (m) toastRef.current(m); return o; });
+        const m = describeOutcome(r); if (m) toastRef.current(m);
+        return r;
+      };
+    }
+    return out;
+  }, []);
+}
+
 const ToastContext = React.createContext(() => {});
 function ToastProvider(_ref2) {
   let {
@@ -2951,59 +2976,39 @@ function App() {
   const [showInstallBanner, setShowInstallBanner] = useState(false);
   const [marketFilter, setMarketFilter] = useState('US');
   const toast = useToast();
-  // withToast: the edge. Run a data-layer action, map its { ok, code, ... } outcome
-  // to copy (describeOutcome) and toast it. Promise-aware so async mutators toast
-  // after they resolve; returns the action's own value/outcome unchanged so callers
-  // that read a return (e.g. addWatchGroup's id) still work.
-  const withToast = useCallback((fn) => (...args) => {
-    const r = fn(...args);
-    if (r && typeof r.then === 'function') {
-      return r.then(o => { const m = describeOutcome(o); if (m) toast(m); return o; });
-    }
-    const m = describeOutcome(r); if (m) toast(m);
-    return r;
-  }, [toast]);
   const _p = usePortfolio(fxRates);
-  // Reads + the two non-preview-guarded raw setters pass through untouched.
+  // Reactive reads pass straight through — they must change every render.
   const {
     positions, watchlist, watchlistGroups, alerts, contributions, transactions,
     tfsaDeposits, sectorCache, sectorWeights, previewLoadError,
-    setAlerts, setSectorCache,
   } = _p;
-  // Every preview-guarded export is wrapped so its outcome (success OR the
-  // preview-readonly reject) toasts at the edge. Identities are recreated per
-  // render, matching today's un-memoized mutators; identity-stabilization is the
-  // next increment.
-  const setPositions = withToast(_p.setPositions);
-  const setWatchlist = withToast(_p.setWatchlist);
-  const setWatchlistGroups = withToast(_p.setWatchlistGroups);
-  const setContributions = withToast(_p.setContributions);
-  const setTransactions = withToast(_p.setTransactions);
-  const setTfsaDeposits = withToast(_p.setTfsaDeposits);
-  const setSectorWeights = withToast(_p.setSectorWeights);
-  const setSectorWeightsFor = withToast(_p.setSectorWeightsFor);
-  const addPosition = withToast(_p.addPosition);
-  const updatePosition = withToast(_p.updatePosition);
-  const removePosition = withToast(_p.removePosition);
-  const removePositions = withToast(_p.removePositions);
-  const sellPosition = withToast(_p.sellPosition);
-  const importPositions = withToast(_p.importPositions);
-  const addContribution = withToast(_p.addContribution);
-  const removeContribution = withToast(_p.removeContribution);
-  const importContributions = withToast(_p.importContributions);
-  const addTfsaDeposit = withToast(_p.addTfsaDeposit);
-  const updateTfsaDeposit = withToast(_p.updateTfsaDeposit);
-  const removeTfsaDeposit = withToast(_p.removeTfsaDeposit);
-  const removeTfsaDeposits = withToast(_p.removeTfsaDeposits);
-  const addWatch = withToast(_p.addWatch);
-  const removeWatch = withToast(_p.removeWatch);
-  const moveWatch = withToast(_p.moveWatch);
-  const toggleWatchList = withToast(_p.toggleWatchList);
-  const addWatchGroup = withToast(_p.addWatchGroup);
-  const renameWatchGroup = withToast(_p.renameWatchGroup);
-  const removeWatchGroup = withToast(_p.removeWatchGroup);
-  const addAlert = withToast(_p.addAlert);
-  const removeAlert = withToast(_p.removeAlert);
+  // Stable-identity action wrappers (built once) so memo'd leaves skip re-render on
+  // unrelated App renders. Each wrapper toasts describeOutcome at the edge and always
+  // calls the latest underlying mutator. Push + backup get the same treatment below.
+  const {
+    setPositions, setWatchlist, setWatchlistGroups, setContributions, setTransactions,
+    setTfsaDeposits, setSectorWeights, setSectorWeightsFor, setAlerts, setSectorCache,
+    addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
+    addContribution, removeContribution, importContributions, addTfsaDeposit, updateTfsaDeposit,
+    removeTfsaDeposit, removeTfsaDeposits, addWatch, removeWatch, moveWatch, toggleWatchList,
+    addWatchGroup, renameWatchGroup, removeWatchGroup, addAlert, removeAlert,
+  } = useToastEvents({
+    setPositions: _p.setPositions, setWatchlist: _p.setWatchlist,
+    setWatchlistGroups: _p.setWatchlistGroups, setContributions: _p.setContributions,
+    setTransactions: _p.setTransactions, setTfsaDeposits: _p.setTfsaDeposits,
+    setSectorWeights: _p.setSectorWeights, setSectorWeightsFor: _p.setSectorWeightsFor,
+    setAlerts: _p.setAlerts, setSectorCache: _p.setSectorCache,
+    addPosition: _p.addPosition, updatePosition: _p.updatePosition,
+    removePosition: _p.removePosition, removePositions: _p.removePositions,
+    sellPosition: _p.sellPosition, importPositions: _p.importPositions,
+    addContribution: _p.addContribution, removeContribution: _p.removeContribution,
+    importContributions: _p.importContributions, addTfsaDeposit: _p.addTfsaDeposit,
+    updateTfsaDeposit: _p.updateTfsaDeposit, removeTfsaDeposit: _p.removeTfsaDeposit,
+    removeTfsaDeposits: _p.removeTfsaDeposits, addWatch: _p.addWatch,
+    removeWatch: _p.removeWatch, moveWatch: _p.moveWatch, toggleWatchList: _p.toggleWatchList,
+    addWatchGroup: _p.addWatchGroup, renameWatchGroup: _p.renameWatchGroup,
+    removeWatchGroup: _p.removeWatchGroup, addAlert: _p.addAlert, removeAlert: _p.removeAlert,
+  }, toast);
   useEffect(() => {
     if (previewLoadError > 0) { const m = describeOutcome({ code: 'preview-load-failed' }); if (m) toast(m); }
   }, [previewLoadError]);
@@ -3246,9 +3251,10 @@ function App() {
   // Optional server-push backend for always-on, app-closed alerts (premium tier).
   const { pushStatus, connectPush: _connectPush, testPush: _testPush, disconnectPush: _disconnectPush } =
     usePushBackend(pushBackend, setPushBackend, alerts, notifPerm);
-  const connectPush = withToast(_connectPush);
-  const testPush = withToast(_testPush);
-  const disconnectPush = withToast(_disconnectPush);
+  const { connectPush, testPush, disconnectPush, saveBackup } = useToastEvents({
+    connectPush: _connectPush, testPush: _testPush, disconnectPush: _disconnectPush,
+    saveBackup: saveBackupFile,
+  }, toast);
   const cloudBackup = useCloudBackup(pushBackend, toast);
   const requestNotifPerm = useCallback(async () => {
     if (typeof Notification === 'undefined') {
@@ -3345,7 +3351,7 @@ function App() {
     // Full snapshot of every durable pb.* key (not a hand-picked subset), so the
     // file captures holdings, watchlists, alerts, contributions, transactions,
     // sector weights, TFSA targets and all settings.
-    withToast(saveBackupFile)(JSON.stringify(gatherBackup(), null, 2));
+    saveBackup(JSON.stringify(gatherBackup(), null, 2));
   };
   const importData = file => {
     const reader = new FileReader();
