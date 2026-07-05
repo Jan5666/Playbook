@@ -112,16 +112,16 @@ test('anti-drift: Piece 1 — useToastEvents replaces the per-render withToast w
   assert.ok(body && /implsRef\.current\s*=\s*impls/.test(body) && /toastRef\.current\s*=\s*toast/.test(body),
     'useToastEvents should keep impls + toast current via refs');
   // App wires actions through the helper and still calls usePortfolio at the CALL SITE (fixes nit #2)
-  assert.ok(/useToastEvents\(/.test(src), 'App should wire actions through useToastEvents(...)');
+  assert.ok(/useToastEvents\(\{/.test(src), 'App should wire actions through useToastEvents({...}) call sites');
   assert.ok(/const _p = usePortfolio\(fxRates\);/.test(src), 'App should call usePortfolio(fxRates) at the call site');
   assert.ok(!/usePortfolio\(fxRates, toast\)/.test(src), 'the old usePortfolio(fxRates, toast) call must be gone');
 });
 
-test('anti-drift: addPosition reads live store for C4, not the stale closure', () => {
-  const body = sliceFn('const addPosition = async');
-  assert.ok(body && /PBStore\.getCollection\('positions'\)/.test(body),
-    'addPosition should derive existed from the live store');
-  assert.ok(body && !/toast\(positions\.find/.test(body), 'the C4 stale-closure toast must be gone');
+test('anti-drift: addPosition derives existed from the live store (C4), not a stale closure', () => {
+  // pin the exact C4 read rather than slicing the whole (large) addPosition body
+  assert.ok(/existedBefore\s*=\s*\(PBStore\.getCollection\('positions'\)/.test(src),
+    "addPosition should derive existedBefore from PBStore.getCollection('positions')");
+  assert.ok(!/toast\(positions\.find/.test(src), 'the C4 stale-closure toast must be gone');
 });
 
 // ── anti-drift: usePushBackend decoupled (Task 3) ─────────────────────────────
