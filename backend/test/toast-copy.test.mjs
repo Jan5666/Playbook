@@ -112,3 +112,11 @@ test('anti-drift: addPosition reads live store for C4, not the stale closure', (
     'addPosition should derive existed from the live store');
   assert.ok(body && !/toast\(positions\.find/.test(body), 'the C4 stale-closure toast must be gone');
 });
+
+// ── anti-drift: usePushBackend decoupled (Task 3) ─────────────────────────────
+test('anti-drift: usePushBackend takes no toast param and calls no toast()', () => {
+  assert.ok(/function usePushBackend\(pushBackend, setPushBackend, alerts, notifPerm\)\s*\{/.test(src),
+    'usePushBackend signature should drop the toast param');
+  const body = sliceFn('function usePushBackend(');
+  assert.ok(body && !/\btoast\(/.test(body), 'usePushBackend body must not call toast()');
+});

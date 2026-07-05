@@ -2102,7 +2102,7 @@ async function registerPushWithBackend(base, alerts) {
 }
 // pushBackend is owned by the parent (persisted); setPushBackend lets connect()
 // save a freshly-entered URL. Status: off|connecting|connected|error|unsupported.
-function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
+function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm) {
   const [pushStatus, setPushStatus] = useState('off');
   const base = normalizeBackend(pushBackend);
   const alertsRef = useRef(alerts);
@@ -2140,34 +2140,31 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
   }, [pushStatus, base]);
   const connectPush = useCallback(async (url) => {
     const b = normalizeBackend(url);
-    if (!b) { toast('Enter your push server URL'); return false; }
-    if (!/^https:\/\//i.test(b)) { toast('Push server must be an https:// URL'); return false; }
+    if (!b) return { ok: false, code: 'push-no-url' };
+    if (!/^https:\/\//i.test(b)) return { ok: false, code: 'push-not-https' };
     if (!pushSupported()) {
       const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
-      toast(isIOS ? 'On iPhone, install to Home Screen first' : 'Push not supported in this browser');
-      return false;
+      return { ok: false, code: 'push-unsupported', isIOS };
     }
-    if (notifPerm !== 'granted') { toast('Enable notifications first'); return false; }
+    if (notifPerm !== 'granted') return { ok: false, code: 'push-no-perm' };
     setPushStatus('connecting');
     try {
       await registerPushWithBackend(b, alertsRef.current);
       setPushBackend(b);
       setPushStatus('connected');
-      toast('Background push connected');
-      return true;
+      return { ok: true, code: 'push-connected' };
     } catch (e) {
       setPushStatus('error');
-      toast('Could not connect: ' + (e.message || 'error'));
-      return false;
+      return { ok: false, code: 'push-connect-failed', detail: e.message || 'error' };
     }
-  }, [notifPerm, toast, setPushBackend]);
+  }, [notifPerm, setPushBackend]);
   const testPush = useCallback(async () => {
-    if (!base) return;
+    if (!base) return null;
     try {
       const r = await backendPost(base, '/test', { clientId: pushClientId() });
-      toast(r.ok ? 'Test push sent — check your lock screen' : 'Test failed (' + (r.status || '?') + ')');
-    } catch (_e) { toast('Test failed — is the server reachable?'); }
-  }, [base, toast]);
+      return r.ok ? { ok: true, code: 'push-test-sent' } : { ok: false, code: 'push-test-failed', status: r.status };
+    } catch (_e) { return { ok: false, code: 'push-test-error' }; }
+  }, [base]);
   const disconnectPush = useCallback(async () => {
     if (base) { try { await backendPost(base, '/unsubscribe', { clientId: pushClientId() }); } catch (_e) {} }
     try {
@@ -2177,8 +2174,8 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
     } catch (_e) {}
     setPushBackend('');
     setPushStatus('off');
-    toast('Background push disconnected');
-  }, [base, setPushBackend, toast]);
+    return { ok: true, code: 'push-disconnected' };
+  }, [base, setPushBackend]);
   return { pushStatus, connectPush, testPush, disconnectPush };
 }
 // Owns positions/watchlist/contributions/alerts + CRUD. fxRates is needed for
@@ -3249,8 +3246,11 @@ function App() {
   // sync, and reconcile anything fired while the app was closed.
   useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered, notifPerm);
   // Optional server-push backend for always-on, app-closed alerts (premium tier).
-  const { pushStatus, connectPush, testPush, disconnectPush } =
-    usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast);
+  const { pushStatus, connectPush: _connectPush, testPush: _testPush, disconnectPush: _disconnectPush } =
+    usePushBackend(pushBackend, setPushBackend, alerts, notifPerm);
+  const connectPush = withToast(_connectPush);
+  const testPush = withToast(_testPush);
+  const disconnectPush = withToast(_disconnectPush);
   const cloudBackup = useCloudBackup(pushBackend, toast);
   const requestNotifPerm = useCallback(async () => {
     if (typeof Notification === 'undefined') {
