@@ -151,3 +151,15 @@ test('anti-drift: App toasts the one feed-unreachable message off failStreak', (
   assert.ok(/failStreak === 2/.test(src), 'App should key the feed toast off failStreak === 2');
   assert.ok(!/toast\('Price refresh failed'\)/.test(src), "the separate 'Price refresh failed' toast must be gone");
 });
+
+// ── anti-drift: Piece 2 — memo-leaf UI handlers are stable ────────────────────
+test('anti-drift: openDetail + buy/sell/edit handlers are useCallback (memo-leaf stable)', () => {
+  assert.ok(/const openDetail = useCallback\(/.test(src), 'openDetail should be a useCallback');
+  assert.ok(/const onEditPosition = useCallback\(pos =>/.test(src), 'onEditPosition should be a hoisted useCallback');
+  assert.ok(/const onBuyPosition = useCallback\(pos =>/.test(src), 'onBuyPosition should be a hoisted useCallback');
+  assert.ok(/const onSellPosition = useCallback\(pos =>/.test(src), 'onSellPosition should be a hoisted useCallback');
+  // the viewProps blocks must reference the stable consts, not re-declare inline arrows
+  assert.ok(!/onBuyPosition:\s*pos =>/.test(src), 'no inline onBuyPosition arrow may remain in viewProps');
+  assert.ok(!/onSellPosition:\s*pos =>/.test(src), 'no inline onSellPosition arrow may remain in viewProps');
+  assert.ok(!/onEditPosition:\s*pos =>\s*\{/.test(src), 'no inline onEditPosition arrow may remain in viewProps');
+});

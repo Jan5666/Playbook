@@ -3374,7 +3374,7 @@ function App() {
     const info = DATA.findInfo(ticker, market);
     return loadFundamentalsRaw(`${market}:${ticker}`, () => fetchFundamentals(ticker, market, info?.name, perplexityKey));
   }, [loadFundamentalsRaw, perplexityKey]);
-  const openDetail = (ticker, market, opts) => {
+  const openDetail = useCallback((ticker, market, opts) => {
     const mkt = market || 'US';
     setSelected({
       ticker,
@@ -3392,7 +3392,12 @@ function App() {
       loadHistory(ticker, mkt, '1y');
       loadFundamentals(ticker, mkt);
     }
-  };
+  }, [loadHistory, loadNews, loadFundamentals]);
+  // Stable modal-openers shared by every view's HoldingRow (close over stable setters only),
+  // so HoldingRow's React.memo skips rows whose data is unchanged.
+  const onEditPosition = useCallback(pos => { setPosModalEditId(pos.id); setPosModalOpen(true); }, []);
+  const onBuyPosition = useCallback(pos => setBuyModalPos(pos), []);
+  const onSellPosition = useCallback(pos => setSellModalPos(pos), []);
   const views = {
     dashboard: React.createElement(DashboardView, {
       positions: positions,
@@ -3423,10 +3428,10 @@ function App() {
         setPosModalDefaultMarket(MARKETS.some(mk => mk.value === marketFilter) ? marketFilter : 'US');
         setPosModalOpen(true);
       },
-      onEditPosition: pos => { setPosModalEditId(pos.id); setPosModalOpen(true); },
+      onEditPosition: onEditPosition,
       onImportPositions: () => { setImportMarket(marketFilter); setShowImport(true); },
-      onBuyPosition: pos => setBuyModalPos(pos),
-      onSellPosition: pos => setSellModalPos(pos)
+      onBuyPosition: onBuyPosition,
+      onSellPosition: onSellPosition
     }),
     watchlist: React.createElement(WatchlistView, {
       watchlist: watchlist,
@@ -3460,9 +3465,9 @@ function App() {
       positions: positions.filter(p => p.market === 'TFSA'),
       onOpenDetail: openDetail,
       onAddPosition: () => { setPosModalEditId(null); setPosModalDefaultMarket('TFSA'); setPosModalOpen(true); },
-      onEditPosition: pos => { setPosModalEditId(pos.id); setPosModalOpen(true); },
-      onBuyPosition: pos => setBuyModalPos(pos),
-      onSellPosition: pos => setSellModalPos(pos),
+      onEditPosition: onEditPosition,
+      onBuyPosition: onBuyPosition,
+      onSellPosition: onSellPosition,
       tfsaDeposits: tfsaDeposits,
       onAddTfsaDeposit: addTfsaDeposit,
       onUpdateTfsaDeposit: updateTfsaDeposit,
