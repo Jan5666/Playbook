@@ -100,17 +100,28 @@ test('anti-drift: usePortfolio takes no toast param and calls no toast()', () =>
   assert.ok(body && !/\btoast\(/.test(body), 'usePortfolio body must not call toast()');
 });
 
-test('anti-drift: App defines withToast and calls usePortfolio(fxRates)', () => {
-  assert.ok(/const withToast = useCallback\(/.test(src), 'App should define withToast via useCallback');
-  assert.ok(/usePortfolio\(fxRates\)/.test(src), 'App should call usePortfolio(fxRates) (no toast arg)');
+test('anti-drift: Piece 1 — useToastEvents replaces the per-render withToast wrappers', () => {
+  // the standalone withToast factory and all its per-render wrappers are gone
+  assert.ok(!/const withToast = useCallback\(/.test(src), 'the standalone withToast useCallback helper must be gone');
+  assert.ok(!/=\s*withToast\(/.test(src), 'no per-render withToast(...) wrappers may remain');
+  // the helper exists and builds its wrappers once, keeping impls+toast current via refs
+  assert.ok(/function useToastEvents\(impls, toast\)\s*\{/.test(src), 'useToastEvents(impls, toast) helper should exist');
+  const body = sliceFn('function useToastEvents(');
+  assert.ok(body && /useMemo\(\(\)\s*=>/.test(body) && /\},\s*\[\]\);/.test(body),
+    'useToastEvents should build its wrappers in a useMemo([]) (stable identity)');
+  assert.ok(body && /implsRef\.current\s*=\s*impls/.test(body) && /toastRef\.current\s*=\s*toast/.test(body),
+    'useToastEvents should keep impls + toast current via refs');
+  // App wires actions through the helper and still calls usePortfolio at the CALL SITE (fixes nit #2)
+  assert.ok(/useToastEvents\(\{/.test(src), 'App should wire actions through useToastEvents({...}) call sites');
+  assert.ok(/const _p = usePortfolio\(fxRates\);/.test(src), 'App should call usePortfolio(fxRates) at the call site');
   assert.ok(!/usePortfolio\(fxRates, toast\)/.test(src), 'the old usePortfolio(fxRates, toast) call must be gone');
 });
 
-test('anti-drift: addPosition reads live store for C4, not the stale closure', () => {
-  const body = sliceFn('const addPosition = async');
-  assert.ok(body && /PBStore\.getCollection\('positions'\)/.test(body),
-    'addPosition should derive existed from the live store');
-  assert.ok(body && !/toast\(positions\.find/.test(body), 'the C4 stale-closure toast must be gone');
+test('anti-drift: addPosition derives existed from the live store (C4), not a stale closure', () => {
+  // pin the exact C4 read rather than slicing the whole (large) addPosition body
+  assert.ok(/existedBefore\s*=\s*\(PBStore\.getCollection\('positions'\)/.test(src),
+    "addPosition should derive existedBefore from PBStore.getCollection('positions')");
+  assert.ok(!/toast\(positions\.find/.test(src), 'the C4 stale-closure toast must be gone');
 });
 
 // ── anti-drift: usePushBackend decoupled (Task 3) ─────────────────────────────
@@ -139,4 +150,16 @@ test('anti-drift: saveBackupFile takes no toast param and calls no toast()', () 
 test('anti-drift: App toasts the one feed-unreachable message off failStreak', () => {
   assert.ok(/failStreak === 2/.test(src), 'App should key the feed toast off failStreak === 2');
   assert.ok(!/toast\('Price refresh failed'\)/.test(src), "the separate 'Price refresh failed' toast must be gone");
+});
+
+// ── anti-drift: Piece 2 — memo-leaf UI handlers are stable ────────────────────
+test('anti-drift: openDetail + buy/sell/edit handlers are useCallback (memo-leaf stable)', () => {
+  assert.ok(/const openDetail = useCallback\(/.test(src), 'openDetail should be a useCallback');
+  assert.ok(/const onEditPosition = useCallback\(pos =>/.test(src), 'onEditPosition should be a hoisted useCallback');
+  assert.ok(/const onBuyPosition = useCallback\(pos =>/.test(src), 'onBuyPosition should be a hoisted useCallback');
+  assert.ok(/const onSellPosition = useCallback\(pos =>/.test(src), 'onSellPosition should be a hoisted useCallback');
+  // the viewProps blocks must reference the stable consts, not re-declare inline arrows
+  assert.ok(!/onBuyPosition:\s*pos =>/.test(src), 'no inline onBuyPosition arrow may remain in viewProps');
+  assert.ok(!/onSellPosition:\s*pos =>/.test(src), 'no inline onSellPosition arrow may remain in viewProps');
+  assert.ok(!/onEditPosition:\s*pos =>\s*\{/.test(src), 'no inline onEditPosition arrow may remain in viewProps');
 });
