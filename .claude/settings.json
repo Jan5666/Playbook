@@ -2,6 +2,7 @@
   "alwaysThinkingEnabled": true,
   "permissions": {
     "allow": [
+      "Bash",
       "Bash(xxd:*)",
       "Bash(node backend/test/verify-refresh-behavior.mjs:*)",
       "Bash(node backend/test/verify-modals.mjs:*)",
