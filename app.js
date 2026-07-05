@@ -159,7 +159,7 @@ async function decryptBlob(code, blob) {
 // Save a backup to disk. In an iOS standalone PWA an `<a download>` is silently
 // ignored, so prefer the Web Share sheet (saves into Files / iCloud Drive);
 // fall back to a download anchor on desktop and browsers without file sharing.
-async function saveBackupFile(jsonString, toast) {
+async function saveBackupFile(jsonString) {
   const filename = `playbook-backup-${new Date().toISOString().slice(0, 10)}.json`;
   try {
     const file = new File([jsonString], filename, { type: 'application/json' });
@@ -178,7 +178,7 @@ async function saveBackupFile(jsonString, toast) {
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  if (toast) toast('Backup saved');
+  return { ok: true, code: 'backup-saved' };
 }
 function usePersistedState(key, defaultValue) {
   const [value, setValue] = useState(() => LS.get(key, defaultValue));
@@ -1748,7 +1748,7 @@ function useNow(intervalMs = 5000) {
   }, [intervalMs]);
   return now;
 }
-function usePriceFeed(order, fetchKey, toast) {
+function usePriceFeed(order, fetchKey) {
   // Seed the store's prices slice once from the rehydrated localStorage cache so
   // the app paints real numbers on open. The map now lives in PBStore, not React
   // state — so a batch merge re-renders only store subscribers, not all of App.
@@ -1808,21 +1808,16 @@ function usePriceFeed(order, fetchKey, toast) {
           setLastUpdate(new Date());
           setFailStreak(0);
         } else if (orderRef.current.length > 0) {
-          setFailStreak(prev => {
-            const next = prev + 1;
-            if (next === 2 && toast) toast('Price feed unreachable — using last known prices');
-            return next;
-          });
+          setFailStreak(prev => prev + 1);
         }
       } while (pendingForceRef.current);
     } catch (e) {
       console.error('Refresh failed:', e);
-      if (toast) toast('Price refresh failed');
       setFailStreak(prev => prev + 1);
     }
     loadingRef.current = false;
     setLoading(false);
-  }, [toast, persistPrices]);
+  }, [persistPrices]);
   // Auto-poll: skip if a fetch is already running (no point double-polling).
   const refresh = useCallback(() => {
     if (loadingRef.current) return;
@@ -2102,7 +2097,7 @@ async function registerPushWithBackend(base, alerts) {
 }
 // pushBackend is owned by the parent (persisted); setPushBackend lets connect()
 // save a freshly-entered URL. Status: off|connecting|connected|error|unsupported.
-function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
+function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm) {
   const [pushStatus, setPushStatus] = useState('off');
   const base = normalizeBackend(pushBackend);
   const alertsRef = useRef(alerts);
@@ -2140,34 +2135,31 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
   }, [pushStatus, base]);
   const connectPush = useCallback(async (url) => {
     const b = normalizeBackend(url);
-    if (!b) { toast('Enter your push server URL'); return false; }
-    if (!/^https:\/\//i.test(b)) { toast('Push server must be an https:// URL'); return false; }
+    if (!b) return { ok: false, code: 'push-no-url' };
+    if (!/^https:\/\//i.test(b)) return { ok: false, code: 'push-not-https' };
     if (!pushSupported()) {
       const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
-      toast(isIOS ? 'On iPhone, install to Home Screen first' : 'Push not supported in this browser');
-      return false;
+      return { ok: false, code: 'push-unsupported', isIOS };
     }
-    if (notifPerm !== 'granted') { toast('Enable notifications first'); return false; }
+    if (notifPerm !== 'granted') return { ok: false, code: 'push-no-perm' };
     setPushStatus('connecting');
     try {
       await registerPushWithBackend(b, alertsRef.current);
       setPushBackend(b);
       setPushStatus('connected');
-      toast('Background push connected');
-      return true;
+      return { ok: true, code: 'push-connected' };
     } catch (e) {
       setPushStatus('error');
-      toast('Could not connect: ' + (e.message || 'error'));
-      return false;
+      return { ok: false, code: 'push-connect-failed', detail: e.message || 'error' };
     }
-  }, [notifPerm, toast, setPushBackend]);
+  }, [notifPerm, setPushBackend]);
   const testPush = useCallback(async () => {
-    if (!base) return;
+    if (!base) return null;
     try {
       const r = await backendPost(base, '/test', { clientId: pushClientId() });
-      toast(r.ok ? 'Test push sent — check your lock screen' : 'Test failed (' + (r.status || '?') + ')');
-    } catch (_e) { toast('Test failed — is the server reachable?'); }
-  }, [base, toast]);
+      return r.ok ? { ok: true, code: 'push-test-sent' } : { ok: false, code: 'push-test-failed', status: r.status };
+    } catch (_e) { return { ok: false, code: 'push-test-error' }; }
+  }, [base]);
   const disconnectPush = useCallback(async () => {
     if (base) { try { await backendPost(base, '/unsubscribe', { clientId: pushClientId() }); } catch (_e) {} }
     try {
@@ -2177,14 +2169,15 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast) {
     } catch (_e) {}
     setPushBackend('');
     setPushStatus('off');
-    toast('Background push disconnected');
-  }, [base, setPushBackend, toast]);
+    return { ok: true, code: 'push-disconnected' };
+  }, [base, setPushBackend]);
   return { pushStatus, connectPush, testPush, disconnectPush };
 }
 // Owns positions/watchlist/contributions/alerts + CRUD. fxRates is needed for
-// purchase-date FX resolution; toast is injected for user-facing feedback.
+// purchase-date FX resolution. Mutators return { ok, code, ...data } outcomes
+// (see describeOutcome) instead of toasting directly — the App edge toasts them.
 // Raw setters are exposed so importData / cloud sync can replace state wholesale.
-function usePortfolio(fxRates, toast) {
+function usePortfolio(fxRates) {
   const positions = PBStore.useCollection('positions');
   const setPositions = useCallback(v => PBStore.setCollection('positions', v), []);
   const watchlist = PBStore.useCollection('watchlist');
@@ -2236,6 +2229,7 @@ function usePortfolio(fxRates, toast) {
   // we just don't show it — and every mutator below short-circuits to a toast.
   const previewMode = PBStore.useSetting('previewMode');
   const [, setDemoTick] = useState(0);
+  const [previewLoadError, setPreviewLoadError] = useState(0);
   // Self-heal: an installed PWA can launch on a stale cached index.html that
   // predates the demo-data.js script tag (iOS keeps old start pages around long
   // after app.js itself has updated). Without PB_DEMO the toggle and badge show
@@ -2250,17 +2244,14 @@ function usePortfolio(fxRates, toast) {
     el.onload = () => setDemoTick(t => t + 1);
     el.onerror = () => {
       el.remove();
-      toast('Couldn’t load the demo portfolio — check your connection and toggle Preview again.');
+      setPreviewLoadError(n => n + 1);
     };
     document.head.appendChild(el);
   }, [previewMode]);
   const DEMO = (typeof window !== 'undefined' && window.PB_DEMO) || null;
   const inPreview = !!(previewMode && DEMO);
   const guardPreview = (fn) => (...args) => {
-    if (inPreview) {
-      toast('Preview mode is on — turn it off in Settings to edit your real portfolio.');
-      return;
-    }
+    if (inPreview) return { ok: false, code: 'preview-readonly' };
     return fn(...args);
   };
   useEffect(() => {
@@ -2300,6 +2291,10 @@ function usePortfolio(fxRates, toast) {
     const newShares = parseFloat(shares);
     const newCost = parseFloat(costBasis);
     const tickerUp = ticker.toUpperCase();
+    // C4 fix: read the live store, not the possibly-stale reactive `positions`
+    // closure, so rapid successive adds report the correct message.
+    const existedBefore = (PBStore.getCollection('positions') || [])
+      .some(p => p.ticker === tickerUp && p.market === market);
     setPositions(prev => {
       const existing = prev.find(p => p.ticker === tickerUp && p.market === market);
       if (existing) {
@@ -2342,7 +2337,7 @@ function usePortfolio(fxRates, toast) {
         note: 'Bought ' + tickerUp, source: 'purchase', ticker: tickerUp
       }]);
     }
-    toast(positions.find(p => p.ticker === tickerUp && p.market === market) ? 'Shares added to existing position' : 'Position added');
+    return { ok: true, code: existedBefore ? 'shares-added' : 'position-added' };
   };
   // Bulk import (from file/paste). Resolves historical FX per dated row, then
   // applies every row in a single state update so duplicates within the batch
@@ -2406,8 +2401,7 @@ function usePortfolio(fxRates, toast) {
       if (s && s !== 'Other') learned[priceKey(r.market, r.ticker.toUpperCase())] = { sector: s, industry: r.sector, at: Date.now() };
     }
     if (Object.keys(learned).length) setSectorCache(prev => ({ ...prev, ...learned }));
-    toast(`Imported ${added} position${added !== 1 ? 's' : ''}${merged ? `, merged ${merged}` : ''}`);
-    return { added, merged };
+    return { ok: true, code: 'positions-imported', added, merged };
   };
   const sellPosition = (ticker, market, shares, sellPrice, date, notes) => {
     const tickerUp = ticker.toUpperCase();
@@ -2425,7 +2419,7 @@ function usePortfolio(fxRates, toast) {
       shares: numShares, price, notes: notes || '',
       date: date || today, createdAt: new Date().toISOString()
     }]);
-    toast('Sale recorded');
+    return { ok: true, code: 'sale-recorded' };
   };
   const updatePosition = async (id, updates) => {
     const existing = positions.find(p => p.id === id);
@@ -2451,18 +2445,18 @@ function usePortfolio(fxRates, toast) {
       const nextUpdates = resolvePositionUpdates(p, updates, { fxRates, today, historicalFx });
       return { ...p, ...nextUpdates };
     }));
-    toast('Position updated');
+    return { ok: true, code: 'position-updated' };
   };
   const removePosition = id => {
     setPositions(prev => prev.filter(p => p.id !== id));
-    toast('Position removed');
+    return { ok: true, code: 'position-removed' };
   };
   // Bulk delete (Settings → Manage holdings). One state update for the whole set.
   const removePositions = ids => {
     const set = new Set(ids);
     if (set.size === 0) return;
     setPositions(prev => prev.filter(p => !set.has(p.id)));
-    toast(set.size === 1 ? 'Holding deleted' : set.size + ' holdings deleted');
+    return { ok: true, code: 'holdings-deleted', count: set.size };
   };
   const addContribution = (amount, currency, date, note, usdLanded) => {
     const amt = parseFloat(amount);
@@ -2480,11 +2474,11 @@ function usePortfolio(fxRates, toast) {
       fxRateAtContrib: rateAtContrib, fxBase: 'USD',
       ...(hasLanded ? { usdLanded: landed } : {})
     }]);
-    toast('Contribution logged');
+    return { ok: true, code: 'contribution-logged' };
   };
   const removeContribution = id => {
     setContributions(prev => prev.filter(c => c.id !== id));
-    toast('Contribution removed');
+    return { ok: true, code: 'contribution-removed' };
   };
   // Bulk-add deposits/withdrawals from an import. Each entry's amount is already
   // signed (positive = deposit, negative = withdrawal).
@@ -2501,15 +2495,14 @@ function usePortfolio(fxRates, toast) {
     })).filter(e => isFinite(e.amount) && e.amount !== 0 && e.date);
     if (mapped.length === 0) return 0;
     setContributions(prev => [...prev, ...mapped]);
-    toast(`Imported ${mapped.length} ${mapped.length === 1 ? 'entry' : 'entries'}`);
-    return mapped.length;
+    return { ok: true, code: 'contributions-imported', count: mapped.length };
   };
   // ── TFSA deposit log CRUD ──
   const addTfsaDeposit = (amount, date, note) => {
     const amt = parseFloat(amount);
-    if (!isFinite(amt) || amt === 0 || !date) { toast('Enter an amount and date'); return; }
+    if (!isFinite(amt) || amt === 0 || !date) return { ok: false, code: 'deposit-missing-fields' };
     setTfsaDeposits(prev => [...prev, { id: uid(), amount: amt, date, note: note || '', source: 'manual' }]);
-    toast('Deposit logged');
+    return { ok: true, code: 'deposit-logged' };
   };
   const updateTfsaDeposit = (id, updates) => {
     setTfsaDeposits(prev => prev.map(d => {
@@ -2518,11 +2511,11 @@ function usePortfolio(fxRates, toast) {
       if (updates.amount != null) next.amount = parseFloat(updates.amount);
       return next;
     }));
-    toast('Deposit updated');
+    return { ok: true, code: 'deposit-updated' };
   };
   const removeTfsaDeposit = (id) => {
     setTfsaDeposits(prev => prev.filter(d => d.id !== id));
-    toast('Deposit removed');
+    return { ok: true, code: 'deposit-removed' };
   };
   // Bulk-remove several deposits at once (multi-select in the deposit log). The
   // annual + lifetime counters are derived from the remaining list, so they
@@ -2531,7 +2524,7 @@ function usePortfolio(fxRates, toast) {
     const set = new Set(ids || []);
     if (set.size === 0) return;
     setTfsaDeposits(prev => prev.filter(d => !set.has(d.id)));
-    toast(set.size === 1 ? 'Deposit removed' : `${set.size} deposits removed`);
+    return { ok: true, code: 'deposits-removed', count: set.size };
   };
   const addWatch = (ticker, market, name, listId) => {
     ticker = ticker.toUpperCase();
@@ -2540,11 +2533,10 @@ function usePortfolio(fxRates, toast) {
     if (existing) {
       // Already tracked — a stock can live in several lists, so just add it to
       // this one too (rather than moving it out of the others).
-      if (watchListIds(existing).includes(list)) { toast('Already on ' + (list === 'default' ? 'watchlist' : 'that list')); return; }
+      if (watchListIds(existing).includes(list)) return { ok: false, code: 'watch-already', list };
       setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market)
         ? { ...w, listIds: [...watchListIds(w), list], listId: undefined } : w));
-      toast('Added ' + ticker);
-      return;
+      return { ok: true, code: 'watch-added', ticker };
     }
     let resolvedName = name;
     if (!resolvedName) {
@@ -2559,7 +2551,7 @@ function usePortfolio(fxRates, toast) {
       listIds: [list],
       addedAt: new Date().toISOString()
     }]);
-    toast('Added ' + ticker);
+    return { ok: true, code: 'watch-added', ticker };
   };
   const removeWatch = id => setWatchlist(prev => prev.filter(w => w.id !== id));
   // Move a single watch entry into a different list (legacy single-list helper,
@@ -2571,29 +2563,26 @@ function usePortfolio(fxRates, toast) {
     ticker = (ticker || '').toUpperCase();
     const list = listId || 'default';
     const existing = watchlist.find(w => w.ticker === ticker && w.market === market);
-    if (!existing) { addWatch(ticker, market, name, list); return; }
+    if (!existing) return addWatch(ticker, market, name, list);
     const ids = watchListIds(existing);
     if (ids.includes(list)) {
       const next = ids.filter(x => x !== list);
       if (next.length === 0) {
         setWatchlist(prev => prev.filter(w => !(w.ticker === ticker && w.market === market)));
-        toast('Removed ' + ticker);
-      } else {
-        setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market) ? { ...w, listIds: next, listId: undefined } : w));
-        toast('Removed from list');
+        return { ok: true, code: 'watch-removed', ticker };
       }
-    } else {
-      setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market) ? { ...w, listIds: [...ids, list], listId: undefined } : w));
-      toast('Added to list');
+      setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market) ? { ...w, listIds: next, listId: undefined } : w));
+      return { ok: true, code: 'watch-removed-list' };
     }
+    setWatchlist(prev => prev.map(w => (w.ticker === ticker && w.market === market) ? { ...w, listIds: [...ids, list], listId: undefined } : w));
+    return { ok: true, code: 'watch-added-list' };
   };
   const addWatchGroup = (name) => {
     const nm = (name || '').trim();
     if (!nm) return null;
     const g = { id: uid(), name: nm, createdAt: new Date().toISOString() };
     setWatchlistGroups(prev => [...prev, g]);
-    toast('List "' + nm + '" created');
-    return g.id;
+    return { ok: true, code: 'watchgroup-created', name: nm, id: g.id };
   };
   const renameWatchGroup = (id, name) => {
     const nm = (name || '').trim();
@@ -2611,7 +2600,7 @@ function usePortfolio(fxRates, toast) {
       return { ...w, listIds: next.length ? next : ['default'], listId: undefined };
     }));
     setWatchlistGroups(prev => prev.filter(g => g.id !== id));
-    toast('List deleted');
+    return { ok: true, code: 'watchgroup-deleted' };
   };
   const addAlert = (ticker, market, direction, targetPrice, note) => {
     const a = {
@@ -2625,7 +2614,7 @@ function usePortfolio(fxRates, toast) {
       createdAt: new Date().toISOString()
     };
     setAlerts(prev => [...prev, a]);
-    toast('Alert set');
+    return { ok: true, code: 'alert-set' };
   };
   const removeAlert = id => {
     setAlerts(prev => prev.filter(a => a.id !== id));
@@ -2642,6 +2631,7 @@ function usePortfolio(fxRates, toast) {
     tfsaDeposits: inPreview ? DEMO.tfsaDeposits : tfsaDeposits, setTfsaDeposits,
     sectorCache, setSectorCache,
     sectorWeights, setSectorWeights, setSectorWeightsFor,
+    previewLoadError,
     // Write side: every user-facing mutator is read-only in preview (raw
     // setters stay live — cloud restore/import wiring uses them deliberately).
     addPosition: guardPreview(addPosition), updatePosition: guardPreview(updatePosition),
@@ -2658,6 +2648,65 @@ function usePortfolio(fxRates, toast) {
     addAlert: guardPreview(addAlert), removeAlert: guardPreview(removeAlert)
   };
 }
+
+// ─── Toast copy: the single place user-facing outcome messages live ───────────
+// Data-layer mutators/actions return { ok, code, ...data } outcomes (no strings).
+// The App edge maps each outcome to copy here and shows the toast. Returns null
+// for outcomes that must not toast (no-ops, silent success, unknown codes).
+function describeOutcome(o) {
+  if (!o || typeof o.code !== 'string') return null;
+  const d = o;
+  switch (o.code) {
+    // positions
+    case 'position-added':         return 'Position added';
+    case 'shares-added':           return 'Shares added to existing position';
+    case 'positions-imported':     return `Imported ${d.added} position${d.added !== 1 ? 's' : ''}` + (d.merged ? `, merged ${d.merged}` : '');
+    case 'sale-recorded':          return 'Sale recorded';
+    case 'position-updated':       return 'Position updated';
+    case 'position-removed':       return 'Position removed';
+    case 'holdings-deleted':       return d.count === 1 ? 'Holding deleted' : `${d.count} holdings deleted`;
+    // contributions
+    case 'contribution-logged':    return 'Contribution logged';
+    case 'contribution-removed':   return 'Contribution removed';
+    case 'contributions-imported': return `Imported ${d.count} ${d.count === 1 ? 'entry' : 'entries'}`;
+    // TFSA deposits
+    case 'deposit-missing-fields': return 'Enter an amount and date';
+    case 'deposit-logged':         return 'Deposit logged';
+    case 'deposit-updated':        return 'Deposit updated';
+    case 'deposit-removed':        return 'Deposit removed';
+    case 'deposits-removed':       return d.count === 1 ? 'Deposit removed' : `${d.count} deposits removed`;
+    // watchlist
+    case 'watch-added':            return 'Added ' + d.ticker;
+    case 'watch-already':          return 'Already on ' + (d.list === 'default' ? 'watchlist' : 'that list');
+    case 'watch-removed':          return 'Removed ' + d.ticker;
+    case 'watch-removed-list':     return 'Removed from list';
+    case 'watch-added-list':       return 'Added to list';
+    case 'watchgroup-created':     return `List "${d.name}" created`;
+    case 'watchgroup-deleted':     return 'List deleted';
+    // alerts
+    case 'alert-set':              return 'Alert set';
+    // preview
+    case 'preview-readonly':       return 'Preview mode is on — turn it off in Settings to edit your real portfolio.';
+    case 'preview-load-failed':    return 'Couldn’t load the demo portfolio — check your connection and toggle Preview again.';
+    // push backend
+    case 'push-no-url':            return 'Enter your push server URL';
+    case 'push-not-https':         return 'Push server must be an https:// URL';
+    case 'push-unsupported':       return d.isIOS ? 'On iPhone, install to Home Screen first' : 'Push not supported in this browser';
+    case 'push-no-perm':           return 'Enable notifications first';
+    case 'push-connected':         return 'Background push connected';
+    case 'push-connect-failed':    return 'Could not connect: ' + (d.detail || 'error');
+    case 'push-test-sent':         return 'Test push sent — check your lock screen';
+    case 'push-test-failed':       return 'Test failed (' + (d.status || '?') + ')';
+    case 'push-test-error':        return 'Test failed — is the server reachable?';
+    case 'push-disconnected':      return 'Background push disconnected';
+    // price feed (rationalized to one message)
+    case 'feed-unreachable':       return 'Price feed unreachable — showing last known prices';
+    // backup
+    case 'backup-saved':           return 'Backup saved';
+    default:                       return null;
+  }
+}
+
 const ToastContext = React.createContext(() => {});
 function ToastProvider(_ref2) {
   let {
@@ -2902,22 +2951,62 @@ function App() {
   const [showInstallBanner, setShowInstallBanner] = useState(false);
   const [marketFilter, setMarketFilter] = useState('US');
   const toast = useToast();
+  // withToast: the edge. Run a data-layer action, map its { ok, code, ... } outcome
+  // to copy (describeOutcome) and toast it. Promise-aware so async mutators toast
+  // after they resolve; returns the action's own value/outcome unchanged so callers
+  // that read a return (e.g. addWatchGroup's id) still work.
+  const withToast = useCallback((fn) => (...args) => {
+    const r = fn(...args);
+    if (r && typeof r.then === 'function') {
+      return r.then(o => { const m = describeOutcome(o); if (m) toast(m); return o; });
+    }
+    const m = describeOutcome(r); if (m) toast(m);
+    return r;
+  }, [toast]);
+  const _p = usePortfolio(fxRates);
+  // Reads + the two non-preview-guarded raw setters pass through untouched.
   const {
-    positions, setPositions,
-    watchlist, setWatchlist,
-    watchlistGroups, setWatchlistGroups,
-    alerts, setAlerts,
-    contributions, setContributions,
-    transactions, setTransactions,
-    tfsaDeposits, setTfsaDeposits,
-    sectorCache, setSectorCache,
-    sectorWeights, setSectorWeights, setSectorWeightsFor,
-    addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
-    addContribution, removeContribution, importContributions,
-    addTfsaDeposit, updateTfsaDeposit, removeTfsaDeposit, removeTfsaDeposits,
-    addWatch, removeWatch, moveWatch, toggleWatchList, addWatchGroup, renameWatchGroup, removeWatchGroup,
-    addAlert, removeAlert
-  } = usePortfolio(fxRates, toast);
+    positions, watchlist, watchlistGroups, alerts, contributions, transactions,
+    tfsaDeposits, sectorCache, sectorWeights, previewLoadError,
+    setAlerts, setSectorCache,
+  } = _p;
+  // Every preview-guarded export is wrapped so its outcome (success OR the
+  // preview-readonly reject) toasts at the edge. Identities are recreated per
+  // render, matching today's un-memoized mutators; identity-stabilization is the
+  // next increment.
+  const setPositions = withToast(_p.setPositions);
+  const setWatchlist = withToast(_p.setWatchlist);
+  const setWatchlistGroups = withToast(_p.setWatchlistGroups);
+  const setContributions = withToast(_p.setContributions);
+  const setTransactions = withToast(_p.setTransactions);
+  const setTfsaDeposits = withToast(_p.setTfsaDeposits);
+  const setSectorWeights = withToast(_p.setSectorWeights);
+  const setSectorWeightsFor = withToast(_p.setSectorWeightsFor);
+  const addPosition = withToast(_p.addPosition);
+  const updatePosition = withToast(_p.updatePosition);
+  const removePosition = withToast(_p.removePosition);
+  const removePositions = withToast(_p.removePositions);
+  const sellPosition = withToast(_p.sellPosition);
+  const importPositions = withToast(_p.importPositions);
+  const addContribution = withToast(_p.addContribution);
+  const removeContribution = withToast(_p.removeContribution);
+  const importContributions = withToast(_p.importContributions);
+  const addTfsaDeposit = withToast(_p.addTfsaDeposit);
+  const updateTfsaDeposit = withToast(_p.updateTfsaDeposit);
+  const removeTfsaDeposit = withToast(_p.removeTfsaDeposit);
+  const removeTfsaDeposits = withToast(_p.removeTfsaDeposits);
+  const addWatch = withToast(_p.addWatch);
+  const removeWatch = withToast(_p.removeWatch);
+  const moveWatch = withToast(_p.moveWatch);
+  const toggleWatchList = withToast(_p.toggleWatchList);
+  const addWatchGroup = withToast(_p.addWatchGroup);
+  const renameWatchGroup = withToast(_p.renameWatchGroup);
+  const removeWatchGroup = withToast(_p.removeWatchGroup);
+  const addAlert = withToast(_p.addAlert);
+  const removeAlert = withToast(_p.removeAlert);
+  useEffect(() => {
+    if (previewLoadError > 0) { const m = describeOutcome({ code: 'preview-load-failed' }); if (m) toast(m); }
+  }, [previewLoadError]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
@@ -3017,7 +3106,10 @@ function App() {
     warmed: warmedLists,
     activeView: view,
   }), [positions, watchlist, alerts, ribbonItems, warmedLists, view]);
-  const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey, toast);
+  const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey);
+  useEffect(() => {
+    if (failStreak === 2) { const m = describeOutcome({ code: 'feed-unreachable' }); if (m) toast(m); }
+  }, [failStreak]);
   // Entering a lazy tab: warm its list on first visit (so it joins the poll set)
   // and force an immediate, prioritized refresh so its prices are fresh within a
   // tick (the rehydrated cache paints last-known meanwhile). refreshPricesNow never
@@ -3152,8 +3244,11 @@ function App() {
   // sync, and reconcile anything fired while the app was closed.
   useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered, notifPerm);
   // Optional server-push backend for always-on, app-closed alerts (premium tier).
-  const { pushStatus, connectPush, testPush, disconnectPush } =
-    usePushBackend(pushBackend, setPushBackend, alerts, notifPerm, toast);
+  const { pushStatus, connectPush: _connectPush, testPush: _testPush, disconnectPush: _disconnectPush } =
+    usePushBackend(pushBackend, setPushBackend, alerts, notifPerm);
+  const connectPush = withToast(_connectPush);
+  const testPush = withToast(_testPush);
+  const disconnectPush = withToast(_disconnectPush);
   const cloudBackup = useCloudBackup(pushBackend, toast);
   const requestNotifPerm = useCallback(async () => {
     if (typeof Notification === 'undefined') {
@@ -3250,7 +3345,7 @@ function App() {
     // Full snapshot of every durable pb.* key (not a hand-picked subset), so the
     // file captures holdings, watchlists, alerts, contributions, transactions,
     // sector weights, TFSA targets and all settings.
-    saveBackupFile(JSON.stringify(gatherBackup(), null, 2), toast);
+    withToast(saveBackupFile)(JSON.stringify(gatherBackup(), null, 2));
   };
   const importData = file => {
     const reader = new FileReader();
@@ -7506,7 +7601,8 @@ function WatchlistView(_ref8) {
     { id: 'alerts', label: 'Has alerts' }
   ];
   const createList = () => {
-    const id = onAddWatchGroup && onAddWatchGroup(newListName);
+    const _r = onAddWatchGroup && onAddWatchGroup(newListName);
+    const id = _r && _r.id;
     if (id) setActiveList(id);
     setNewListName(''); setCreatingList(false);
   };
@@ -10216,7 +10312,8 @@ function WatchlistControl(_refWL) {
   const submitNew = () => {
     const nm = newName.trim();
     if (!nm) return;
-    const id = onAddWatchGroup(nm);
+    const _r = onAddWatchGroup(nm);
+    const id = _r && _r.id;
     if (id) toggle(id);
     setCreating(false); setNewName('');
   };
