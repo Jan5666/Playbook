@@ -9,6 +9,7 @@
 // (Google, ASML, Berkshire, GE Vernova, iShares ETFs) being booked onto obscure
 // foreign listings at the wrong-currency "live rate".
 import PBImport from '../../pb-import.js';
+import PBCore from '../../pb-core.js';
 
 PBImport.configure({ allTickers: [
   { ticker: 'BRK-B', name: 'Berkshire Hathaway', market: 'US' },
@@ -111,6 +112,43 @@ ok('inferMarket currency ZAR → JSE', inferMarket('ZAR', null, null) === 'JSE')
 ok('inferMarket currency GBX → LSE', inferMarket('GBX', null, null) === 'LSE');
 ok('inferMarket unrecognised → US fallback', inferMarket('', 'Zorg', null) === 'US');
 
+// ── parseDecimal: locale-aware number parsing (moved to pb-core) ─────────────
+const { parseDecimal } = PBCore;
+ok('parseDecimal US 1,234.56', parseDecimal('1,234.56') === 1234.56);
+ok('parseDecimal EU 1.234,56', parseDecimal('1.234,56') === 1234.56);
+ok('parseDecimal lone-comma decimal 12,50', parseDecimal('12,50') === 12.5);
+ok('parseDecimal lone-comma thousands 1,500', parseDecimal('1,500') === 1500);
+ok('parseDecimal strips rand + space "R8 100.69"', parseDecimal('R8 100.69') === 8100.69);
+ok('parseDecimal strips £ + thousands', parseDecimal('£1,234.50') === 1234.5);
+ok('parseDecimal empty → NaN', Number.isNaN(parseDecimal('')));
+ok('parseDecimal null → NaN', Number.isNaN(parseDecimal(null)));
+
+// ── parseImportDate: locale-tolerant date normalisation ──────────────────────
+const { parseImportDate } = PBImport;
+ok('parseImportDate ISO passthrough', parseImportDate('2024-10-01') === '2024-10-01');
+ok('parseImportDate zero-pads ISO', parseImportDate('2024-3-5') === '2024-03-05');
+ok('parseImportDate DD/MM (day>12)', parseImportDate('13/02/2024') === '2024-02-13');
+ok('parseImportDate MM/DD flip (month>12)', parseImportDate('02/13/2024') === '2024-02-13');
+ok('parseImportDate day-first default', parseImportDate('01/02/2024') === '2024-02-01');
+ok('parseImportDate junk → empty', parseImportDate('not a date') === '');
+
+// ── parseHoldingsFromText: generic-table mapper (header + headerless) ─────────
+const { parseHoldingsFromText } = PBImport;
+const one = (rows) => rows.length === 1 ? rows[0] : {};
+const hHeader = one(parseHoldingsFromText('Ticker,Shares,Price\nAAPL,10,150'));
+ok('header table resolves shares', hHeader.shares === 10);
+ok('header table resolves cost from price', hHeader.costBasis === 150);
+const hTotal = one(parseHoldingsFromText('Ticker,Shares,Book Cost\nAAPL,10,1500'));
+ok('"Book Cost" claimed as total (not per-share) → cost = total / shares', hTotal.costBasis === 150);
+const hHeadless = one(parseHoldingsFromText('AAPL\t10\t150'));
+ok('headerless: shares from first numeric col', hHeadless.shares === 10);
+ok('headerless: cost from second numeric col', hHeadless.costBasis === 150);
+ok('headerless: query from the text column', hHeadless.query === 'AAPL');
+const hMarkdown = one(parseHoldingsFromText('- **Broadcom** 5 900'));
+ok('markdown list marker + emphasis stripped', hMarkdown.query === 'Broadcom');
+ok('markdown row shares parsed', hMarkdown.shares === 5);
+ok('markdown row cost parsed', hMarkdown.costBasis === 900);
+
 // ── Anti-drift: the pure import core lives in pb-import.js, not app.js ────────
 import { readFileSync as _rf } from 'node:fs';
 import { fileURLToPath as _fu } from 'node:url';
@@ -122,6 +160,14 @@ ok('app.js no longer defines splitLine',           !/\bfunction splitLine\b/.tes
 ok('app.js no longer defines inferMarket',         !/\bfunction inferMarket\b/.test(_appSrc));
 ok('app.js binds rankImportCandidates from PBImport', /const rankImportCandidates = PBImport\.rankImportCandidates/.test(_appSrc));
 ok('app.js injects the ticker universe',           /PBImport\.configure\(\{ allTickers: ALL_TICKERS \}\)/.test(_appSrc));
+
+// Increment 5: the import parsers live in pb-import.js / pb-core.js, not app.js.
+ok('app.js no longer defines parseDecimal',              !/\bfunction parseDecimal\b/.test(_appSrc));
+ok('app.js no longer defines rowsToHoldings',            !/\bfunction rowsToHoldings\b/.test(_appSrc));
+ok('app.js no longer defines parseHoldingsFromText',     !/\bfunction parseHoldingsFromText\b/.test(_appSrc));
+ok('app.js no longer defines parseEasyEquitiesScreenshot', !/\bfunction parseEasyEquitiesScreenshot\b/.test(_appSrc));
+ok('app.js binds parseDecimal from PBCore',              /const parseDecimal = PBCore\.parseDecimal/.test(_appSrc));
+ok('app.js binds rowsToHoldings from PBImport',          /const rowsToHoldings\s*=\s*PBImport\.rowsToHoldings/.test(_appSrc));
 
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll import-matching tests passed');
 process.exit(failures ? 1 : 0);
