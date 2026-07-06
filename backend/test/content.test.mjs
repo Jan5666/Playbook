@@ -148,6 +148,9 @@ test('app.js no longer defines the content blocks inline', () => {
   assert.ok(!appSrc.includes('const SECTOR_ETF = {'), 'SECTOR_ETF not inline');
   assert.ok(!appSrc.includes('const SECTOR_TREND_WINDOWS = ['), 'SECTOR_TREND_WINDOWS not inline');
   assert.ok(!appSrc.includes('const SECTOR_FWD_PE = {'), 'SECTOR_FWD_PE not inline');
+  assert.ok(!appSrc.includes('const MARKETS = ['), 'MARKETS not inline');
+  assert.ok(!appSrc.includes('const DISPLAY_CURRENCIES = ['), 'DISPLAY_CURRENCIES not inline');
+  assert.ok(!appSrc.includes('const CURRENCY_SYMBOLS = {'), 'CURRENCY_SYMBOLS not inline');
 });
 
 test('app.js delegates the content blocks to PBContent', () => {
@@ -159,4 +162,7 @@ test('app.js delegates the content blocks to PBContent', () => {
   assert.ok(appSrc.includes('const SECTOR_ETF = PBContent.SECTOR_ETF'), 'binds SECTOR_ETF');
   assert.ok(appSrc.includes('const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS'), 'binds SECTOR_TREND_WINDOWS');
   assert.ok(appSrc.includes('const SECTOR_FWD_PE = PBContent.SECTOR_FWD_PE'), 'binds SECTOR_FWD_PE');
+  assert.ok(appSrc.includes('const MARKETS = PBContent.MARKETS'), 'binds MARKETS');
+  assert.ok(appSrc.includes('const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES'), 'binds DISPLAY_CURRENCIES');
+  assert.ok(appSrc.includes('const CURRENCY_SYMBOLS = PBContent.CURRENCY_SYMBOLS'), 'binds CURRENCY_SYMBOLS');
 });

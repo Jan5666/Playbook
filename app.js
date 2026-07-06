@@ -439,17 +439,7 @@ function useSwipeDownToClose(panelRef, onClose, enabled = true) {
 // helpers below it now live in pb-core.js so they can be unit-tested outside the
 // 14k-line app.js. Bound to local names; canonical source is pb-core.js.
 const MARKET_CURRENCY = PBCore.MARKET_CURRENCY;
-const MARKETS = [
-  { value: 'US',   label: 'US',   country: 'USA',          exchange: 'NYSE / NASDAQ' },
-  { value: 'JSE',  label: 'JSE',  country: 'South Africa',  exchange: 'JSE' },
-  { value: 'TFSA', label: 'TFSA', country: 'South Africa',  exchange: 'JSE (Tax-Free)' },
-  { value: 'LSE', label: 'LSE', country: 'UK',          exchange: 'London (LSE)' },
-  { value: 'ASX', label: 'ASX', country: 'Australia',   exchange: 'ASX' },
-  { value: 'FRA', label: 'FRA', country: 'Germany',     exchange: 'XETRA Frankfurt' },
-  { value: 'PAR', label: 'PAR', country: 'France',      exchange: 'Euronext Paris' },
-  { value: 'AMS', label: 'AMS', country: 'Netherlands', exchange: 'Euronext Amsterdam' },
-  { value: 'CRYPTO', label: 'Crypto', country: 'Crypto', exchange: 'Spot \u00b7 24/7' },
-];
+const MARKETS = PBContent.MARKETS;
 // JSE and TFSA are the same underlying exchange — a TFSA account just tracks
 // JSE-listed shares (.JO) tax-free — so a JSE-listed search result is valid for
 // either account. Used so picking a listing never silently flips the account
@@ -459,14 +449,8 @@ function sameUnderlyingExchange(a, b) {
   const norm = m => (m === 'TFSA' ? 'JSE' : m);
   return norm(a) === norm(b);
 }
-const DISPLAY_CURRENCIES = [
-  { code: 'USD', sym: '$',  label: 'US Dollar' },
-  { code: 'ZAR', sym: 'R',  label: 'South African Rand' },
-  { code: 'GBP', sym: '\u00a3', label: 'British Pound' },
-  { code: 'AUD', sym: 'A$', label: 'Australian Dollar' },
-  { code: 'EUR', sym: '\u20ac', label: 'Euro' },
-];
-const CURRENCY_SYMBOLS = { USD: '$', ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' };
+const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES;
+const CURRENCY_SYMBOLS = PBContent.CURRENCY_SYMBOLS;
 const RIBBON_CATALOG = PBContent.RIBBON_CATALOG;
 const RIBBON_CATALOG_MAP = PBContent.RIBBON_CATALOG_MAP;
 const DEFAULT_RIBBON_ITEMS = ['US:^SPX', 'US:^VIX'];
