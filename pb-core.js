@@ -612,6 +612,31 @@
     };
   }
 
+// Parse a possibly comma-decimalled / thousands-separated string to a number.
+// Returns NaN when there's no usable numeric content.
+function parseDecimal(raw) {
+  if (raw == null) return NaN;
+  let s = String(raw).trim();
+  if (!s) return NaN;
+  // Strip currency symbols / spaces / letters but keep separators and sign.
+  s = s.replace(/[^0-9.,\-]/g, '');
+  if (!s) return NaN;
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+  if (hasComma && hasDot) {
+    // Whichever separator appears last is the decimal separator.
+    if (s.lastIndexOf(',') > s.lastIndexOf('.')) s = s.replace(/\./g, '').replace(',', '.');
+    else s = s.replace(/,/g, '');
+  } else if (hasComma) {
+    // A lone comma: decimal if it looks like one (e.g. 12,50), else thousands.
+    const parts = s.split(',');
+    if (parts.length === 2 && parts[1].length !== 3) s = parts[0] + '.' + parts[1];
+    else s = s.replace(/,/g, '');
+  }
+  const n = parseFloat(s);
+  return isFinite(n) ? n : NaN;
+}
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
@@ -640,7 +665,8 @@
     marketDayKey,
     derivePrevClose,
     deriveIntradayExt,
-    parseYahooQuote
+    parseYahooQuote,
+    parseDecimal
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the

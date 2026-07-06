@@ -1,30 +1,13 @@
-// Standalone unit test for the Easy Equities screenshot parser. It pulls the
-// *actual* parser source out of app.js (so it can't drift from the shipped
-// code) and runs it against realistic, noisy OCR text for the four sample
-// holding screenshots. Run: node backend/test/ee-ocr-parse.test.mjs
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import vm from 'node:vm';
+// Standalone unit test for the Easy Equities screenshot parser. It imports the
+// *actual* parsers from pb-import.js (dual-mode CommonJS; default export =
+// module.exports) so it can't drift from the shipped code, and runs them against
+// realistic, noisy OCR text for the four sample holding screenshots. parseDecimal
+// (used internally by the parsers) comes from the real pb-core via pb-import.
+// Run: node backend/test/ee-ocr-parse.test.mjs
+import PBImport from '../../pb-import.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const appSrc = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
-
-function slice(from, to) {
-  const a = appSrc.indexOf(from);
-  const b = appSrc.indexOf(to, a + 1);
-  if (a < 0 || b < 0) throw new Error(`anchor not found: ${from} .. ${to}`);
-  return appSrc.slice(a, b);
-}
-
-const parseDecimalSrc = slice('function parseDecimal(raw) {', 'const MAX_TRIGGER_HISTORY');
-const eeSrc = slice('const TESSERACT_CDN =', '// ── Deposit / withdrawal');
-
-const ctx = { window: {} };
-vm.createContext(ctx);
-vm.runInContext(parseDecimalSrc + '\n' + eeSrc + '\nthis.parse = parseEasyEquitiesScreenshot; this.dedupe = dedupeEeHoldings;', ctx);
-const parse = ctx.parse;
-const dedupe = ctx.dedupe;
+const parse = PBImport.parseEasyEquitiesScreenshot;
+const dedupe = PBImport.dedupeEeHoldings;
 
 let failures = 0;
 function approx(a, b, tol = 0.001) { return a != null && Math.abs(a - b) <= tol; }
