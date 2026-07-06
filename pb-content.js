@@ -162,5 +162,42 @@ const BUILTIN_MACRO_2026 = [
     ]},
   ];
 
-return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES };
+const SECTOR_ETF = {
+  'Technology':              { etf: 'XLK',  name: 'Technology Select Sector' },
+  'Communication Services':  { etf: 'XLC',  name: 'Communication Services' },
+  'Consumer Cyclical':       { etf: 'XLY',  name: 'Consumer Discretionary' },
+  'Consumer Defensive':      { etf: 'XLP',  name: 'Consumer Staples' },
+  'Energy':                  { etf: 'XLE',  name: 'Energy Select Sector' },
+  'Financial Services':      { etf: 'XLF',  name: 'Financial Select Sector' },
+  'Financials':             { etf: 'XLF',  name: 'Financial Select Sector' },
+  'Healthcare':              { etf: 'XLV',  name: 'Health Care Select Sector' },
+  'Industrials':             { etf: 'XLI',  name: 'Industrial Select Sector' },
+  'Basic Materials':         { etf: 'XLB',  name: 'Materials Select Sector' },
+  'Materials':               { etf: 'XLB',  name: 'Materials Select Sector' },
+  'Real Estate':             { etf: 'XLRE', name: 'Real Estate Select Sector' },
+  'Utilities':               { etf: 'XLU',  name: 'Utilities Select Sector' },
+};
+const SECTOR_TREND_WINDOWS = [
+  { key: '1W', days: 7 },
+  { key: '1M', days: 30 },
+  { key: '1Y', days: 365 },
+  { key: '2Y', days: 730 },
+  { key: '3Y', days: 1095 },
+  { key: '5Y', days: 1825 },
+];
+const SECTOR_FWD_PE = {
+  'technology': 27, 'information technology': 27,
+  'communication services': 19, 'communications': 19,
+  'consumer cyclical': 22, 'consumer discretionary': 22,
+  'consumer defensive': 19, 'consumer staples': 19,
+  'healthcare': 17, 'health care': 17,
+  'financial services': 15, 'financials': 15, 'financial': 15,
+  'industrials': 20, 'industrial': 20,
+  'energy': 12,
+  'basic materials': 16, 'materials': 16,
+  'real estate': 18,
+  'utilities': 17,
+};
+
+return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE };
 });
