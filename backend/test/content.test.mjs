@@ -60,6 +60,35 @@ test('PBContent.RULES has the three expected sections with the right bullet coun
   assert.ok(byId('trim').bullets.every(b => typeof b.strong === 'string'), 'every trim bullet has a bold lead-in');
 });
 
+test('PBContent.SECTOR_ETF maps sector names to {etf, name}', () => {
+  assert.ok(PBContent.SECTOR_ETF && typeof PBContent.SECTOR_ETF === 'object', 'SECTOR_ETF is an object');
+  const entries = Object.entries(PBContent.SECTOR_ETF);
+  assert.ok(entries.length > 0, 'SECTOR_ETF non-empty');
+  for (const [sector, v] of entries) {
+    assert.ok(typeof v.etf === 'string' && v.etf.length, `${sector} has a non-empty etf`);
+    assert.ok(typeof v.name === 'string' && v.name.length, `${sector} has a non-empty name`);
+  }
+});
+
+test('PBContent.SECTOR_TREND_WINDOWS is a list of {key, days>0}', () => {
+  assert.ok(Array.isArray(PBContent.SECTOR_TREND_WINDOWS), 'SECTOR_TREND_WINDOWS is an array');
+  assert.ok(PBContent.SECTOR_TREND_WINDOWS.length > 0, 'non-empty');
+  for (const w of PBContent.SECTOR_TREND_WINDOWS) {
+    assert.ok(typeof w.key === 'string' && w.key.length, `window has a string key`);
+    assert.ok(typeof w.days === 'number' && w.days > 0, `window ${w.key} has days > 0`);
+  }
+});
+
+test('PBContent.SECTOR_FWD_PE maps lowercased sectors to numbers', () => {
+  assert.ok(PBContent.SECTOR_FWD_PE && typeof PBContent.SECTOR_FWD_PE === 'object', 'SECTOR_FWD_PE is an object');
+  const entries = Object.entries(PBContent.SECTOR_FWD_PE);
+  assert.ok(entries.length > 0, 'non-empty');
+  for (const [k, v] of entries) {
+    assert.strictEqual(k, k.toLowerCase(), `key "${k}" is lowercase (consumer lowercases the lookup)`);
+    assert.ok(typeof v === 'number' && isFinite(v), `${k} maps to a finite number`);
+  }
+});
+
 // ── Anti-drift source guards: the content must live only in pb-content.js ──────
 import { readFileSync } from 'node:fs';
 const appSrc = readFileSync(new URL('../../app.js', import.meta.url), 'utf8');
@@ -71,6 +100,9 @@ test('app.js no longer defines the content blocks inline', () => {
   assert.ok(!appSrc.includes('const BUILTIN_MACRO_2026 = ['), 'BUILTIN_MACRO_2026 not inline');
   assert.ok(!appSrc.includes('Thesis-break triggers'), 'Rules headings not inline');
   assert.ok(!appSrc.includes('bank profits') && !appSrc.includes('R80k of gains untaxed'), 'Rules prose not inline');
+  assert.ok(!appSrc.includes('const SECTOR_ETF = {'), 'SECTOR_ETF not inline');
+  assert.ok(!appSrc.includes('const SECTOR_TREND_WINDOWS = ['), 'SECTOR_TREND_WINDOWS not inline');
+  assert.ok(!appSrc.includes('const SECTOR_FWD_PE = {'), 'SECTOR_FWD_PE not inline');
 });
 
 test('app.js delegates the content blocks to PBContent', () => {
@@ -79,4 +111,7 @@ test('app.js delegates the content blocks to PBContent', () => {
   assert.ok(appSrc.includes('const INDICATOR_INFO = PBContent.INDICATOR_INFO'), 'binds INDICATOR_INFO');
   assert.ok(appSrc.includes('const BUILTIN_MACRO_2026 = PBContent.BUILTIN_MACRO_2026'), 'binds BUILTIN_MACRO_2026');
   assert.ok(appSrc.includes('const RULES = PBContent.RULES'), 'binds RULES');
+  assert.ok(appSrc.includes('const SECTOR_ETF = PBContent.SECTOR_ETF'), 'binds SECTOR_ETF');
+  assert.ok(appSrc.includes('const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS'), 'binds SECTOR_TREND_WINDOWS');
+  assert.ok(appSrc.includes('const SECTOR_FWD_PE = PBContent.SECTOR_FWD_PE'), 'binds SECTOR_FWD_PE');
 });
