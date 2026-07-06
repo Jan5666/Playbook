@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v47';
+const CACHE_NAME   = 'playbook-shell-v48';
 const CDN_CACHE    = 'playbook-cdn-v1';
 
 const SHELL_ASSETS = [
@@ -10,6 +10,7 @@ const SHELL_ASSETS = [
   './pb-data.js',
   './pb-store.js',
   './pb-content.js',
+  './pb-import.js',
   './app.js',
   './data.js',
   './demo-data.js',
