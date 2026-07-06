@@ -471,6 +471,7 @@ const RIBBON_CATALOG = PBContent.RIBBON_CATALOG;
 const RIBBON_CATALOG_MAP = PBContent.RIBBON_CATALOG_MAP;
 const DEFAULT_RIBBON_ITEMS = ['US:^SPX', 'US:^VIX'];
 const INDICATOR_INFO = PBContent.INDICATOR_INFO;
+const RULES = PBContent.RULES;
 // The CORS proxy ladder now lives in pb-data.js (client-only network layer).
 // Bound here so app.js call sites are unchanged. PBData is loaded before app.js.
 const fetchViaProxies = PBData.fetchViaProxies;
@@ -9474,20 +9475,22 @@ function HotTopicsView(_refHT) {
     updated && React.createElement("div", { className: "hot-updated" }, updated)
   );
 }
+function ruleSection(section, cardClass) {
+  return [React.createElement("div", {
+    key: section.id + '-eyebrow',
+    className: "eyebrow"
+  }, section.heading), React.createElement("div", {
+    key: section.id + '-card',
+    className: cardClass
+  }, React.createElement("ul", {
+    className: "bullet-list"
+  }, section.bullets.map((b, i) => React.createElement("li", {
+    key: i
+  }, React.createElement("span", null, b.strong ? React.createElement("strong", null, b.strong) : null, b.text)))))];
+}
 function RulesView() {
-  return React.createElement("div", null, React.createElement("div", {
-    className: "eyebrow"
-  }, "Trim rules"), React.createElement("div", {
-    className: "card mb-4"
-  }, React.createElement("ul", {
-    className: "bullet-list"
-  }, React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "+100% gain"), " \u2014 trim 25% of position, bank profits")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "+150% gain"), " \u2014 trim another 20% of remainder")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "+200% gain"), " \u2014 trim another 20%, let the rest ride")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "-20% from cost"), " \u2014 re-examine thesis, never average down without fresh conviction")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "Position >12% of book"), " \u2014 trim to 10% regardless of gain")))), React.createElement("div", {
-    className: "eyebrow"
-  }, "Thesis-break triggers"), React.createElement("div", {
-    className: "card mb-4"
-  }, React.createElement("ul", {
-    className: "bullet-list"
-  }, React.createElement("li", null, React.createElement("span", null, "Hyperscaler capex cut by top-3 player (MSFT, GOOGL, META, AMZN, ORCL)")), React.createElement("li", null, React.createElement("span", null, "Core CPI above 3.2% for two consecutive prints")), React.createElement("li", null, React.createElement("span", null, "Brent above $120 \u2014 consumer weakness trigger")), React.createElement("li", null, React.createElement("span", null, "VOO drawdown >15% from buy-zone \u2014 deploy all cash")), React.createElement("li", null, React.createElement("span", null, "Any position where CEO reneges on publicly-stated commitment (the MSTR lesson)")))), React.createElement("div", {
+  const byId = id => RULES.find(s => s.id === id);
+  return React.createElement("div", null, ...ruleSection(byId('trim'), "card mb-4"), ...ruleSection(byId('thesisBreak'), "card mb-4"), React.createElement("div", {
     className: "eyebrow"
   }, "Key risks"), React.createElement("div", {
     className: "grid grid-2 mb-4"
@@ -9509,13 +9512,7 @@ function RulesView() {
     className: `pill ${r.probability === 'HIGH' ? 'pill-danger' : 'pill-warn'}`
   }, r.probability)), React.createElement("div", {
     className: "text-sm text-muted"
-  }, r.impact)))), React.createElement("div", {
-    className: "eyebrow"
-  }, "SA tax-year discipline"), React.createElement("div", {
-    className: "card"
-  }, React.createElement("ul", {
-    className: "bullet-list"
-  }, React.createElement("li", null, React.createElement("span", null, "Tax year ends 28 February. Split disposals across 28 Feb + 1 March for two annual R40k CGT exclusions.")), React.createElement("li", null, React.createElement("span", null, "Combined shelter: up to R80k of gains untaxed per year.")), React.createElement("li", null, React.createElement("span", null, "At 40% marginal rate with 40% inclusion, each exclusion = ~R12,800 saved.")), React.createElement("li", null, React.createElement("span", null, "Keep broker IT3(c) certificates for each tax year.")))));
+  }, r.impact)))), ...ruleSection(byId('saTax'), "card"));
 }
 function OverviewView(_ref1) {
   const prices = PBStore.usePricesMap();
