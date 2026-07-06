@@ -89,6 +89,51 @@ test('PBContent.SECTOR_FWD_PE maps lowercased sectors to numbers', () => {
   }
 });
 
+test('PBContent.MARKETS is a list of {value,label,country,exchange}', () => {
+  assert.ok(Array.isArray(PBContent.MARKETS), 'MARKETS is an array');
+  assert.ok(PBContent.MARKETS.length > 0, 'MARKETS non-empty');
+  const values = PBContent.MARKETS.map(m => m.value);
+  assert.strictEqual(new Set(values).size, values.length, 'market values are unique');
+  for (const need of ['US', 'JSE', 'TFSA', 'CRYPTO']) {
+    assert.ok(values.includes(need), `MARKETS includes ${need}`);
+  }
+  for (const m of PBContent.MARKETS) {
+    for (const f of ['value', 'label', 'country', 'exchange']) {
+      assert.ok(typeof m[f] === 'string' && m[f].length, `market ${m.value} has non-empty ${f}`);
+    }
+  }
+});
+
+test('PBContent.DISPLAY_CURRENCIES is a list of {code,sym,label} with intact symbols', () => {
+  assert.ok(Array.isArray(PBContent.DISPLAY_CURRENCIES), 'DISPLAY_CURRENCIES is an array');
+  const codes = PBContent.DISPLAY_CURRENCIES.map(c => c.code);
+  assert.strictEqual(new Set(codes).size, codes.length, 'currency codes are unique');
+  for (const need of ['USD', 'ZAR', 'GBP', 'AUD', 'EUR']) {
+    assert.ok(codes.includes(need), `DISPLAY_CURRENCIES includes ${need}`);
+  }
+  for (const c of PBContent.DISPLAY_CURRENCIES) {
+    for (const f of ['code', 'sym', 'label']) {
+      assert.ok(typeof c[f] === 'string' && c[f].length, `${c.code} has non-empty ${f}`);
+    }
+  }
+  const byCode = Object.fromEntries(PBContent.DISPLAY_CURRENCIES.map(c => [c.code, c.sym]));
+  assert.strictEqual(byCode.GBP.length, 1, 'GBP symbol is a single codepoint');
+  assert.strictEqual(byCode.GBP.codePointAt(0), 0x00a3, 'GBP symbol is U+00A3 (pound), not mangled');
+  assert.strictEqual(byCode.EUR.codePointAt(0), 0x20ac, 'EUR symbol is U+20AC (euro), not mangled');
+});
+
+test('PBContent.CURRENCY_SYMBOLS agrees with DISPLAY_CURRENCIES', () => {
+  assert.ok(PBContent.CURRENCY_SYMBOLS && typeof PBContent.CURRENCY_SYMBOLS === 'object', 'CURRENCY_SYMBOLS is an object');
+  const byCode = Object.fromEntries(PBContent.DISPLAY_CURRENCIES.map(c => [c.code, c.sym]));
+  assert.deepStrictEqual(
+    new Set(Object.keys(PBContent.CURRENCY_SYMBOLS)),
+    new Set(Object.keys(byCode)),
+    'CURRENCY_SYMBOLS keys === DISPLAY_CURRENCIES codes');
+  for (const [code, sym] of Object.entries(PBContent.CURRENCY_SYMBOLS)) {
+    assert.strictEqual(sym, byCode[code], `CURRENCY_SYMBOLS.${code} matches the DISPLAY_CURRENCIES sym`);
+  }
+});
+
 // ── Anti-drift source guards: the content must live only in pb-content.js ──────
 import { readFileSync } from 'node:fs';
 const appSrc = readFileSync(new URL('../../app.js', import.meta.url), 'utf8');

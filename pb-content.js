@@ -199,5 +199,26 @@ const SECTOR_FWD_PE = {
   'utilities': 17,
 };
 
-return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE };
+// UI config: markets & display currencies (client-only, pure data)
+const MARKETS = [
+  { value: 'US',   label: 'US',   country: 'USA',          exchange: 'NYSE / NASDAQ' },
+  { value: 'JSE',  label: 'JSE',  country: 'South Africa',  exchange: 'JSE' },
+  { value: 'TFSA', label: 'TFSA', country: 'South Africa',  exchange: 'JSE (Tax-Free)' },
+  { value: 'LSE', label: 'LSE', country: 'UK',          exchange: 'London (LSE)' },
+  { value: 'ASX', label: 'ASX', country: 'Australia',   exchange: 'ASX' },
+  { value: 'FRA', label: 'FRA', country: 'Germany',     exchange: 'XETRA Frankfurt' },
+  { value: 'PAR', label: 'PAR', country: 'France',      exchange: 'Euronext Paris' },
+  { value: 'AMS', label: 'AMS', country: 'Netherlands', exchange: 'Euronext Amsterdam' },
+  { value: 'CRYPTO', label: 'Crypto', country: 'Crypto', exchange: 'Spot \u00b7 24/7' },
+];
+const DISPLAY_CURRENCIES = [
+  { code: 'USD', sym: '$',  label: 'US Dollar' },
+  { code: 'ZAR', sym: 'R',  label: 'South African Rand' },
+  { code: 'GBP', sym: '\u00a3', label: 'British Pound' },
+  { code: 'AUD', sym: 'A$', label: 'Australian Dollar' },
+  { code: 'EUR', sym: '\u20ac', label: 'Euro' },
+];
+const CURRENCY_SYMBOLS = { USD: '$', ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' };
+
+return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS };
 });
