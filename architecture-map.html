@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playbook — Architecture Map</title>
+<style>
+  :root {
+    --bg:        #0F0F0F;
+    --panel:     #161616;
+    --panel-2:   #1c1c1c;
+    --border:    #2a2a2a;
+    --text:      #e8e8e8;
+    --muted:     #8a8a8a;
+    --client:    #4ea1ff;
+    --route:     #7bd389;
+    --service:   #c792ea;
+    --db:        #ffb86b;
+    --external:  #ff6b9d;
+    --critical:  #ff3860;
+    --accent:    #f5b942;
+    --accent-2:  #ff7a45;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 340px; z-index: 20;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    padding: 10px 14px;
+    background: linear-gradient(to bottom, rgba(15,15,15,.97), rgba(15,15,15,.88));
+    border-bottom: 1px solid var(--border);
+  }
+  #topbar h1 { font-size: 15px; font-weight: 700; margin-right: 10px; white-space: nowrap; }
+  #topbar h1 span { color: var(--muted); font-weight: 400; }
+  .chip {
+    padding: 4px 12px; border-radius: 999px; cursor: pointer; user-select: none;
+    font-size: 12px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--border);
+    transition: all .15s;
+  }
+  .chip:hover { color: var(--text); border-color: #3a3a3a; }
+  .chip.active { color: #111; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .chip.crit.active { background: var(--critical); border-color: var(--critical); color: #fff; }
+  #zoomctl {
+    position: fixed; left: 14px; bottom: 14px; z-index: 20; display: flex; gap: 6px;
+  }
+  #zoomctl button {
+    width: 34px; height: 30px; border-radius: 8px; cursor: pointer;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); font-size: 14px;
+  }
+  #zoomctl button.fit { width: auto; padding: 0 10px; font-size: 12px; }
+  #zoomctl button:hover { background: var(--panel-2); }
+  #legend {
+    position: fixed; left: 14px; bottom: 56px; z-index: 20;
+    background: rgba(22,22,22,.92); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 12px; font-size: 11px; color: var(--muted);
+  }
+  #legend .row { display: flex; align-items: center; gap: 7px; margin: 3px 0; }
+  #legend .swatch { width: 18px; height: 0; border-top: 2.5px solid; border-radius: 2px; }
+  #canvas { position: fixed; inset: 0; right: 340px; cursor: grab; }
+  #canvas.dragging { cursor: grabbing; }
+  svg { display: block; width: 100%; height: 100%; }
+  .cluster-box { rx: 14; }
+  .cluster-label { font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .node rect { rx: 9; transition: opacity .15s; cursor: pointer; }
+  .node text { pointer-events: none; }
+  .node .lbl { font-size: 13px; font-weight: 650; fill: var(--text); }
+  .node .sub { font-size: 10.5px; fill: var(--muted); }
+  .node.dim { opacity: .13; }
+  .edge path { fill: none; transition: opacity .15s; }
+  .edge.dim { opacity: .07; }
+  .edge text {
+    font-size: 10px; fill: #b9b9b9;
+    paint-order: stroke; stroke: var(--bg); stroke-width: 3.5px; stroke-linejoin: round;
+  }
+  #sidebar {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 340px; z-index: 30;
+    background: var(--panel); border-left: 1px solid var(--border);
+    overflow-y: auto; padding: 16px 16px 40px;
+  }
+  #sidebar h2 { font-size: 15px; margin-bottom: 2px; }
+  #sidebar .subtitle { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  #sidebar h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 16px 0 6px;
+  }
+  #sidebar .rolebox {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; font-size: 12.5px; margin-bottom: 8px;
+  }
+  #sidebar .plainbox { border-left: 3px solid var(--accent); background: var(--panel-2);
+    border-radius: 0 8px 8px 0; padding: 9px 11px; font-size: 12.5px; color: #d6d0c4; }
+  #sidebar code, #sidebar .path {
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #101010; border: 1px solid var(--border); border-radius: 6px;
+    padding: 2px 6px; color: var(--db); word-break: break-all; display: inline-block;
+  }
+  #sidebar ul { list-style: none; }
+  #sidebar ul li { font-size: 12px; color: #c9c9c9; padding: 4px 0 4px 14px; position: relative; }
+  #sidebar ul li::before { content: "▪"; position: absolute; left: 0; color: var(--accent); font-size: 9px; top: 7px; }
+  #sidebar .edgeitem { font-size: 11.5px; color: #bdbdbd; padding: 3px 0; }
+  #sidebar .edgeitem b { color: var(--text); font-weight: 600; }
+  #sidebar .edgeitem .k { font-size: 10px; padding: 1px 6px; border-radius: 99px; margin-right: 5px; }
+  #sidebar .finding { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 12px; }
+  #sidebar .finding b { display: block; margin-bottom: 2px; }
+  #sidebar .finding.warn { border-left: 3px solid var(--accent-2); }
+  #sidebar .finding.good { border-left: 3px solid var(--route); }
+  #sidebar .tagchip { display: inline-block; font-size: 10px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 99px; padding: 1px 8px; margin: 2px 3px 0 0; }
+  #sidebar .hint { color: var(--muted); font-size: 11.5px; margin-top: 14px; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>Playbook <span>· architecture map</span></h1>
+  <!-- chips injected by script -->
+</div>
+
+<div id="canvas"><svg id="svg"></svg></div>
+
+<div id="legend">
+  <div class="row"><span class="swatch" style="border-color:var(--critical)"></span> critical seam (price → alert)</div>
+  <div class="row"><span class="swatch" style="border-color:var(--accent-2)"></span> external API call</div>
+  <div class="row"><span class="swatch" style="border-color:var(--db)"></span> storage read/write</div>
+  <div class="row"><span class="swatch" style="border-color:#5ec8f8"></span> load / mount</div>
+  <div class="row"><span class="swatch" style="border-color:#6a6a6a"></span> function call</div>
+</div>
+
+<div id="zoomctl">
+  <button class="fit" id="btnFit">Fit</button>
+  <button id="btnPlus">+</button>
+  <button id="btnMinus">−</button>
+</div>
+
+<div id="sidebar"></div>
+
+<script>
+"use strict";
+// ═════════════════════════════════════════════════════════════════════════════
+// DATA — hand-editable. Keep this shape: clusters[], N(), nodes[], edges[].
+// Coordinates are absolute canvas units; the renderer below is generic.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const clusters = [
+  { id: 'shell',    label: 'Client shell (device)',                     x: 40,   y: 80,  w: 270, h: 560 },
+  { id: 'storage',  label: 'Device storage',                            x: 40,   y: 720, w: 270, h: 310 },
+  { id: 'app',      label: 'React app — app.js (12,289 lines)',         x: 380,  y: 80,  w: 330, h: 1310 },
+  { id: 'modules',  label: 'Shared modules (no build step)',            x: 790,  y: 80,  w: 310, h: 790 },
+  { id: 'backend',  label: 'Push backend — Cloudflare Worker (opt-in)', x: 790,  y: 950, w: 310, h: 440 },
+  { id: 'external', label: 'External APIs (all free tier)',             x: 1200, y: 80,  w: 320, h: 1310 },
+];
+
+const N = (id, cluster, label, sub, x, y, w, h, color, opts = {}) => ({
+  id, cluster, label, sub, x, y, w, h, color, ...opts
+});
+
+const nodes = [
+  // ── Client shell ─────────────────────────────────────────────────────────
+  N('index-html', 'shell', 'index.html', 'PWA shell · script loader', 60, 140, 230, 80, 'client', {
+    role:  'Static HTML shell that loads React 18 from a CDN, then the seven app scripts in strict dependency order, and registers the service worker.',
+    plain: 'The front door. When you open the app this small page loads everything else in the right order and starts the offline/notification machinery.',
+    path:  'index.html:74',
+    notes: ['line 74-81: script order is load-bearing — pb-core.js MUST precede app.js (app reads window.PBCore)',
+            'line 68: React 18.3.1 production UMD from unpkg (no build step, no JSX anywhere)',
+            'line 106-133: registers sw.js, checks for updates every 60s, reloads on controllerchange',
+            'line 55: pre-React splash reuses the same .pb-loader styles as the in-app loader for a seamless handoff'],
+    tag: ['overview', 'prices', 'all'],
+    critical: true,
+  }),
+  N('sw-js', 'shell', 'sw.js', 'service worker · offline + push', 60, 300, 230, 96, 'client', {
+    role:  'Service worker: pre-caches the app shell (network-first), receives server push, and runs its own background price-alert checks via Periodic Background Sync.',
+    plain: 'A tiny background program the browser keeps even when the app is closed. It makes the app load offline, shows notifications pushed from the server, and (on Android) wakes up now and then to check price alerts by itself.',
+    path:  'sw.js:2',
+    notes: ['line 2: cache name playbook-shell-v50 — bumped by hand on every content deploy',
+            'line 294: swRunAlertCheck reads the alert mirror from IndexedDB, fetches quotes, fires notifications',
+            'line 205 + 267: keeps its OWN copies of the proxy chain and alert evaluator (third implementation — drift risk)',
+            'line 149: push event handler displays server-sent alert notifications (iOS path)'],
+    tag: ['overview', 'alerts', 'all'],
+    critical: true,
+  }),
+  N('manifest', 'shell', 'manifest.json', '+ manifest-light.json', 60, 470, 230, 64, 'client', {
+    role:  'Two PWA manifests (dark/light home-screen tile) swapped at runtime by applyIconTheme in index.html.',
+    plain: 'The file that tells a phone how to install this website as an app — its name, icons and colors. There is a dark and a light icon version the user can pick between.',
+    path:  'manifest.json',
+    notes: ['index.html:26 applyIconTheme() swaps the manifest link + apple-touch-icon before React loads',
+            'icon choice persisted under localStorage pb.iconTheme.v1'],
+    tag: ['overview', 'all'],
+  }),
+
+  // ── Device storage ───────────────────────────────────────────────────────
+  N('localstorage', 'storage', 'localStorage', 'pb.* keys — all user data', 60, 780, 230, 80, 'db', {
+    role:  'The only home of user data: positions, watchlist, alerts, contributions, settings and the rehydration price cache, each under its own pb.* key.',
+    plain: 'Everything you type into the app lives only on your phone, in the browser’s little key-value store. Nothing is sent to a server (unless you opt into the encrypted cloud backup).',
+    path:  'app.js:37',
+    notes: ['app.js:37 LS adapter (get/set with JSON + try/catch)',
+            'app.js:65 gatherBackup() enumerates every backup-worthy key for export/restore',
+            'per-key layout is a compatibility contract — cloud backup/restore is byte-identical per key',
+            'clearing Safari data or uninstalling the PWA wipes the portfolio (README:78)'],
+    tag: ['overview', 'portfolio', 'backup', 'all'],
+  }),
+  N('idb', 'storage', 'IndexedDB', "db 'playbook-bg' · alert mirror", 60, 896, 230, 72, 'db', {
+    role:  'Small IndexedDB key-value store where the app mirrors its alert config so the service worker can evaluate alerts while no tab is open.',
+    plain: 'A second on-device stash used as a mailbox between the app and its background worker: the app copies the alert list in, the background check reads it and writes back which alerts fired.',
+    path:  'app.js:1730',
+    notes: ['app.js:1730 bgIdbOpen / bgIdbGet / bgIdbSet (client side)',
+            'sw.js:176 same DB opened from the service worker (BG_DB / kv / alertState)',
+            'app reconciles bgTriggered history on next focus so alerts never double-fire'],
+    tag: ['alerts', 'all'],
+  }),
+
+  // ── React app (app.js) ───────────────────────────────────────────────────
+  N('app-root', 'app', 'App()', 'root component · all wiring', 400, 140, 290, 72, 'route', {
+    role:  'Root React component: owns tab navigation, modal state, the two-tier price fetch plan, and instantiates every hook (portfolio, price feed, alerts, push, backup).',
+    plain: 'The conductor. It decides which screen is showing, builds the list of stock symbols worth refreshing (what you own first), and plugs all the machinery together.',
+    path:  'app.js:2733',
+    notes: ['app.js:2946 buildFetchPlan: positions → watchlist → alerts → ribbon; lazy tab lists join only once visited',
+            'app.js:2866 self-healing sector fill — unclassified US holdings get one stockanalysis.com lookup',
+            'app.js:2831 useToastEvents wraps ~28 mutators with stable identities so memoized leaves skip re-renders',
+            'tab order/hiding is user-configurable (reconcileTabOrder app.js:2677)'],
+    tag: ['overview', 'prices', 'portfolio', 'all'],
+    critical: true,
+  }),
+  N('use-price-feed', 'app', 'usePriceFeed()', 'polling engine · 45s / 5min', 400, 232, 290, 64, 'route', {
+    role:  'The live-price polling engine: market-hours-aware cadence, progressive batch merge into the store, manual refresh with cache-busting, fail-streak tracking.',
+    plain: 'The heartbeat. Every 45 seconds while a market is open (every 5 minutes when all are closed, to save battery) it fetches fresh prices and paints them as they arrive.',
+    path:  'app.js:1594',
+    notes: ['app.js:1681 OPEN_POLL_MS 45s / CLOSED_POLL_MS 5min, flipped by a 60s meta-timer',
+            'app.js:1598 seeds prices from the localStorage cache so the app opens showing real numbers',
+            'app.js:1637 a manual tap mid-fetch queues one forced cache-busted re-run — never silently dropped',
+            'persists the price map debounced (1.2s) so bursts write once'],
+    tag: ['overview', 'prices', 'all'],
+    critical: true,
+  }),
+  N('use-portfolio', 'app', 'usePortfolio()', 'holdings · mutators · preview', 400, 320, 290, 64, 'route', {
+    role:  'Exposes all portfolio collections (positions, watchlist, alerts, contributions, TFSA deposits, sector caches) plus every mutator; swaps in the read-only demo book in Preview mode.',
+    plain: 'The bookkeeper. Everything you own, watch or have deposited flows through here, including the "Preview" switch that shows a fake demo portfolio so you can demo the app without exposing real money.',
+    path:  'app.js:2023',
+    notes: ['app.js:2100 startup dedup merges duplicate ticker+market rows via shared mergeCostBasis',
+            'app.js:2081 self-heals a stale cached index.html by lazily injecting demo-data.js on demand',
+            'app.js:2096 guardPreview: every mutator no-ops with a toast while previewing',
+            'collections live in PBStore (per-key localStorage write-through), not React state'],
+    tag: ['overview', 'portfolio', 'all'],
+  }),
+  N('alert-engine', 'app', 'useAlertEngine()', 'foreground trigger loop', 400, 408, 290, 64, 'route', {
+    role:  'Subscribes to the price store and re-runs the shared alert evaluator on every price or alert change; fires notifications and appends trigger history.',
+    plain: 'The tripwire watcher (while the app is open). Each time a price lands it checks "did any of my price alerts just cross their target?" and pops a notification if so.',
+    path:  'app.js:1701',
+    notes: ['app.js:1711 delegates to evaluateTriggers (app.js:1265), a thin adapter over PBCore.evaluateAlerts',
+            'seen-map read via ref to avoid a feedback loop that could double-fire',
+            'app.js:1710 preview mode never fires real alerts from the demo book',
+            'trigger history capped and persisted under pb.triggered.v2'],
+    tag: ['overview', 'alerts', 'all'],
+    critical: true,
+  }),
+  N('bg-alerts', 'app', 'useBackgroundAlerts()', 'periodic sync mirror', 400, 496, 290, 64, 'route', {
+    role:  'Mirrors the alert config into IndexedDB and registers Periodic Background Sync so the service worker can check alerts with the app closed (Android/desktop Chrome only).',
+    plain: 'Hands a copy of your alert list to the background program so alerts can still fire when the app is shut — on phones whose browser supports that (iPhones don’t; they need the server option below).',
+    path:  'app.js:1771',
+    notes: ['app.js:1760 registerPeriodicAlertSync — periodicSync tag "check-alerts", minInterval throttled by the OS',
+            'app.js:1753 bgWriteConfig writes {alerts, seen} to IDB on every change',
+            'on focus, reconciles bgTriggered fired-while-closed history back into app state'],
+    tag: ['alerts', 'all'],
+  }),
+  N('push-hook', 'app', 'usePushBackend()', 'server-push registration', 400, 584, 290, 64, 'route', {
+    role:  'Registers the browser push subscription with the optional Cloudflare Worker and keeps the server-side alert list in sync on every alert change.',
+    plain: 'If you set up the free mini-server, this connects your phone to it: it sends the server your alert list and a delivery address for push messages, so alerts arrive even with the app fully closed — including on iPhone.',
+    path:  'app.js:1943',
+    notes: ['app.js:1842 backendPost — plain JSON POSTs to /subscribe and /sync',
+            'app.js:1833 getOrCreatePushSub — pushManager.subscribe with the server’s VAPID public key',
+            'backend URL pasted by the user in Alerts → Background push server (setting pushBackend)'],
+    tag: ['alerts', 'all'],
+  }),
+  N('cloud-backup', 'app', 'useCloudBackup()', 'zero-knowledge encrypted sync', 400, 672, 290, 64, 'route', {
+    role:  'Optional encrypted cloud backup: derives an AES-GCM key from a recovery code, encrypts the full localStorage snapshot client-side, stores it on the Worker keyed by SHA-256(code).',
+    plain: 'The safety net. Your data is scrambled on the phone with a secret code only you know, and only the scrambled blob is uploaded — the server literally cannot read your portfolio.',
+    path:  'app.js:1855',
+    notes: ['app.js:146 encryptBlob — AES-GCM, key via PBKDF2 from the recovery code (app.js:139)',
+            'app.js:135 sha256Hex(recoveryCode) is the server-side lookup key; the code itself never leaves the device',
+            'server caps blobs ~4.5MB plaintext (worker.js:70)'],
+    tag: ['backup', 'all'],
+  }),
+  N('views', 'app', 'Tab views', 'Dashboard · Watchlist · Heatmap · TFSA · …', 400, 760, 290, 84, 'route', {
+    role:  'The nine tab views: DashboardView, CurrentView, WatchlistView, HeatmapView, PicksView, HedgesView, TFSAView, HotTopicsView, RulesView — all subscribing to the store per-slice.',
+    plain: 'The screens you actually look at: your portfolio dashboard with charts, watchlists, a market heatmap, the tax-free savings tracker, an earnings/news radar, and the written investing rules.',
+    path:  'app.js:4731',
+    notes: ['DashboardView app.js:4731 · WatchlistView 6146 · HeatmapView 7558 · TFSAView 8335 · HotTopicsView 8463',
+            'heatmap uses a hand-rolled squarified treemap (layoutSquarify app.js:7014) + pinch-zoom',
+            'PortfolioLineChart (app.js:3857) and PieChart (4349) are hand-drawn SVG — no chart library',
+            'TFSA tab enforces SA annual/lifetime limits (R46k/R500k) with tax-year math (app.js:7934)'],
+    tag: ['overview', 'portfolio', 'prices', 'all'],
+  }),
+  N('detail-modal', 'app', 'DetailModal', 'per-stock deep dive', 400, 868, 290, 64, 'route', {
+    role:  'Full-screen stock detail: price block, range chart with pre/post shading, fundamentals, news, thesis, alerts and watchlist controls.',
+    plain: 'What opens when you tap a stock: a big chart, the key financial numbers, recent news, and your own notes and alerts for it.',
+    path:  'app.js:9434',
+    notes: ['PriceChart app.js:8694 — SVG chart with extended-hours shading from session-classified bars',
+            'FundamentalsBlock app.js:9149 — P/E vs sector forward-P/E context',
+            'indicator cards (VIX, CPI, …) swap in IndicatorValueBlock + plain-English IndicatorAbout (app.js:9390)'],
+    tag: ['overview', 'prices', 'all'],
+  }),
+  N('import-ui', 'app', 'ImportModal + TickerSearch', 'CSV · XLSX · PDF · screenshot OCR', 400, 956, 290, 64, 'route', {
+    role:  'Holdings-import UI: accepts pasted text, CSV/XLSX/PDF files and broker screenshots (client-side OCR), then matches rows to live listings for confirmation.',
+    plain: 'How you get an existing portfolio in without retyping it: paste a list, drop a spreadsheet, or upload screenshots of your broker app — it reads them and figures out which real stocks they are.',
+    path:  'app.js:10159',
+    notes: ['tesseract.js, xlsx and pdf.js are lazy-loaded from CDN only when first needed (loadScriptOnce app.js:5462)',
+            'ocrImageFile app.js:5628 — EasyEquities screenshots parsed by PBImport heuristics',
+            'TickerSearch app.js:5832 + fetchYahooSearch 5378 — live listing search with market inference',
+            'contribution/cash-flow files parsed separately (parseCashFlowFile app.js:5773)'],
+    tag: ['import', 'all'],
+  }),
+  N('fundamentals', 'app', 'fetchFundamentals()', '3-source fallback chain', 400, 1044, 290, 64, 'route', {
+    role:  'Fundamentals dispatcher: stockanalysis.com for US listings, then Yahoo v10 quoteSummary, then Perplexity as the paid-key fallback.',
+    plain: 'Fetches the "vital statistics" of a company (size, profit multiples, margins, next earnings date) — trying a reliable free source first and smarter fallbacks after.',
+    path:  'app.js:847',
+    notes: ['app.js:850 US → stockanalysis.com first (most reliable free source)',
+            'app.js:853 Yahoo v10 quoteSummary second — but that endpoint is crumb-gated now (see app.js:762 comment); likely fails often',
+            'app.js:855 Perplexity "sonar" only when the user pasted an API key',
+            'cached 6h per ticker via useTtlCache (app.js:2806)'],
+    tag: ['all'],
+  }),
+  N('hot-topics', 'app', 'buildHotTopics()', '30-day earnings + macro radar', 400, 1132, 290, 64, 'route', {
+    role:  'Assembles the Hot Topics briefing: AI-fetched earnings/macro/news (Perplexity) merged with cached earnings dates and the built-in 2026 central-bank calendar.',
+    plain: 'The "what’s coming up" radar: which big companies report earnings in the next 30 days, when central banks meet, and the news moving markets — with a built-in offline calendar when no AI key is set.',
+    path:  'app.js:1034',
+    notes: ['app.js:962 fetchHotTopicsAI — Perplexity model "sonar", strict-JSON prompt, 40 tickers max',
+            'app.js:1007 fetchEarningsDateSA — per-ticker earnings dates from stockanalysis.com (concurrency-pooled)',
+            'falls back to BUILTIN_MACRO_2026 (pb-content.js:98) — hardcoded, needs annual refresh',
+            'cached 3h via useTtlCache'],
+    tag: ['ai', 'all'],
+  }),
+  N('news', 'app', 'fetchNewsForTicker()', 'RSS + AI news', 400, 1220, 290, 64, 'route', {
+    role:  'Per-ticker news: Yahoo Finance RSS bridged through rss2json, upgraded to Perplexity-sourced items when an API key is present.',
+    plain: 'The news feed on each stock’s page. Free version uses Yahoo’s headlines; with an AI key it gets curated, summarized items instead.',
+    path:  'app.js:515',
+    notes: ['app.js:518 api.rss2json.com free tier — can return empty when rate-limited (README:83)',
+            'app.js:876 fetchPerplexityNews — 6 items, 14-day window, strict-JSON prompt',
+            'cached 15min per ticker'],
+    tag: ['ai', 'all'],
+  }),
+  N('fx', 'app', 'fetchFxRates()', 'live + historical FX', 400, 1308, 290, 64, 'route', {
+    role:  'Fetches the USD-based FX table for display-currency conversion, plus historical rates locked at deposit/purchase dates for honest P/L.',
+    plain: 'The currency desk. Lets you view the whole portfolio in dollars, rand, pounds or euros — and remembers the exchange rate on the day you deposited, so profit numbers reflect what your money was actually worth then.',
+    path:  'app.js:1125',
+    notes: ['app.js:1126 open.er-api.com/v6/latest/USD (no key)',
+            'app.js:1101 historical: frankfurter.app then exchangerate.host, force-cached per date',
+            'money math itself (contribInDisplay, valuePositionInCostCcy) lives in pb-core for testability'],
+    tag: ['portfolio', 'all'],
+  }),
+
+  // ── Shared modules ───────────────────────────────────────────────────────
+  N('pb-core', 'modules', 'pb-core.js', 'pure shared logic · 676 lines', 810, 140, 270, 80, 'service', {
+    role:  'The one source of truth for pure logic shared by client, service worker tests and the Cloudflare Worker: market hours, alert evaluation, Yahoo parsing, money/FX math.',
+    plain: 'The rulebook both the app and the server read from, so a price alert behaves identically whether your phone or the cloud checks it. No screen code, no network — just math and rules, which makes it easy to test.',
+    path:  'pb-core.js:19',
+    notes: ['line 24 SESSIONS — DST-correct market hours for 9 markets via Intl time zones',
+            'line 212 evaluateAlerts — the alert state machine (waiting → hit → 5min cooldown → re-arm)',
+            'line 555 parseYahooQuote + 475 derivePrevClose — fixes Yahoo’s stale/wrong previous closes',
+            'line 258 centDivisor — JSE cents / LSE pence → whole currency (a real 100x-bug class)',
+            'dual export: CommonJS for Worker/Node tests + globalThis.PBCore for the browser'],
+    tag: ['overview', 'prices', 'alerts', 'portfolio', 'all'],
+    critical: true,
+  }),
+  N('pb-data', 'modules', 'pb-data.js', 'network layer · proxy ladder', 810, 250, 270, 80, 'service', {
+    role:  'The client-only network layer: rotating CORS-proxy chain, Yahoo quote/history providers, Stooq fallback, Morningstar unit trusts, FRED macro indicators, name cache.',
+    plain: 'The app’s telephone exchange. Browsers aren’t allowed to call Yahoo Finance directly, so every price request is relayed through a chain of free relay services, trying the next one when one fails.',
+    path:  'pb-data.js:41',
+    notes: ['line 41 six proxies tried in order; last good proxy floats to front; error-page bodies rejected (line 60)',
+            'line 511 fetchQuote — 5-day daily chart, then a 1-minute intraday re-shoot when the tick looks >30min stale',
+            'line 72 global cap of 8 concurrent fetches + in-flight de-dupe across all providers',
+            'line 609/670 batchers do a second pass for missing symbols (non-US names hit rate limits first)',
+            'line 216 SA unit trusts (SecId F#########) priced off Morningstar NAVs instead of Yahoo'],
+    tag: ['overview', 'prices', 'import', 'all'],
+    critical: true,
+  }),
+  N('pb-store', 'modules', 'pb-store.js', 'hand-rolled state store', 810, 360, 270, 72, 'service', {
+    role:  'Tiny external store wired into React 18 via useSyncExternalStore, holding three slices: prices, settings, portfolio collections — each with localStorage write-through.',
+    plain: 'The shared whiteboard. Prices and settings are written here once, and only the screens that care about a changed value redraw — so a price tick doesn’t repaint the whole app.',
+    path:  'pb-store.js:14',
+    notes: ['line 35 mergePrices is a shallow merge — untouched quotes keep their object identity (memoization depends on it)',
+            'line 49/78 app.js injects settings + collections schemas, so each key keeps its own pb.* localStorage entry',
+            'line 104 React resolved lazily so Node tests can require this file without React'],
+    tag: ['overview', 'prices', 'portfolio', 'all'],
+    critical: true,
+  }),
+  N('pb-content', 'modules', 'pb-content.js', 'static content · catalogs', 810, 450, 270, 64, 'service', {
+    role:  'Pure static content: the indicator/ribbon catalog (with FRED series wiring), plain-English indicator explainers, the 2026 central-bank calendar, trim rules, market/currency lists.',
+    plain: 'The reference booklet: which market gauges the ticker ribbon shows, human explanations of what CPI or the VIX mean, and the year’s central-bank meeting dates.',
+    path:  'pb-content.js:11',
+    notes: ['line 11 RIBBON_CATALOG — 23 entries; macro ones carry source: fred/gli/vixmood routing hints',
+            'line 98 BUILTIN_MACRO_2026 — hardcoded schedule, must be refreshed annually (README:85)',
+            'line 55 INDICATOR_INFO — the plain-English "what/interpret/levels" cards'],
+    tag: ['ai', 'prices', 'all'],
+  }),
+  N('pb-import', 'modules', 'pb-import.js', 'pure import parsers · 874 lines', 810, 540, 270, 64, 'service', {
+    role:  'Pure holdings-import logic: fuzzy company-name matching (Dice bigrams + acronyms), CSV/text/row parsers, market inference, and EasyEquities-screenshot OCR text parsers.',
+    plain: 'The decoder for messy portfolio lists. Give it "brodcom 10 shares" from a blurry screenshot and it works out you mean Broadcom, 10 shares, on the US market.',
+    path:  'pb-import.js:78',
+    notes: ['line 78 companyNameScore blends exact/prefix/substring/token/bigram/acronym signals',
+            'line 24 YAHOO_EXCHANGE_MAP deliberately drops unpriceable venues instead of mis-booking them as US',
+            'line 844 parseEasyEquitiesScreenshot — detects detail vs list vs email vs history screenshots',
+            'no React/DOM/network — fully covered by Node tests'],
+    tag: ['import', 'all'],
+  }),
+  N('data-js', 'modules', 'data.js', 'reference data · theses', 810, 630, 270, 64, 'service', {
+    role:  'Playbook reference data: curated holding theses with trim levels, new-pick and hedge ideas, per-market ticker suggestions, and the static sector classifiers.',
+    plain: 'The owner’s handwritten research notes, in code: why each stock is held, at what price to trim it, plus lookup tables that sort any ticker into a sector for the allocation charts.',
+    path:  'data.js:3',
+    notes: ['HOLDINGS (line 3) / NEW_PICKS (58) / HEDGES (93) — thesis, catalysts, risks, trimLevels per ticker',
+            'line 1085 findSector + 864 classifySectorByName — static classifiers; misses self-heal via stockanalysis.com',
+            'window.PB_DATA global (predates the PB* module convention)'],
+    tag: ['portfolio', 'all'],
+  }),
+  N('demo-data', 'modules', 'demo-data.js', 'Preview-mode demo book', 810, 720, 270, 64, 'service', {
+    role:  'Static, deterministic demo portfolio swapped in read-only by usePortfolio while Preview mode is on; never written to localStorage.',
+    plain: 'A fake but realistic portfolio used to show the app off without revealing real money. Live prices still drive it — only the share counts and costs are invented.',
+    path:  'demo-data.js:7',
+    notes: ['record shapes mirror exactly what the real mutators write, so every view reads them unchanged',
+            'lazily injected on demand if a stale cached index.html predates it (app.js:2081)'],
+    tag: ['portfolio', 'all'],
+  }),
+
+  // ── Push backend (Cloudflare Worker) ─────────────────────────────────────
+  N('worker-api', 'backend', 'worker.js — HTTP API', '/subscribe · /sync · /backup', 810, 1010, 270, 72, 'worker', {
+    role:  'Worker fetch handler: device registration (/subscribe, /sync, /unsubscribe, /test), VAPID key exposure, and the zero-knowledge encrypted /backup store.',
+    plain: 'The mini-server’s reception desk. Phones check in here with their alert lists and push addresses, and encrypted backups are dropped off and picked up here.',
+    path:  'backend/worker.js:37',
+    notes: ['line 85 /subscribe stores {subscription, alerts, seen} per device under client:<id>',
+            'line 54 /backup — server sees only SHA-256(recovery code) + AES-GCM ciphertext; ~4.5MB cap',
+            'line 127 sanitizeAlerts caps 200 alerts, whitelists fields',
+            'CORS: Access-Control-Allow-Origin * (line 29) — any origin can call it'],
+    tag: ['alerts', 'backup', 'all'],
+  }),
+  N('worker-cron', 'backend', 'worker.js — cron', 'every minute · runChecks()', 810, 1114, 270, 72, 'worker', {
+    role:  'The always-on heartbeat: a 1-minute cron lists every device, skips those whose markets are closed, fetches quotes, runs the SHARED evaluator, and pushes newly-hit alerts.',
+    plain: 'The night watchman. Once a minute, a free cloud computer checks your price targets against the market — even while your phone sleeps — and rings it only when a target is crossed.',
+    path:  'backend/worker.js:190',
+    notes: ['wrangler.toml: crons = ["* * * * *"]; closed-market devices cost nothing (worker.js:210-211)',
+            'line 222 uses PBCore.evaluateAlerts + marketOpen — cannot drift from the foreground app',
+            'line 227 suppresses push if the app was foregrounded <90s ago (no duplicate notifications)',
+            'line 244 deletes device records when the push service returns 404/410'],
+    tag: ['overview', 'alerts', 'all'],
+  }),
+  N('webpush', 'backend', 'webpush.js', 'RFC 8291/8292 · zero deps', 810, 1218, 270, 64, 'worker', {
+    role:  'Dependency-free Web Push implementation: aes128gcm message encryption (RFC 8291/8188) and VAPID JWT signing (RFC 8292) over raw WebCrypto.',
+    plain: 'The sealed-envelope machine. It encrypts each notification so only your phone can read it, and signs it so Apple/Google’s delivery networks accept it — with no third-party libraries to break.',
+    path:  'backend/webpush.js:1',
+    notes: ['runs unchanged on Cloudflare Workers and Node 18+ (WebCrypto only)',
+            'crypto verified against the canonical http_ece implementation in backend/test'],
+    tag: ['alerts', 'all'],
+  }),
+  N('kv', 'backend', 'Workers KV', "binding 'PB' · per-device state", 810, 1310, 270, 64, 'db', {
+    role:  'Cloudflare KV namespace holding one client:<id> record per device (subscription + alerts + seen map) and backup:<hash> encrypted blobs.',
+    plain: 'The mini-server’s filing cabinet: one folder per phone with its alert list and delivery address, plus the sealed backup envelopes. Writes only happen when something actually changed, to stay inside the free tier.',
+    path:  'backend/wrangler.toml:12',
+    notes: ['devices silent for 120 days are garbage-collected (worker.js:25, 208)',
+            'evaluate() returning changed:false skips the KV write entirely (worker.js:223)'],
+    tag: ['alerts', 'backup', 'all'],
+  }),
+
+  // ── External APIs ────────────────────────────────────────────────────────
+  N('ext-proxies', 'external', 'CORS proxies', '6-entry rotating ladder', 1220, 140, 280, 76, 'external', {
+    role:  'Free public CORS relays (corsmirror, cors.lol, allorigins ×2, corsproxy.io, codetabs) that every browser-side Yahoo/Stooq/Morningstar/FRED request must pass through.',
+    plain: 'Free middlemen websites that forward the app’s requests, because finance sites refuse direct calls from web pages. The whole live-price experience depends on at least one of these six strangers being up.',
+    path:  'pb-data.js:41',
+    notes: ['ordering by observed production reliability; last-good proxy tried first next time',
+            'THREE separate copies of this list exist: pb-data.js:41, sw.js:205, backend/worker.js:151',
+            '200-with-error-page responses are detected and skipped (looksLikeProxyError pb-data.js:60)'],
+    tag: ['overview', 'prices', 'alerts', 'all'],
+    critical: true,
+  }),
+  N('ext-yahoo', 'external', 'Yahoo Finance', 'v8 chart · search · RSS', 1220, 250, 280, 76, 'external', {
+    role:  'Primary market-data source: v8 chart API for quotes/history (query1+query2 hosts), v1 search for listings, RSS for headlines. Unofficial and unauthenticated.',
+    plain: 'Where nearly every price on screen actually comes from — Yahoo’s public stock-chart feed, about 15 minutes delayed. It isn’t an official API, so the code defends against it changing shape or lagging.',
+    path:  'pb-data.js:531',
+    notes: ['both query1 and query2 hosts raced for history (pb-data.js:763) — one often works when the other 5xxs',
+            'prevClose derived from daily bars, not Yahoo’s often-stale field (pb-core.js:475)',
+            'extended-hours prices reconstructed from 1-minute bars — the meta fields Yahoo removed (pb-core.js:503)',
+            'v10 quoteSummary (fundamentals) is crumb-gated now; app.js:533 still tries it as fallback #2'],
+    tag: ['overview', 'prices', 'alerts', 'all'],
+    critical: true,
+  }),
+  N('ext-stooq', 'external', 'Stooq', 'CSV fallback · US + JSE', 1220, 360, 280, 64, 'external', {
+    role:  'Last-resort daily-close CSV source used only when every Yahoo attempt fails, and only for US and JSE symbols.',
+    plain: 'The spare tyre: a Polish market-data site that hands out end-of-day prices as plain text when Yahoo is completely unreachable.',
+    path:  'pb-data.js:595',
+    notes: ['parseStooqCsv (pb-data.js:182): last two CSV rows → close + previous close',
+            'JSE closes divided by 100 (cents → rand)'],
+    tag: ['prices', 'all'],
+  }),
+  N('ext-morningstar', 'external', 'Morningstar', 'SA unit-trust NAVs', 1220, 448, 280, 64, 'external', {
+    role:  'Public Morningstar tools API (screener + timeseries) pricing South African unit trusts, which have no exchange listing and thus no Yahoo/Stooq data.',
+    plain: 'How the app prices SA investment funds (Coronation, Allan Gray, …) that aren’t on any stock exchange — it reads the same daily fund-value feed that powers fund fact sheets.',
+    path:  'pb-data.js:214',
+    notes: ['public API key klr5zyak8x, universe FOZAF$$ALL (open-ended SA funds)',
+            'a fund’s Morningstar SecId (F + 9 alphanumerics) doubles as its "ticker" in the app',
+            'NAVs strike once a day → quotes are marketState CLOSED, no cents divisor'],
+    tag: ['prices', 'import', 'all'],
+  }),
+  N('ext-fred', 'external', 'FRED', 'fredgraph.csv · macro series', 1220, 536, 280, 64, 'external', {
+    role:  'St. Louis Fed public CSV endpoint feeding the macro indicators: fed funds, CPI YoY, payrolls, and the 3-central-bank global-liquidity proxy (with FX-adjusted history).',
+    plain: 'Official US economic statistics, free with no key. Powers the "big picture" cards — interest rates, inflation, jobs — and a home-made global-liquidity gauge combining the three biggest central banks’ balance sheets.',
+    path:  'pb-data.js:343',
+    notes: ['6h cache; stale copy served on failure (pb-data.js:326)',
+            'GLI = WALCL + ECBASSETSW·EURUSD + JPNASSETS/JPYUSD, in USD trillions (pb-data.js:438)',
+            'Fear & Greed card is a transparent VIX transform, not the CNN index (pb-data.js:470)'],
+    tag: ['prices', 'all'],
+  }),
+  N('ext-stockanalysis', 'external', 'stockanalysis.com', 'fundamentals · sectors · earnings', 1220, 624, 280, 64, 'external', {
+    role:  'CORS-open API used directly (no proxy) for US fundamentals, sector/industry self-healing, and per-ticker upcoming earnings dates.',
+    plain: 'A finance website generous enough to let web apps call it directly. It fills in company vitals, fixes stocks the app couldn’t sort into a sector, and supplies earnings dates for the radar.',
+    path:  'app.js:764',
+    notes: ['the only market-data source that needs no CORS proxy',
+            'US listings only — non-US fundamentals fall back to Yahoo/Perplexity',
+            'human-formatted figures ("4.28T") parsed by saNum (app.js:746)'],
+    tag: ['prices', 'ai', 'all'],
+  }),
+  N('ext-perplexity', 'external', 'Perplexity API', "model 'sonar' · user's own key", 1220, 712, 280, 64, 'external', {
+    role:  'Optional LLM source (chat/completions, model "sonar") for the Hot Topics briefing, AI news, and last-resort fundamentals — active only when the user pastes their own API key.',
+    plain: 'The optional AI researcher. With your own Perplexity key it writes the earnings/macro briefing, curates news, and digs up company numbers no free source has. Without a key those features quietly fall back to built-in data.',
+    path:  'app.js:670',
+    notes: ['all three call sites use model "sonar" with strict-JSON prompts (app.js:674, 899, 981)',
+            'key stored client-side in localStorage; calls go directly from the phone to Perplexity',
+            'the ONLY paid/keyed dependency in the whole system'],
+    tag: ['ai', 'all'],
+  }),
+  N('ext-rss2json', 'external', 'rss2json.com', 'RSS → JSON bridge', 1220, 800, 280, 64, 'external', {
+    role:  'Free RSS-to-JSON bridge for Yahoo Finance headline feeds (the default, keyless news path).',
+    plain: 'A converter service that turns Yahoo’s old-style news feed into something the app can read. Free tier, so news can come back empty when it’s busy.',
+    path:  'app.js:518',
+    notes: ['rate-limited free tier — empty news is expected behavior, not a bug (README:83)'],
+    tag: ['ai', 'all'],
+  }),
+  N('ext-fx', 'external', 'FX rate APIs', 'open.er-api · frankfurter · exchangerate.host', 1220, 888, 280, 64, 'external', {
+    role:  'Keyless FX sources: open.er-api.com for the live USD table, frankfurter.app / exchangerate.host for historical rates at deposit and purchase dates.',
+    plain: 'Free currency-exchange tables — today’s rates for switching the display currency, and past rates so the app can value old deposits at what the money was really worth back then.',
+    path:  'app.js:1101',
+    notes: ['historical lookups are force-cached per date (they never change)',
+            'live rates refreshed daily, persisted under pb.fxRates.v1'],
+    tag: ['portfolio', 'all'],
+  }),
+  N('ext-unpkg', 'external', 'unpkg + Google Fonts', 'React 18.3.1 UMD · CDN', 1220, 976, 280, 64, 'external', {
+    role:  'CDN dependencies: React/ReactDOM 18.3.1 production UMDs, Fraunces + Inter fonts, and lazy-loaded tesseract.js / xlsx / pdf.js for import.',
+    plain: 'The shared public shelves the app borrows its foundation from — the React framework, its two typefaces, and (only when importing files) the OCR and spreadsheet readers.',
+    path:  'index.html:68',
+    notes: ['service worker caches these stale-while-revalidate (sw.js:70) so the installed app opens offline',
+            'pinned to exact versions — a CDN outage on first-ever load is the main risk'],
+    tag: ['overview', 'all'],
+  }),
+  N('ext-push', 'external', 'Push services', 'APNs / FCM / Mozilla autopush', 1220, 1230, 280, 76, 'external', {
+    role:  'The browser vendors’ push delivery networks. The Worker POSTs encrypted payloads to each device’s subscription endpoint; the device’s OS wakes sw.js to display them.',
+    plain: 'Apple’s and Google’s own message-delivery pipes — the same ones every phone app uses. They carry the (unreadable-to-them) alert to your phone even when the browser is closed.',
+    path:  'backend/webpush.js:1',
+    notes: ['payloads are aes128gcm-encrypted end-to-end; push services see only ciphertext',
+            '404/410 responses signal an expired subscription → device record deleted (worker.js:244)'],
+    tag: ['alerts', 'all'],
+  }),
+];
+
+// Edge kinds: critical (red) · api (orange) · db (amber) · mount (sky) · normal (grey)
+const edges = [
+  // ── The critical seam: live price → alert, numbered 1..10 ────────────────
+  { from: 'index-html', to: 'app-root',       kind: 'critical', label: '1 · loads 8 scripts, React mounts', tag: ['overview','prices','critical','all'] },
+  { from: 'app-root',   to: 'use-price-feed', kind: 'critical', label: '2 · buildFetchPlan → order',        tag: ['overview','prices','critical','all'] },
+  { from: 'use-price-feed', to: 'pb-data',    kind: 'critical', label: '3 · fetchQuoteBatch (8/batch)',     tag: ['overview','prices','critical','all'] },
+  { from: 'pb-data',    to: 'ext-proxies',    kind: 'critical', label: '4 · fetchViaProxies (≤8 conc.)',    tag: ['overview','prices','critical','all'] },
+  { from: 'ext-proxies', to: 'ext-yahoo',     kind: 'critical', label: '5 · GET v8 chart · 5d + 1m',        tag: ['overview','prices','critical','all'] },
+  { from: 'pb-data',    to: 'pb-core',        kind: 'critical', label: '6 · parseYahooQuote · derivePrevClose', tag: ['overview','prices','critical','all'] },
+  { from: 'use-price-feed', to: 'pb-store',   kind: 'critical', label: '7 · mergePrices per batch',         tag: ['overview','prices','critical','all'] },
+  { from: 'pb-store',   to: 'alert-engine',   kind: 'critical', label: '8 · store subscribe → re-evaluate', tag: ['overview','alerts','critical','all'] },
+  { from: 'alert-engine', to: 'pb-core',      kind: 'critical', label: '9 · evaluateAlerts (shared)',       tag: ['overview','alerts','critical','all'], lt: 0.62 },
+  { from: 'alert-engine', to: 'sw-js',        kind: 'critical', label: '10 · showNotification',             tag: ['overview','alerts','critical','all'] },
+
+  // ── Shell / mounts ───────────────────────────────────────────────────────
+  { from: 'index-html', to: 'sw-js',      kind: 'mount', label: 'registers sw.js · 60s update loop', tag: ['overview','all'] },
+  { from: 'index-html', to: 'ext-unpkg',  kind: 'api',   label: 'React 18.3.1 UMD + fonts',          tag: ['overview','all'], lt: 0.32 },
+  { from: 'app-root',   to: 'views',      kind: 'mount', label: 'renders active tab',                tag: ['overview','portfolio','all'] },
+  { from: 'app-root',   to: 'detail-modal', kind: 'mount', label: 'tap a stock → open',              tag: ['overview','all'], lt: 0.6 },
+  { from: 'app-root',   to: 'use-portfolio', kind: 'mount', label: 'hook',                           tag: ['overview','portfolio','all'] },
+
+  // ── Portfolio & store ────────────────────────────────────────────────────
+  { from: 'views',       to: 'pb-store',    kind: 'normal', label: 'usePricesMap · useCollection',   tag: ['overview','prices','portfolio','all'] },
+  { from: 'views',       to: 'data-js',     kind: 'normal', label: 'theses · picks · suggestions',   tag: ['overview','portfolio','all'], lt: 0.6 },
+  { from: 'use-portfolio', to: 'pb-store',  kind: 'normal', label: 'collections slice (9 keys)',     tag: ['portfolio','all'], lt: 0.36 },
+  { from: 'use-portfolio', to: 'demo-data', kind: 'normal', label: 'Preview swap (read-only)',       tag: ['portfolio','all'], lt: 0.68 },
+  { from: 'use-portfolio', to: 'pb-core',   kind: 'normal', label: 'mergeCostBasis · position math', tag: ['portfolio','all'], lt: 0.25 },
+  { from: 'pb-store',    to: 'localstorage', kind: 'db',    label: 'write-through pb.* keys',        tag: ['overview','portfolio','backup','all'] },
+  { from: 'use-price-feed', to: 'localstorage', kind: 'db', label: 'price cache · debounced 1.2s',   tag: ['prices','all'], lt: 0.7 },
+  { from: 'pb-data',     to: 'localstorage', kind: 'db',    label: 'name cache pb.nameCache.v1',     tag: ['all'], lt: 0.85 },
+  { from: 'app-root',    to: 'fx',          kind: 'normal', label: 'refresh FX (daily)',             tag: ['portfolio','all'], lt: 0.85 },
+  { from: 'fx',          to: 'ext-fx',      kind: 'api',    label: 'USD table + historical dates',   tag: ['portfolio','all'] },
+
+  // ── Detail / research ────────────────────────────────────────────────────
+  { from: 'detail-modal', to: 'pb-data',      kind: 'normal', label: 'fetchHistory · range charts',  tag: ['prices','all'], lt: 0.4 },
+  { from: 'detail-modal', to: 'fundamentals', kind: 'normal', label: 'load fundamentals · 6h TTL',   tag: ['overview','all'] },
+  { from: 'detail-modal', to: 'news',         kind: 'normal', label: 'news feed · 15m TTL',          tag: ['ai','all'], lt: 0.3 },
+  { from: 'fundamentals', to: 'ext-stockanalysis', kind: 'api', label: 'US · overview + statistics', tag: ['overview','all'] },
+  { from: 'fundamentals', to: 'ext-proxies',  kind: 'api',    label: 'Yahoo v10 quoteSummary (crumb-gated)', tag: ['all'], lt: 0.24 },
+  { from: 'fundamentals', to: 'ext-perplexity', kind: 'api',  label: 'fallback · sonar JSON',        tag: ['ai','all'], lt: 0.55 },
+  { from: 'news',         to: 'ext-rss2json', kind: 'api',    label: 'Yahoo RSS → JSON',             tag: ['ai','all'] },
+  { from: 'news',         to: 'ext-perplexity', kind: 'api',  label: 'AI news · sonar',              tag: ['ai','all'], lt: 0.75 },
+  { from: 'hot-topics',   to: 'ext-perplexity', kind: 'api',  label: '30-day briefing · sonar',      tag: ['overview','ai','all'], lt: 0.42 },
+  { from: 'hot-topics',   to: 'ext-stockanalysis', kind: 'api', label: 'earnings dates (pooled)',    tag: ['ai','all'], lt: 0.68 },
+  { from: 'hot-topics',   to: 'pb-content',  kind: 'normal',  label: 'BUILTIN_MACRO_2026 fallback',  tag: ['ai','all'] },
+
+  // ── Import ───────────────────────────────────────────────────────────────
+  { from: 'import-ui', to: 'pb-import', kind: 'normal', label: 'parse · match · rank',               tag: ['overview','import','all'] },
+  { from: 'import-ui', to: 'pb-data',   kind: 'normal', label: 'Yahoo search · unit trusts · verify', tag: ['import','all'], lt: 0.32 },
+  { from: 'import-ui', to: 'ext-unpkg', kind: 'api',    label: 'lazy: tesseract · xlsx · pdf.js',    tag: ['import','all'], lt: 0.55 },
+  { from: 'pb-import', to: 'pb-core',   kind: 'normal', label: 'parseDecimal · priceKey',            tag: ['import','all'] },
+  { from: 'import-ui', to: 'use-portfolio', kind: 'normal', label: 'importPositions (bulk merge)',   tag: ['import','all'] },
+
+  // ── Price providers beyond Yahoo ─────────────────────────────────────────
+  { from: 'pb-data', to: 'ext-stooq',       kind: 'api', label: 'CSV fallback · US + JSE only',      tag: ['prices','all'], lt: 0.4 },
+  { from: 'pb-data', to: 'ext-morningstar', kind: 'api', label: 'unit-trust NAV + history',          tag: ['prices','import','all'], lt: 0.55 },
+  { from: 'pb-data', to: 'ext-fred',        kind: 'api', label: 'fredgraph.csv · 6h cache',          tag: ['prices','all'], lt: 0.7 },
+
+  // ── Background & server alerts ───────────────────────────────────────────
+  { from: 'alert-engine', to: 'bg-alerts',  kind: 'normal', label: 'seen map + config',              tag: ['alerts','all'] },
+  { from: 'bg-alerts', to: 'idb',           kind: 'db',  label: 'mirror alerts + seen',              tag: ['alerts','all'] },
+  { from: 'sw-js',     to: 'idb',           kind: 'db',  label: 'bg check: read config · write fired', tag: ['alerts','all'] },
+  { from: 'sw-js',     to: 'ext-proxies',   kind: 'api', label: 'own proxy chain (bg quotes)',       tag: ['alerts','all'], lt: 0.12 },
+  { from: 'push-hook', to: 'worker-api',    kind: 'api', label: 'POST /subscribe · /sync',           tag: ['overview','alerts','all'] },
+  { from: 'cloud-backup', to: 'worker-api', kind: 'api', label: 'POST /backup · AES-GCM blob',       tag: ['overview','backup','all'], lt: 0.4 },
+  { from: 'worker-api',  to: 'kv',          kind: 'db',  label: 'client:* · backup:* records',       tag: ['alerts','backup','all'] },
+  { from: 'worker-cron', to: 'kv',          kind: 'db',  label: 'list client:* · write seen',        tag: ['alerts','all'], lt: 0.35 },
+  { from: 'worker-cron', to: 'pb-core',     kind: 'normal', label: 'shared marketOpen + evaluateAlerts', tag: ['overview','alerts','all'], lt: 0.55 },
+  { from: 'worker-cron', to: 'ext-yahoo',   kind: 'api', label: 'direct fetch → proxy fallback',     tag: ['alerts','all'], lt: 0.55 },
+  { from: 'worker-cron', to: 'webpush',     kind: 'normal', label: 'sendPush(payload)',              tag: ['alerts','all'] },
+  { from: 'webpush',   to: 'ext-push',      kind: 'api', label: 'RFC 8291 encrypted POST',           tag: ['alerts','all'] },
+  { from: 'ext-push',  to: 'sw-js',         kind: 'api', label: "wakes device: 'push' event",        tag: ['overview','alerts','all'], lt: 0.14 },
+];
+
+// Roadmap / bug registries — none supplied for this snapshot. Keyed by node id;
+// shape: FIXES['node-id'] = [{n:1, t:'…'}]; KNOWN_BUGS['node-id'] = [{sev:'high'|'med'|'low', ref:'', t:'…'}]
+const FIXES      = {};
+const KNOWN_BUGS = {};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RENDERER — generic; edit data above, not this.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const COLORS = {
+  client:   '#4ea1ff',
+  route:    '#7bd389',
+  service:  '#c792ea',
+  db:       '#ffb86b',
+  external: '#ff6b9d',
+  worker:   '#f5b942',
+};
+const EDGE_COLORS = {
+  critical: '#ff3860',
+  api:      '#ff7a45',
+  db:       '#ffb86b',
+  mount:    '#5ec8f8',
+  normal:   '#6a6a6a',
+};
+const CLUSTER_TINTS = {
+  shell: '#4ea1ff', storage: '#ffb86b', app: '#7bd389',
+  modules: '#c792ea', backend: '#f5b942', external: '#ff6b9d',
+};
+
+const CHIPS = [
+  { id: 'overview',  label: 'Overview' },
+  { id: 'critical',  label: 'Critical path', cls: 'crit' },
+  { id: 'prices',    label: 'Live prices' },
+  { id: 'alerts',    label: 'Alerts & push' },
+  { id: 'portfolio', label: 'Portfolio & TFSA' },
+  { id: 'import',    label: 'Import' },
+  { id: 'ai',        label: 'Hot Topics & AI' },
+  { id: 'backup',    label: 'Cloud backup' },
+  { id: 'all',       label: 'Show all wires' },
+];
+
+const nodeById = {};
+nodes.forEach(n => nodeById[n.id] = n);
+
+const svg = document.getElementById('svg');
+const NS = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs, parent) => {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+
+// arrow markers per edge kind
+const defs = el('defs', {}, svg);
+for (const kind in EDGE_COLORS) {
+  const m = el('marker', {
+    id: 'arr-' + kind, viewBox: '0 0 10 10', refX: 9, refY: 5,
+    markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse'
+  }, defs);
+  el('path', { d: 'M 0 1 L 9 5 L 0 9 z', fill: EDGE_COLORS[kind] }, m);
+}
+
+const world = el('g', { id: 'world' }, svg);
+const gClusters = el('g', {}, world);
+const gEdges = el('g', {}, world);
+const gNodes = el('g', {}, world);
+
+// clusters
+clusters.forEach(c => {
+  const tint = CLUSTER_TINTS[c.id] || '#888';
+  const box = el('rect', {
+    x: c.x, y: c.y, width: c.w, height: c.h, rx: 14,
+    fill: tint + '10', stroke: tint + '38', 'stroke-width': 1,
+    class: 'cluster-box'
+  }, gClusters);
+  box.style.pointerEvents = 'none';
+  const t = el('text', { x: c.x + 14, y: c.y + 26, fill: tint, class: 'cluster-label' }, gClusters);
+  t.textContent = c.label;
+});
+
+// ── Edge geometry ────────────────────────────────────────────────────────────
+// Anchor on the facing sides; multiple edges sharing a node side get spread
+// ports so they don't stack. Cubic beziers; 'h' edges bow through the vertical
+// gutters between columns, 'v' edges through the horizontal bands.
+function edgeMode(a, b) {
+  const acx = a.x + a.w / 2, acy = a.y + a.h / 2;
+  const bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
+  const dx = bcx - acx, dy = bcy - acy;
+  if (Math.abs(dx) > Math.abs(dy) * 0.85) return dx > 0 ? 'R' : 'L';
+  return dy > 0 ? 'D' : 'U';
+}
+// port spreading: count edges per (node, side)
+const portCount = {}, portIdx = {};
+edges.forEach(e => {
+  const a = nodeById[e.from], b = nodeById[e.to];
+  const m = edgeMode(a, b);
+  const sa = e.from + ':' + (m === 'R' ? 'r' : m === 'L' ? 'l' : m === 'D' ? 'd' : 'u');
+  const sb = e.to   + ':' + (m === 'R' ? 'l' : m === 'L' ? 'r' : m === 'D' ? 'u' : 'd');
+  portCount[sa] = (portCount[sa] || 0) + 1;
+  portCount[sb] = (portCount[sb] || 0) + 1;
+  e._sa = sa; e._sb = sb;
+});
+function portOffset(key) {
+  const n = portCount[key], i = (portIdx[key] = (portIdx[key] || 0) + 1) - 1;
+  return (i - (n - 1) / 2) * Math.min(16, 44 / Math.max(1, n - 1) || 16);
+}
+function bez(t, p0, p1, p2, p3) {
+  const u = 1 - t;
+  return u*u*u*p0 + 3*u*u*t*p1 + 3*u*t*t*p2 + t*t*t*p3;
+}
+function edgePath(e) {
+  const a = nodeById[e.from], b = nodeById[e.to];
+  const m = edgeMode(a, b);
+  const oa = portOffset(e._sa), ob = portOffset(e._sb);
+  let x1, y1, x2, y2, c1x, c1y, c2x, c2y;
+  if (m === 'R' || m === 'L') {
+    x1 = m === 'R' ? a.x + a.w : a.x;
+    x2 = m === 'R' ? b.x : b.x + b.w;
+    y1 = a.y + a.h / 2 + oa;
+    y2 = b.y + b.h / 2 + ob;
+    const k = Math.max(46, Math.abs(x2 - x1) * 0.42) * (m === 'R' ? 1 : -1);
+    c1x = x1 + k; c1y = y1; c2x = x2 - k; c2y = y2;
+  } else {
+    y1 = m === 'D' ? a.y + a.h : a.y;
+    y2 = m === 'D' ? b.y : b.y + b.h;
+    x1 = a.x + a.w / 2 + oa;
+    x2 = b.x + b.w / 2 + ob;
+    const k = Math.max(36, Math.abs(y2 - y1) * 0.42) * (m === 'D' ? 1 : -1);
+    c1x = x1; c1y = y1 + k; c2x = x2; c2y = y2 - k;
+  }
+  const t = e.lt != null ? e.lt : 0.5;
+  return {
+    d: `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`,
+    lx: bez(t, x1, c1x, c2x, x2),
+    ly: bez(t, y1, c1y, c2y, y2),
+  };
+}
+
+// edges
+const edgeEls = edges.map(e => {
+  const g = el('g', { class: 'edge' }, gEdges);
+  const { d, lx, ly } = edgePath(e);
+  const isCrit = e.kind === 'critical';
+  el('path', {
+    d, stroke: EDGE_COLORS[e.kind], 'stroke-width': isCrit ? 2.4 : 1.5,
+    'marker-end': `url(#arr-${e.kind})`,
+    'stroke-dasharray': e.kind === 'mount' ? '5 4' : 'none',
+    opacity: isCrit ? 0.95 : 0.62,
+  }, g);
+  const t = el('text', { x: lx, y: ly - 5, 'text-anchor': 'middle' }, g);
+  t.textContent = e.label;
+  return g;
+});
+
+// nodes
+const nodeEls = {};
+nodes.forEach(n => {
+  const g = el('g', { class: 'node' }, gNodes);
+  const color = COLORS[n.color] || '#888';
+  el('rect', {
+    x: n.x, y: n.y, width: n.w, height: n.h, rx: 9,
+    fill: '#181818', stroke: n.critical ? '#ff3860' : color,
+    'stroke-width': n.critical ? 2.2 : 1.3,
+  }, g);
+  el('rect', { x: n.x, y: n.y, width: 4, height: n.h, rx: 2, fill: color }, g);
+  const lbl = el('text', { x: n.x + 14, y: n.y + 24, class: 'lbl' }, g);
+  lbl.textContent = n.label;
+  const sub = el('text', { x: n.x + 14, y: n.y + 41, class: 'sub' }, g);
+  sub.textContent = n.sub;
+  if (n.critical) {
+    const c = el('text', { x: n.x + n.w - 10, y: n.y + 20, 'text-anchor': 'end' }, g);
+    c.textContent = '★'; c.setAttribute('fill', '#ff3860'); c.setAttribute('font-size', '11');
+  }
+  const fixes = (FIXES[n.id] || []).length, bugs = (KNOWN_BUGS[n.id] || []).length;
+  if (fixes) {
+    el('circle', { cx: n.x + n.w - (bugs ? 34 : 12), cy: n.y - 2, r: 9, fill: '#2f7d4f', stroke: '#0F0F0F', 'stroke-width': 2 }, g);
+    const t = el('text', { x: n.x + n.w - (bugs ? 34 : 12), y: n.y + 2, 'text-anchor': 'middle', 'font-size': 10, fill: '#fff' }, g);
+    t.textContent = fixes;
+  }
+  if (bugs) {
+    el('circle', { cx: n.x + n.w - 12, cy: n.y - 2, r: 9, fill: '#a83232', stroke: '#0F0F0F', 'stroke-width': 2 }, g);
+    const t = el('text', { x: n.x + n.w - 12, y: n.y + 2, 'text-anchor': 'middle', 'font-size': 10, fill: '#fff' }, g);
+    t.textContent = bugs;
+  }
+  g.addEventListener('click', ev => { ev.stopPropagation(); select(n.id, true); });
+  g.addEventListener('mouseenter', () => { if (!lockedSel) select(n.id, false); });
+  g.addEventListener('mouseleave', () => { if (!lockedSel) select(null, false); });
+  nodeEls[n.id] = g;
+});
+
+// ── Filters ──────────────────────────────────────────────────────────────────
+let activeChip = 'overview';
+const topbar = document.getElementById('topbar');
+CHIPS.forEach(c => {
+  const b = document.createElement('div');
+  b.className = 'chip' + (c.cls ? ' ' + c.cls : '') + (c.id === activeChip ? ' active' : '');
+  b.textContent = c.label;
+  b.dataset.chip = c.id;
+  b.onclick = () => {
+    activeChip = c.id;
+    document.querySelectorAll('.chip').forEach(x => x.classList.toggle('active', x.dataset.chip === c.id));
+    applyDim();
+  };
+  topbar.appendChild(b);
+});
+
+let lockedSel = false;
+let selectedId = null;
+
+function nodeMatchesChip(n) {
+  if (activeChip === 'critical') return !!n.critical;
+  if (activeChip === 'overview') return true;
+  return (n.tag || []).includes(activeChip);
+}
+function edgeMatchesChip(e) {
+  return (e.tag || []).includes(activeChip);
+}
+function applyDim() {
+  const selN = selectedId ? nodeById[selectedId] : null;
+  const connected = new Set();
+  if (selN) {
+    connected.add(selN.id);
+    edges.forEach(e => {
+      if (e.from === selN.id) connected.add(e.to);
+      if (e.to === selN.id) connected.add(e.from);
+    });
+  }
+  nodes.forEach(n => {
+    let dim = !nodeMatchesChip(n);
+    if (selN) dim = dim || !connected.has(n.id);
+    nodeEls[n.id].classList.toggle('dim', dim);
+  });
+  edges.forEach((e, i) => {
+    let dim = !edgeMatchesChip(e);
+    if (selN) dim = dim || (e.from !== selN.id && e.to !== selN.id);
+    edgeEls[i].classList.toggle('dim', dim);
+  });
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+const sidebar = document.getElementById('sidebar');
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+function renderDefaultSidebar() {
+  const nCrit = nodes.filter(n => n.critical).length;
+  sidebar.innerHTML = `
+    <h2>Playbook — how it fits together</h2>
+    <div class="subtitle">${nodes.length} nodes · ${edges.length} wires · ${nCrit} on the critical seam</div>
+    <div class="plainbox">A no-build React PWA for tracking an investment portfolio: live prices, P/L,
+      price alerts and an earnings radar. Everything you own stays on the phone; an optional free
+      Cloudflare Worker adds always-on push alerts and encrypted backup.</div>
+    <h3>Read it in one line</h3>
+    <div class="rolebox">Follow the red <b style="color:var(--critical)">1 → 10</b> wires: the shell boots the app,
+      the app plans what to fetch, prices flow through free CORS proxies from Yahoo, get parsed by shared
+      pure code, land in a tiny store — and every landing re-checks your price alerts.</div>
+    <h3>Notable findings from this map</h3>
+    <div class="finding warn"><b>The alert evaluator exists three times</b>
+      pb-core.js:212 is the shared source of truth (app + Cloudflare Worker), but sw.js keeps a hand-ported
+      third copy (swEvaluate, sw.js:267) with its own proxy list and its own cent/pence divisor
+      (sw.js:248) that lacks pb-core’s ZAX / trailing-lowercase rules — the one remaining place unit handling can drift.</div>
+    <div class="finding warn"><b>A likely-dead network path is still second in line</b>
+      fetchFundamentalsYahoo (app.js:533) calls Yahoo’s v10 quoteSummary, which the code’s own comment
+      (app.js:762) says is now crumb-gated. For non-US listings without a Perplexity key, fundamentals
+      probably fail after burning a full proxy-ladder attempt.</div>
+    <div class="finding warn"><b>The hot path is heavier than it looks</b>
+      One stale symbol can cost 2 Yahoo calls (5d + 1m re-shoot) × up to 6 proxies each, and the batcher
+      re-sweeps all misses once — a 30-symbol manual refresh can fan out into hundreds of proxy requests
+      worst-case (pb-data.js:511, 609).</div>
+    <div class="finding warn"><b>Three hand-maintained copies of the CORS proxy list</b>
+      pb-data.js:41, sw.js:205 and backend/worker.js:151 each carry their own ladder. corsproxy.io is
+      already known-broken for deployed origins (pb-data.js:39) yet still sits in all three.</div>
+    <div class="finding good"><b>No dead exports found</b>
+      Every top-level export of pb-core / pb-data / pb-store / pb-import / pb-content is consumed by
+      app.js, the Worker, or the 38-file Node test suite (some, like tradedToday and the proxy test seams,
+      are test-only by design).</div>
+    <div class="finding good"><b>The refactor is visibly working</b>
+      Alert evaluation, symbol building and cent-divisors used to be drifted copies between app and Worker;
+      they now share pb-core.js — the Worker even imports it directly (backend/worker.js:16).</div>
+    <div class="finding warn"><b>Two clocks need manual winding</b>
+      BUILTIN_MACRO_2026 (pb-content.js:98) is a hardcoded one-year calendar, and the service-worker cache
+      name (sw.js:2, v50) is bumped by hand on every deploy.</div>
+    <h3>How to use this map</h3>
+    <ul>
+      <li>Click a node → details, wiring and file paths (paths are relative to the repo root)</li>
+      <li>Chips filter by feature; "Critical path" isolates the price→alert seam</li>
+      <li>Drag to pan · scroll to zoom · Fit resets</li>
+    </ul>`;
+}
+
+function kindPill(kind) {
+  return `<span class="k" style="border:1px solid ${EDGE_COLORS[kind]};color:${EDGE_COLORS[kind]}">${kind}</span>`;
+}
+
+function renderNodeSidebar(n) {
+  const inc = edges.filter(e => e.to === n.id);
+  const out = edges.filter(e => e.from === n.id);
+  const fixes = FIXES[n.id] || [], bugs = KNOWN_BUGS[n.id] || [];
+  sidebar.innerHTML = `
+    <h2>${esc(n.label)} ${n.critical ? '<span style="color:var(--critical);font-size:11px">★ critical path</span>' : ''}</h2>
+    <div class="subtitle">${esc(n.sub)}</div>
+    <div class="rolebox">${esc(n.role || '')}</div>
+    <div class="plainbox">${esc(n.plain || '')}</div>
+    <h3>File</h3>
+    <span class="path">${esc(n.path || '')}</span>
+    ${n.notes && n.notes.length ? `<h3>Notes</h3><ul>${n.notes.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${bugs.length ? `<h3>Known bugs</h3>${bugs.map(b => `<div class="finding warn"><b>${esc(b.sev)}${b.ref ? ' · ' + esc(b.ref) : ''}</b>${esc(b.t)}</div>`).join('')}` : ''}
+    ${fixes.length ? `<h3>Planned fixes</h3>${fixes.map(f => `<div class="finding good"><b>#${f.n}</b>${esc(f.t)}</div>`).join('')}` : ''}
+    ${inc.length ? `<h3>Incoming (${inc.length})</h3>${inc.map(e => `<div class="edgeitem">${kindPill(e.kind)}<b>${esc(nodeById[e.from].label)}</b> — ${esc(e.label)}</div>`).join('')}` : ''}
+    ${out.length ? `<h3>Outgoing (${out.length})</h3>${out.map(e => `<div class="edgeitem">${kindPill(e.kind)}→ <b>${esc(nodeById[e.to].label)}</b> — ${esc(e.label)}</div>`).join('')}` : ''}
+    <h3>Feature tags</h3>
+    <div>${(n.tag || []).map(t => `<span class="tagchip">${esc(t)}</span>`).join('')}</div>
+    <div class="hint">Click the canvas background to go back to the overview.</div>`;
+}
+
+function select(id, lock) {
+  selectedId = id;
+  if (lock) lockedSel = !!id;
+  if (id) renderNodeSidebar(nodeById[id]); else renderDefaultSidebar();
+  applyDim();
+}
+
+// ── Pan / zoom ───────────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+let tx = 0, ty = 0, scale = 1;
+function applyTransform() {
+  world.setAttribute('transform', `translate(${tx} ${ty}) scale(${scale})`);
+}
+const WORLD_W = 1580, WORLD_H = 1460;
+function fit() {
+  const r = canvas.getBoundingClientRect();
+  scale = Math.min(r.width / WORLD_W, r.height / (WORLD_H + 60)) * 0.98;
+  tx = (r.width - WORLD_W * scale) / 2;
+  ty = (r.height - WORLD_H * scale) / 2 + 20;
+  applyTransform();
+}
+function zoomAt(cx, cy, factor) {
+  const ns = Math.min(3, Math.max(0.15, scale * factor));
+  tx = cx - (cx - tx) * (ns / scale);
+  ty = cy - (cy - ty) * (ns / scale);
+  scale = ns;
+  applyTransform();
+}
+canvas.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  zoomAt(ev.clientX - r.left, ev.clientY - r.top, ev.deltaY < 0 ? 1.12 : 1 / 1.12);
+}, { passive: false });
+let dragging = false, lx = 0, ly = 0, moved = 0;
+canvas.addEventListener('mousedown', ev => { dragging = true; moved = 0; lx = ev.clientX; ly = ev.clientY; canvas.classList.add('dragging'); });
+window.addEventListener('mousemove', ev => {
+  if (!dragging) return;
+  moved += Math.abs(ev.clientX - lx) + Math.abs(ev.clientY - ly);
+  tx += ev.clientX - lx; ty += ev.clientY - ly;
+  lx = ev.clientX; ly = ev.clientY;
+  applyTransform();
+});
+window.addEventListener('mouseup', () => { dragging = false; canvas.classList.remove('dragging'); });
+canvas.addEventListener('click', ev => {
+  if (moved > 6) return;           // it was a drag, not a click
+  lockedSel = false;
+  select(null, false);
+});
+document.getElementById('btnFit').onclick = fit;
+document.getElementById('btnPlus').onclick = () => { const r = canvas.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.25); };
+document.getElementById('btnMinus').onclick = () => { const r = canvas.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1 / 1.25); };
+window.addEventListener('resize', fit);
+
+// touch pan (basic)
+let tlx = 0, tly = 0;
+canvas.addEventListener('touchstart', ev => { if (ev.touches.length === 1) { tlx = ev.touches[0].clientX; tly = ev.touches[0].clientY; } }, { passive: true });
+canvas.addEventListener('touchmove', ev => {
+  if (ev.touches.length === 1) {
+    tx += ev.touches[0].clientX - tlx; ty += ev.touches[0].clientY - tly;
+    tlx = ev.touches[0].clientX; tly = ev.touches[0].clientY;
+    applyTransform();
+  }
+}, { passive: true });
+
+renderDefaultSidebar();
+applyDim();
+fit();
+</script>
+</body>
+</html>
