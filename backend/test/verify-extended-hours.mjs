@@ -16,7 +16,7 @@ const ROOT = join(here, '..', '..');
 const SHOTS = join(ROOT, 'test-screenshots');
 const PORT = 9924;
 const DBG = 9234;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 // Micron, mirroring the user's reference screenshot. Regular session closed at
 // 1211.38 (+6.82%); after-hours trading at 1234.80 (+23.42 / +1.93% vs close).

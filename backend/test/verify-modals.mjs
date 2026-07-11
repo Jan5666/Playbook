@@ -16,7 +16,7 @@ const ROOT = join(here, '..', '..');
 const SHOTS = join(ROOT, 'test-screenshots');
 const PORT = 9919;
 const DBG = 9229;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg' };
 
 // US + JSE holdings only — keeps the TFSA tab empty while the dashboard is full.

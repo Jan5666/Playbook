@@ -15,7 +15,7 @@ const ROOT = join(here, '..', '..');
 const SHOTS = join(ROOT, 'test-screenshots');
 const PORT = 9921;
 const DBG = 9231;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 const SEED = {
   'pb.watchlist.v2': [

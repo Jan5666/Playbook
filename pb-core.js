@@ -637,6 +637,133 @@ function parseDecimal(raw) {
   return isFinite(n) ? n : NaN;
 }
 
+// ─── Yahoo fundamentals-timeseries parser ─────────────────────────────────
+// Parses query1.finance.yahoo.com/ws/fundamentals-timeseries/v1 payloads into
+// the app's fundamentals shape. This endpoint (the one Yahoo's own statistics
+// page uses) is NOT crumb-gated like v10 quoteSummary, so it still works
+// through the CORS-proxy chain — it's the keyless fallback when
+// stockanalysis.com is unreachable. Pure: safe to unit-test in Node.
+//
+// Payload shape (one result entry per requested type; arrays are chronological
+// and may contain nulls for padded periods):
+//   { timeseries: { result: [ { meta: { type: ["annualTotalRevenue"] },
+//       annualTotalRevenue: [ { asOfDate: "2025-09-30", currencyCode: "USD",
+//         reportedValue: { raw: 4.16e11, fmt: "416.16B" } }, ... ] } ] } }
+function parseFundamentalsTimeseries(json, market) {
+  const results = json?.timeseries?.result;
+  if (!Array.isArray(results)) return null;
+  // latest[type] = { v, asOfDate }; prevAnnual[type] = value before latest
+  // (for YoY growth on annual statement items).
+  const latest = {};
+  const prevAnnual = {};
+  let currency = null;
+  for (const entry of results) {
+    const type = entry?.meta?.type?.[0];
+    if (!type || !Array.isArray(entry[type])) continue;
+    const rows = entry[type].filter(r => r && r.reportedValue && typeof r.reportedValue.raw === 'number' && isFinite(r.reportedValue.raw));
+    if (rows.length === 0) continue;
+    const last = rows[rows.length - 1];
+    latest[type] = { v: last.reportedValue.raw, asOfDate: last.asOfDate || null };
+    if (rows.length > 1 && type.startsWith('annual')) prevAnnual[type] = rows[rows.length - 2].reportedValue.raw;
+    if (!currency && last.currencyCode) currency = last.currencyCode;
+  }
+  const L = (...types) => {
+    for (const t of types) if (latest[t]) return latest[t].v;
+    return null;
+  };
+  const growth = (type) => {
+    const cur = latest[type] ? latest[type].v : null;
+    const prev = prevAnnual[type];
+    // Growth is meaningless off a non-positive base (sign flips) — skip it.
+    if (cur == null || prev == null || !(prev > 0)) return null;
+    return (cur / prev - 1) * 100;
+  };
+  const revenue = L('trailingTotalRevenue', 'annualTotalRevenue');
+  const netIncome = L('trailingNetIncome', 'annualNetIncome');
+  const opIncome = L('trailingOperatingIncome', 'annualOperatingIncome');
+  const equity = L('annualStockholdersEquity');
+  const totalDebt = L('annualTotalDebt');
+  const curAssets = L('annualCurrentAssets');
+  const curLiabs = L('annualCurrentLiabilities');
+  const asOfMs = (type) => {
+    const d = latest[type] && latest[type].asOfDate ? Date.parse(latest[type].asOfDate) : NaN;
+    return isFinite(d) ? d : null;
+  };
+  const mc = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US);
+  const result = {
+    marketCap: L('trailingMarketCap', 'quarterlyMarketCap'),
+    peTrailing: L('trailingPeRatio', 'quarterlyPeRatio'),
+    peForward: L('trailingForwardPeRatio', 'quarterlyForwardPeRatio'),
+    pegRatio: L('trailingPegRatio', 'quarterlyPegRatio'),
+    priceToBook: L('trailingPbRatio', 'quarterlyPbRatio'),
+    bookValue: null,
+    priceToSales: L('trailingPsRatio', 'quarterlyPsRatio'),
+    eps: L('trailingDilutedEPS', 'annualDilutedEPS'),
+    epsForward: null,
+    beta: null,
+    dividendYield: null,
+    payoutRatio: null,
+    profitMargin: (netIncome != null && revenue > 0) ? netIncome / revenue * 100 : null,
+    operatingMargin: (opIncome != null && revenue > 0) ? opIncome / revenue * 100 : null,
+    revenueGrowth: growth('annualTotalRevenue'),
+    earningsGrowth: growth('annualNetIncome'),
+    roe: (netIncome != null && equity > 0) ? netIncome / equity * 100 : null,
+    roa: null,
+    // Match Yahoo quoteSummary's convention: D/E reported as a percent.
+    debtToEquity: (totalDebt != null && equity > 0) ? totalDebt / equity * 100 : null,
+    currentRatio: (curAssets != null && curLiabs > 0) ? curAssets / curLiabs : null,
+    totalCash: null,
+    totalDebt: totalDebt,
+    freeCashflow: L('trailingFreeCashFlow', 'annualFreeCashFlow'),
+    operatingCashflow: L('trailingOperatingCashFlow', 'annualOperatingCashFlow'),
+    revenue: revenue,
+    ebitda: L('trailingEBITDA', 'trailingNormalizedEBITDA', 'annualEBITDA', 'annualNormalizedEBITDA'),
+    mostRecentQuarter: asOfMs('quarterlyMarketCap') || asOfMs('quarterlyPeRatio'),
+    lastFiscalYearEnd: asOfMs('annualTotalRevenue') || asOfMs('annualNetIncome'),
+    targetMean: null, targetHigh: null, targetLow: null,
+    recommendation: null, analystCount: null,
+    volume: null, avgVolume: null,
+    yearHigh: null, yearLow: null,
+    fiftyDayAvg: null, twoHundredDayAvg: null,
+    earningsDate: null, earningsDateEnd: null,
+    epsEst: null, revEst: null, dividendDate: null,
+    sector: null, industry: null, employees: null,
+    // Statement/valuation figures arrive in natural units (never pence/cents),
+    // so the divisor is always 1; currency comes from the payload when present.
+    currency: currency || mc.code,
+    divisor: 1,
+    fetchedAt: Date.now(),
+    source: 'yahoo-ts'
+  };
+  // Require a few real metrics to count as a hit — bookkeeping fields
+  // (divisor, fetchedAt) and the period timestamps don't count.
+  const skip = new Set(['divisor', 'fetchedAt', 'mostRecentQuarter', 'lastFiscalYearEnd']);
+  const filled = Object.keys(result).filter(k => !skip.has(k) && typeof result[k] === 'number' && isFinite(result[k])).length;
+  return filled >= 3 ? result : null;
+}
+
+// Merge partial fundamentals from several sources (priority order: earlier
+// wins per field, later sources only fill gaps). Sources cover different
+// fields — stockanalysis has analyst/earnings data, the Yahoo timeseries has
+// statement-derived ratios — so a merge beats first-hit-wins. All sources
+// normalise money fields to natural units before this point, so mixing per
+// field is safe. Returns null when nothing usable was fetched.
+function mergeFundamentals(parts) {
+  const real = (parts || []).filter(p => p && typeof p === 'object');
+  if (real.length === 0) return null;
+  if (real.length === 1) return real[0];
+  const out = Object.assign({}, real[0]);
+  for (let i = 1; i < real.length; i++) {
+    for (const k of Object.keys(real[i])) {
+      const v = real[i][k];
+      if (v == null) continue;
+      if (out[k] == null || out[k] === '') out[k] = v;
+    }
+  }
+  out.source = real.map(p => p.source).filter(Boolean).join('+');
+  return out;
+}
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
@@ -666,7 +793,9 @@ function parseDecimal(raw) {
     derivePrevClose,
     deriveIntradayExt,
     parseYahooQuote,
-    parseDecimal
+    parseDecimal,
+    parseFundamentalsTimeseries,
+    mergeFundamentals
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the
