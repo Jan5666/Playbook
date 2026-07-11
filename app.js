@@ -782,12 +782,20 @@ function stockAnalysisBase(ticker, market) {
 // quoteSummary now 401s without a crumb the CORS proxies can't carry.
 async function fetchFundamentalsStockAnalysis(ticker, market) {
   const base = stockAnalysisBase(ticker, market);
+  // Route through the CORS-proxy chain (the same one that serves our quotes,
+  // charts and news), NOT a direct fetch. stockanalysis.com does not send
+  // Access-Control-Allow-Origin for these /api paths, so a direct browser fetch
+  // is blocked by CORS and every fundamentals lookup silently failed (the whole
+  // "Key stats & ratios" block came back empty) — even though prices/charts kept
+  // working because those already go through the proxies.
+  const getJson = async (path) => {
+    const text = await fetchViaProxies(`${base}/${path}`);
+    if (!text) return null;
+    try { return JSON.parse(text); } catch (_e) { return null; }
+  };
   let ov = null, st = null;
   try {
-    const [ovr, str] = await Promise.all([
-      fetch(`${base}/overview`).then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(`${base}/statistics`).then(r => r.ok ? r.json() : null).catch(() => null)
-    ]);
+    const [ovr, str] = await Promise.all([getJson('overview'), getJson('statistics')]);
     ov = ovr && ovr.data ? ovr.data : null;
     st = str && str.data ? str.data : null;
   } catch (e) { return null; }
