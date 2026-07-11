@@ -10,6 +10,13 @@ plan (several items below are officially "owned" by that roadmap).*
 
 ## 1. `demo-data.js` is served locally but never deployed — breaks the live service worker
 
+> **FIXED 2026-07-11** (branch `claude/mobile-preview-mode-error-q5kt2u`): `demo-data.js`
+> added to both the `cp` list and the Guard-1 loop in `static.yml`; `CACHE_NAME` bumped
+> to v51; and the class-killing guard test now exists as
+> `backend/test/deploy-assets.test.mjs` (cross-checks sw.js `SHELL_ASSETS`,
+> index.html `<script src>` tags, and the static.yml allowlist against each other).
+> Entry kept for history until merged to main.
+
 - **What**: `index.html:80` loads `./demo-data.js` and `sw.js` lists it in
   `SHELL_ASSETS` (sw.js:16), but `.github/workflows/static.yml` does **not** copy it
   into `_site/` (neither the `cp` list at line 44 nor the Guard-1 loop at line 50).
