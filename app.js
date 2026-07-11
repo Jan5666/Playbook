@@ -759,10 +759,29 @@ function saNum(s) {
   const f = parseFloat(t);
   return isFinite(f) ? f : null;
 }
+// stockanalysis.com exchange codes for its international quote endpoint
+// (/api/symbol/q/<EXCHANGE>:<TICKER>). US listings use the /s/<TICKER> path;
+// everything else is namespaced by exchange. TFSA is JSE under the hood.
+const SA_EXCHANGE = {
+  JSE: 'JSE', TFSA: 'JSE', LSE: 'LON', ASX: 'ASX',
+  FRA: 'FRA', PAR: 'EPA', AMS: 'AMS'
+};
+// Build the stockanalysis.com API base for a listing. US (and crypto, which we
+// don't source here) use the bare /s/ stock path; other exchanges use the
+// /q/<EXCHANGE>:<TICKER> quote path so JSE/LSE/ASX/EU holdings resolve too.
+function stockAnalysisBase(ticker, market) {
+  const t = encodeURIComponent(String(ticker).toUpperCase());
+  const ex = SA_EXCHANGE[market];
+  if (ex) return `https://stockanalysis.com/api/symbol/q/${ex}:${t}`;
+  return `https://stockanalysis.com/api/symbol/s/${t}`;
+}
 // stockanalysis.com is CORS-open and (unlike Yahoo's now crumb-gated
-// quoteSummary) returns full fundamentals for US listings without auth.
-async function fetchFundamentalsStockAnalysis(ticker) {
-  const base = `https://stockanalysis.com/api/symbol/s/${encodeURIComponent(ticker.toUpperCase())}`;
+// quoteSummary) returns full fundamentals without auth — for US listings and,
+// via the /q/<EXCHANGE>:<TICKER> path, for JSE/LSE/ASX/EU listings too. This is
+// the only free fundamentals source that still works, since Yahoo's
+// quoteSummary now 401s without a crumb the CORS proxies can't carry.
+async function fetchFundamentalsStockAnalysis(ticker, market) {
+  const base = stockAnalysisBase(ticker, market);
   let ov = null, st = null;
   try {
     const [ovr, str] = await Promise.all([
@@ -836,7 +855,10 @@ async function fetchFundamentalsStockAnalysis(ticker) {
     epsEst: null, revEst: null,
     sector: (o.infoTable || []).find(r => r.t === 'Sector')?.v || null,
     industry: (o.infoTable || []).find(r => r.t === 'Industry')?.v || null,
-    currency: 'USD', divisor: 1,
+    // stockanalysis reports each listing in its own exchange currency (rand for
+    // JSE, pence-free pounds for LSE, …) in natural units — so the divisor is 1
+    // and the currency follows the market, not a hardcoded USD.
+    currency: (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code, divisor: 1,
     fetchedAt: Date.now(),
     source: 'stockanalysis'
   };
@@ -845,9 +867,11 @@ async function fetchFundamentalsStockAnalysis(ticker) {
   return filled >= 3 ? result : null;
 }
 async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
-  // US listings: stockanalysis.com is the most reliable free source.
-  if (market === 'US') {
-    const sa = await fetchFundamentalsStockAnalysis(ticker);
+  // stockanalysis.com is the most reliable free source and now covers the main
+  // exchanges (US via /s/, JSE/LSE/ASX/EU via /q/<EXCHANGE>:<TICKER>). Crypto has
+  // no fundamentals there, so it still falls through to Yahoo.
+  if (market !== 'CRYPTO') {
+    const sa = await fetchFundamentalsStockAnalysis(ticker, market);
     if (sa) return sa;
   }
   const yahoo = await fetchFundamentalsYahoo(ticker, market);
