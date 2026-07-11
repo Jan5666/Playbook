@@ -14,7 +14,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..');
 const PORT = 9931;
 const DBG = 9241;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png' };
 
 // The REAL book: one distinctive ticker that never appears in the demo set

@@ -874,18 +874,76 @@ async function fetchFundamentalsStockAnalysis(ticker, market) {
   const filled = Object.values(result).filter(v => typeof v === 'number' && isFinite(v)).length;
   return filled >= 3 ? result : null;
 }
-async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
-  // stockanalysis.com is the most reliable free source and now covers the main
-  // exchanges (US via /s/, JSE/LSE/ASX/EU via /q/<EXCHANGE>:<TICKER>). Crypto has
-  // no fundamentals there, so it still falls through to Yahoo.
-  if (market !== 'CRYPTO') {
-    const sa = await fetchFundamentalsStockAnalysis(ticker, market);
-    if (sa) return sa;
+// Yahoo's fundamentals-timeseries API — the endpoint Yahoo's own statistics
+// page reads — is NOT crumb-gated like v10 quoteSummary, so it works keyless
+// through the same CORS-proxy chain that already serves quotes and charts in
+// production. It supplies valuation ratios plus statement items the parser
+// (pb-core.js) derives margins/ROE/debt-to-equity/growth from. Types Yahoo doesn't know
+// are simply absent from the response, so unrecognised names cost nothing.
+const YF_TIMESERIES_TYPES = [
+  'quarterlyMarketCap', 'trailingMarketCap',
+  'quarterlyPeRatio', 'trailingPeRatio',
+  'quarterlyForwardPeRatio', 'trailingForwardPeRatio',
+  'quarterlyPegRatio', 'trailingPegRatio',
+  'quarterlyPsRatio', 'trailingPsRatio',
+  'quarterlyPbRatio', 'trailingPbRatio',
+  'annualTotalRevenue', 'trailingTotalRevenue',
+  'annualNetIncome', 'trailingNetIncome',
+  'annualDilutedEPS', 'trailingDilutedEPS',
+  'annualOperatingIncome', 'trailingOperatingIncome',
+  'annualFreeCashFlow', 'trailingFreeCashFlow',
+  'annualOperatingCashFlow', 'trailingOperatingCashFlow',
+  'annualEBITDA', 'trailingEBITDA',
+  'annualNormalizedEBITDA', 'trailingNormalizedEBITDA',
+  'annualStockholdersEquity', 'annualTotalDebt',
+  'annualCurrentAssets', 'annualCurrentLiabilities'
+].join(',');
+async function fetchFundamentalsYahooTimeseries(ticker, market) {
+  const sym = yahooSymbol(ticker, market);
+  const now = Math.floor(Date.now() / 1000);
+  const p1 = now - 5 * 365 * 24 * 3600; // 5y back: enough for YoY growth off annuals
+  const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+  for (const h of hosts) {
+    const url = `https://${h}/ws/fundamentals-timeseries/v1/finance/timeseries/${encodeURIComponent(sym)}` +
+      `?symbol=${encodeURIComponent(sym)}&type=${YF_TIMESERIES_TYPES}&period1=${p1}&period2=${now}` +
+      `&merge=false&padTimeSeries=true&lang=en-US&region=US`;
+    const text = await fetchViaProxies(url, { timeoutMs: 10000 });
+    if (!text) continue;
+    let data;
+    try { data = JSON.parse(text); } catch (_e) { continue; }
+    const parsed = PBCore.parseFundamentalsTimeseries(data, market);
+    if (parsed) return parsed;
   }
-  const yahoo = await fetchFundamentalsYahoo(ticker, market);
-  if (yahoo) return yahoo;
-  if (perplexityKey) return await fetchFundamentalsPerplexity(ticker, market, companyName, perplexityKey);
   return null;
+}
+async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
+  // Free keyless sources first, in parallel: stockanalysis.com (analyst
+  // targets, earnings date, sector) and Yahoo's fundamentals-timeseries
+  // (valuation ratios + statement-derived metrics). Each fails independently
+  // in production — stockanalysis intermittently blocks the shared CORS
+  // proxies, quoteSummary is crumb-gated — so partial results are MERGED
+  // (earlier source wins per field) instead of first-hit-wins. Crypto has no
+  // fundamentals on either, so it goes straight to quoteSummary.
+  const parts = [];
+  if (market !== 'CRYPTO') {
+    const [sa, ts] = await Promise.all([
+      fetchFundamentalsStockAnalysis(ticker, market),
+      fetchFundamentalsYahooTimeseries(ticker, market)
+    ]);
+    if (sa) parts.push(sa);
+    if (ts) parts.push(ts);
+  }
+  // quoteSummary usually 401s without a crumb, but it's free to try when the
+  // primary sources came up empty (and it's the only non-AI crypto source).
+  if (parts.length === 0) {
+    const yahoo = await fetchFundamentalsYahoo(ticker, market);
+    if (yahoo) parts.push(yahoo);
+  }
+  if (parts.length === 0 && perplexityKey) {
+    const ai = await fetchFundamentalsPerplexity(ticker, market, companyName, perplexityKey);
+    if (ai) parts.push(ai);
+  }
+  return PBCore.mergeFundamentals(parts);
 }
 // Lightweight sector/industry lookup for the background allocator fill — one
 // CORS-open request to stockanalysis.com (US listings). Used to self-heal any
@@ -893,9 +951,13 @@ async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
 // tickers into "Other". Returns raw labels; the caller normalises them.
 async function fetchSectorStockAnalysis(ticker) {
   try {
-    const r = await fetch(`https://stockanalysis.com/api/symbol/s/${encodeURIComponent(String(ticker).toUpperCase())}/overview`);
-    if (!r.ok) return null;
-    const j = await r.json();
+    // Same CORS story as fetchFundamentalsStockAnalysis: these /api paths send
+    // no Access-Control-Allow-Origin, so a direct browser fetch always fails —
+    // route through the proxy chain like every other stockanalysis call.
+    const text = await fetchViaProxies(`https://stockanalysis.com/api/symbol/s/${encodeURIComponent(String(ticker).toUpperCase())}/overview`);
+    if (!text) return null;
+    let j;
+    try { j = JSON.parse(text); } catch (_e) { return null; }
     const o = j && j.data ? j.data : null;
     if (!o || !Array.isArray(o.infoTable)) return null;
     const sector = o.infoTable.find(x => x.t === 'Sector')?.v || null;
@@ -3245,9 +3307,9 @@ function App() {
     reader.readAsText(file);
   };
   const getPrice = (ticker, market) => PBStore.getPrices()[priceKey(market || 'US', ticker)];
-  const loadFundamentals = useCallback((ticker, market) => {
+  const loadFundamentals = useCallback((ticker, market, force = false) => {
     const info = DATA.findInfo(ticker, market);
-    return loadFundamentalsRaw(`${market}:${ticker}`, () => fetchFundamentals(ticker, market, info?.name, perplexityKey));
+    return loadFundamentalsRaw(`${market}:${ticker}`, () => fetchFundamentals(ticker, market, info?.name, perplexityKey), force);
   }, [loadFundamentalsRaw, perplexityKey]);
   const openDetail = useCallback((ticker, market, opts) => {
     const mkt = market || 'US';
@@ -3441,7 +3503,8 @@ function App() {
     onAddAlert: addAlert,
     onRemoveAlert: removeAlert,
     onLoadNews: () => loadNews(selected.ticker, selected.market),
-    onLoadHistory: (r) => loadHistory(selected.ticker, selected.market, r)
+    onLoadHistory: (r) => loadHistory(selected.ticker, selected.market, r),
+    onRetryFundamentals: () => loadFundamentals(selected.ticker, selected.market, true)
   }), showSettings && React.createElement(SettingsModal, {
     fxRates: fxRates,
     onRefreshFx: refreshFx,
@@ -9030,7 +9093,7 @@ function baseCurrency(code, market) {
   return (MARKET_CURRENCY[market]?.code) || 'USD';
 }
 function FundamentalsBlock(_refFB) {
-  let { fundamentals, quote, market, fxRates } = _refFB;
+  let { fundamentals, quote, market, fxRates, onRetry } = _refFB;
   const loading = fundamentals && fundamentals.loading && !fundamentals.data;
   const f = fundamentals?.data || {};
   const cur = quote?.price && quote.price > 0 ? quote.price : null;
@@ -9150,7 +9213,14 @@ function FundamentalsBlock(_refFB) {
     ),
     targetSection,
     empty && React.createElement("div", { className: "fundamentals-empty" },
-      "Fundamentals unavailable. Yahoo blocks this data without auth — add a Perplexity API key in the Alerts panel to fetch AI-sourced fundamentals as a fallback."
+      React.createElement("div", null,
+        "Couldn't load fundamentals right now. The free data sources sometimes rate-limit or block the shared proxies; a Perplexity API key (Alerts panel) adds an AI-sourced fallback."
+      ),
+      onRetry && React.createElement("button", {
+        className: "btn btn-ghost btn-xs",
+        style: { marginTop: 8 },
+        onClick: onRetry
+      }, "Retry")
     )
   );
 }
@@ -9334,7 +9404,8 @@ function DetailModal(_ref10) {
     onAddAlert,
     onRemoveAlert,
     onLoadNews,
-    onLoadHistory
+    onLoadHistory,
+    onRetryFundamentals
   } = _ref10;
   const prices = PBStore.usePricesMap();
   const {
@@ -9525,7 +9596,7 @@ function DetailModal(_ref10) {
       rangeKeys: isIndicator ? indicator.chartRanges : null,
       onRetry: () => { if (onLoadHistory) onLoadHistory(range); }
     }),
-    !isIndicator && React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market, fxRates: fxRates }),
+    !isIndicator && React.createElement(FundamentalsBlock, { fundamentals: fundamentals, quote: quote, market: market, fxRates: fxRates, onRetry: onRetryFundamentals }),
 
     // Price alerts open as a centered popup — the same dialog the watchlist
     // bell shows — for a consistent experience across the app. Rendered through

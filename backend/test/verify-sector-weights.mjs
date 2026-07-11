@@ -17,7 +17,7 @@ const ROOT = join(here, '..', '..');
 const SHOTS = join(ROOT, 'test-screenshots');
 const PORT = 9924;
 const DBG = 9234;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 // AAPL (pure Technology) + VOO (an ETF given an explicit 3-sector breakdown).
 const SEED = {

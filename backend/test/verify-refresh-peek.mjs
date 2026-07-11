@@ -13,7 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..');
 const PORT = 9928;
 const DBG = 9238;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 const SEED = {
   'pb.positions.v2': [

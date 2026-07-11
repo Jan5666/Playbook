@@ -13,7 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..');
 const SHOTS = join(ROOT, 'test-screenshots');
 const PORT = 9917;
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg' };
 
 // Seed: 4 holdings across 2 markets + 2 active alerts + 2 triggered + keys.
