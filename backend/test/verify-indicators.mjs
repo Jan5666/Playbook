@@ -34,6 +34,7 @@ const HARNESS_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>in
 <script src="/pb-store.js"></script>
 <script src="/pb-content.js"></script>
 <script src="/pb-import.js"></script>
+<script src="/pb-view-hot.js"></script>
 <script src="/data.js"></script>
 <script src="/app.js"></script>
 </body></html>`; // no #root → app.js mount throws after globals are defined → inert page
