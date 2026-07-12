@@ -210,3 +210,41 @@ remaining ~18 components (`HedgesView` next as the near-free follow-up).
 Per Jan's standing rule (2026-06-29): I build on the branch in the working tree; **Jan reviews,
 commits, PRs, and merges.** Spec + plan + code are left for Jan; nothing is pushed. Scratchpad slice
 scripts and the render-check harness are throwaway — not committed.
+
+
+## Measured read-out (2026-07-12, on execution)
+
+Executed inline in three tasks; all gates green (22 node suites incl. money gate + deploy-assets,
+mount gate `verify-refresh-behavior` ALL PASSED, scratchpad Picks-tab render check ALL PASSED).
+
+**Bucketing economics, measured:**
+- **Rename tax (one-time, Task 1):** 21 wiring edits across 19 files - index.html (1), sw
+  SHELL_ASSETS (1), sw cache bump (1), static.yml cp-list + Guard-1 (2), 16 harness shells (16),
+  plus the `git mv` + a 3-line header rewrite. The cache bump was **v55 -> v56** (not the plan's
+  provisional v53->v54): the in-flight fundamentals hotfix had already taken it to v55, and the
+  plan's re-check step caught that. `app.js` was untouched in Task 1 (verified: empty
+  `git diff --name-only app.js`), so the rename was provably behavior-neutral; `deploy-assets.test.mjs`
+  stayed green, confirming index.html / SHELL_ASSETS / allowlist re-pointed in lockstep.
+- **PicksView add (the payoff, Task 2):** `app.js`-only - remove fn, add bind, grow `PBApp`, fix one
+  comment. **Zero** new harness / sw-asset / static.yml / index.html edits. `app.js` -60 lines
+  (`+4 / -64`); `pb-views.js` grew ~160 -> 227 lines; the bucket now holds **2** components
+  (HotTopicsView + PicksView).
+- **Bridge:** `window.PBApp` grew 5 -> **7** (`+PriceBlock`, `+fmt`) and reads as one clean line; at 7
+  members the grab-bag is still very manageable. The bridge-vs-global split held exactly as designed:
+  `PicksView` reached `DATA` via `window.PB_DATA` directly and `PBStore` qualified, so only genuine
+  app.js-internals (`PriceBlock`, `fmt`) entered `PBApp` - nothing that already had a global.
+- **Verification friction:** unchanged from inc 7 - no node test possible for a pure-UI view;
+  correctness rode entirely on the browser render check. The predicted trap held: the eager `viewMap`
+  `createElement(PicksView,...)` only renders on the active tab, so a broken bind would have been
+  invisible to the mount gate. The Picks-tab render check (9 `.pos-card` cards, middot in
+  "Constellation Energy · Nuclear Power" intact, no U+FFFD) is the check that actually proved it,
+  and passed first try.
+
+**Conclusion:** the read-out's thesis holds - the per-component cost inside an existing bucket is
+`app.js`-only; the 16-harness tax is genuinely paid once per file, not per component. Next increment:
+extract `HedgesView` (same `PriceBlock`+`fmt`+`DATA` shape) as a near-free add with **zero** new
+`PBApp` members, further amortizing the already-paid bucket wiring.
+
+**Process note:** Task 1's commit inadvertently included the throwaway `scratchpad/inc8-rename-wiring.mjs`.
+It is not in the deploy allowlist (won't ship) but is repo cruft; recommend `git rm --cached` it and
+add `scratchpad/` to `.gitignore` so future increments don't repeat this.

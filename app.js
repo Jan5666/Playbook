@@ -7955,116 +7955,10 @@ function HeatmapView(_ref8b) {
     }) : null
   );
 }
-function PicksView(_ref9) {
-  let {
-    onOpenDetail
-  } = _ref9;
-  const prices = PBStore.usePricesMap();
-  return React.createElement("div", null, React.createElement("div", {
-    className: "grid grid-2"
-  }, DATA.NEW_PICKS.map(p => {
-    const q = prices['US:' + p.ticker];
-    const upsideNow = q && p.entryPrice ? (p.targetPrice - q.price) / q.price * 100 : null;
-    return React.createElement("div", {
-      key: p.ticker,
-      className: "pos-card",
-      onClick: () => onOpenDetail(p.ticker, 'US')
-    }, React.createElement("div", {
-      className: "pos-head"
-    }, React.createElement("div", {
-      className: "flex-1"
-    }, React.createElement("div", {
-      className: "flex items-center gap-2"
-    }, React.createElement("span", {
-      className: "tkr"
-    }, p.ticker), React.createElement("span", {
-      className: "market-badge"
-    }, p.allocation, "%")), React.createElement("div", {
-      className: "tkr-name"
-    }, p.name, " \xB7 ", p.sector)), React.createElement("span", {
-      className: `pill ${p.conviction === 'HIGH' ? 'pill-buy' : 'pill-hold'}`
-    }, p.conviction)), React.createElement("div", {
-      className: "current-price-label"
-    }, "Current"), React.createElement(PriceBlock, {
-      quote: q,
-      size: "lg",
-      market: 'US'
-    }), React.createElement("div", {
-      className: "kv-row mt-3"
-    }, React.createElement("div", {
-      className: "kv"
-    }, React.createElement("div", {
-      className: "kv-label"
-    }, "Entry"), React.createElement("div", {
-      className: "kv-val"
-    }, fmt(p.entryPrice, 'US'))), React.createElement("div", {
-      className: "kv"
-    }, React.createElement("div", {
-      className: "kv-label"
-    }, "Target"), React.createElement("div", {
-      className: "kv-val"
-    }, fmt(p.targetPrice, 'US'))), React.createElement("div", {
-      className: "kv"
-    }, React.createElement("div", {
-      className: "kv-label"
-    }, "Upside"), React.createElement("div", {
-      className: "kv-val up"
-    }, upsideNow != null ? (upsideNow >= 0 ? '+' : '') + upsideNow.toFixed(0) + '%' : '+' + p.upside + '%'))), React.createElement("div", {
-      className: "text-sm text-muted mt-3",
-      style: {
-        lineHeight: 1.5
-      }
-    }, p.thesis));
-  })));
-}
-function HedgesView(_ref0) {
-  let {
-    onOpenDetail
-  } = _ref0;
-  const prices = PBStore.usePricesMap();
-  return React.createElement("div", null, React.createElement("div", {
-    className: "grid grid-2"
-  }, DATA.HEDGES.map(h => {
-    const q = prices['US:' + h.ticker];
-    return React.createElement("div", {
-      key: h.ticker,
-      className: "pos-card",
-      onClick: () => onOpenDetail(h.ticker, 'US')
-    }, React.createElement("div", {
-      className: "pos-head"
-    }, React.createElement("div", {
-      className: "flex-1"
-    }, React.createElement("div", {
-      className: "flex items-center gap-2"
-    }, React.createElement("span", {
-      className: "tkr"
-    }, h.ticker), React.createElement("span", {
-      className: "market-badge"
-    }, h.allocation, "%")), React.createElement("div", {
-      className: "tkr-name"
-    }, h.name))), React.createElement(PriceBlock, {
-      quote: q,
-      size: "lg",
-      market: 'US'
-    }), React.createElement("div", {
-      className: "text-xs text-dim mono mt-2",
-      style: {
-        letterSpacing: '0.1em',
-        textTransform: 'uppercase'
-      }
-    }, h.role), React.createElement("div", {
-      className: "text-sm text-muted mt-2"
-    }, h.rationale));
-  })), React.createElement("div", {
-    className: "mt-6"
-  }, React.createElement("div", {
-    className: "eyebrow"
-  }, "Explicitly skipped"), React.createElement("div", {
-    className: "card"
-  }, React.createElement("ul", {
-    className: "bullet-list"
-  }, React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "TLT"), " \u2014 17-yr duration too sensitive to Fed error. IEF covers it with less drawdown risk.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "VIXY / UVXY"), " \u2014 constant contango decay. Structural money-loser for retail holders.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "SH / SPXS"), " \u2014 inverse equity erodes via compounding. Cash beats inverse ETFs over any holding period >1 month.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "GDXJ"), " \u2014 too correlated with tech beta. IAU alone delivers the gold exposure cleanly."))))));
-}
+// PicksView is defined in pb-views.js (Phase 4 inc 8); bind it here.
+const PicksView = PBViews.PicksView;
+// HedgesView is defined in pb-views.js (Phase 4 inc 9); bind it here.
+const HedgesView = PBViews.HedgesView;
 function fmtShares(n) {
   if (n == null || !isFinite(n)) return '';
   if (n >= 100) return n.toFixed(0);
@@ -8586,7 +8480,7 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
     infoPanel
   );
 }
-// HotTopicsView is defined in pb-view-hot.js (Phase 4 inc 7 spike); bind it here.
+// HotTopicsView is defined in pb-views.js (Phase 4 inc 7 spike); bind it here.
 const HotTopicsView = PBViews.HotTopicsView;
 function ruleSection(section, cardClass) {
   return [React.createElement("div", {
@@ -12290,7 +12184,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
