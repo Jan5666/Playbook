@@ -16,6 +16,9 @@ node_modules/
 # Subagent-driven-development scratch (progress ledger, briefs, review packages)
 .superpowers/
 
+# Throwaway per-increment slice/verify scripts (never meant to be committed)
+scratchpad/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
