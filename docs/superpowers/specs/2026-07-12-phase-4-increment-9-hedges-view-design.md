@@ -186,3 +186,41 @@ and merges.** This branch is stacked on the unmerged inc-8 branch — Jan decide
 (inc 8 then inc 9, or a combined land). Spec + plan + code are left for Jan; nothing is pushed.
 Scratchpad slice scripts and the render-check harness are throwaway — not committed (`scratchpad/` is
 now gitignored as of `5e0af7b`).
+
+
+## Measured read-out (2026-07-12, on execution)
+
+Executed inline in two tasks; all gates green (22 node suites incl. money gate + deploy-assets, mount
+gate `verify-refresh-behavior` ALL PASSED, scratchpad Hedges-tab render check ALL PASSED).
+
+**Sharpened bucketing economics, measured:**
+- **Wiring cost (the payoff):** `app.js` (remove fn → bind) + `pb-views.js` (splice + register) +
+  **one** `sw.js` cache bump (v56 → v57). **Zero** new harness / static.yml / index.html edits and
+  **zero** new `PBApp` members — even cheaper than inc 8, which had to grow the bridge by 2. `app.js`
+  −46 lines (`+2 / −48`); `pb-views.js` grew ~228 → 280 lines; the bucket now holds **3** components
+  (HotTopicsView + PicksView + HedgesView).
+- **Bridge:** `window.PBApp` stayed at **7** members (verified: the publish line is byte-unchanged and
+  the render check asserted `Object.keys(window.PBApp).length === 7`). `HedgesView` consumed only
+  `PriceBlock` (a subset of inc 8's additions) and reached `DATA` via `window.PB_DATA` directly — so a
+  same-shape view added **nothing** to the grab-bag. This is the cleanest demonstration of the thesis:
+  once a shape's app.js-internals are bridged, each further view of that shape is a pure app.js↔bucket move.
+- **Verification friction:** unchanged from inc 7/8 — no node test possible for a pure-UI view;
+  correctness rode entirely on the browser render check. The eager `viewMap`
+  `createElement(HedgesView,...)` only renders on the active tab, so a broken bind would have been
+  invisible to the mount gate. The Hedges-tab render check (4 `.pos-card` cards; em-dash in the
+  "Explicitly skipped" list intact — `"TLT — 17-yr duration…"`, U+2014 present, no U+FFFD; Picks
+  sibling still rendering 9 cards) is the check that actually proved it, and passed first try — caught
+  nothing, because the verbatim Node slice left the bind correct.
+
+**Conclusion:** the read-out's thesis holds at its strongest — for a view whose shape is already
+bridged, the per-component cost is `app.js` + bucket splice + a one-line sw bump, with **zero** bridge
+growth. The remaining ~17 components amortize against the already-paid bucket wiring; simple same-shape
+views (further `PriceBlock`/`DATA` tabs) are the cheapest, modals (money/alert + portal shape) the next
+real cost step.
+
+**Process note:** unlike inc 8, no scratchpad script was committed — `scratchpad/` was gitignored in
+`5e0af7b` before this increment ran, so the two throwaway scripts (`inc9-extract-hedges.mjs`,
+`inc9-hedges-render.mjs`) stayed out of git automatically. The plan's Task 1 Step 3 grep
+`grep -c "window.PBViews\."` expected 3 but returns 4: the file's line-2 header comment
+(`// Registers window.PBViews.<View> …`) also matches. The three real registrations are the indented
+lines; `grep -c "^  window.PBViews\."` gives the accurate 3. Harmless plan-estimate off-by-one.
