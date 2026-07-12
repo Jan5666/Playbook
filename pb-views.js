@@ -221,7 +221,60 @@ function PicksView(_ref9) {
     }, p.thesis));
   })));
 }
+
+// --- Hedges (moved from app.js, Phase 4 inc 9) ---
+function HedgesView(_ref0) {
+  const { PriceBlock } = window.PBApp;
+  const DATA = window.PB_DATA;
+  let {
+    onOpenDetail
+  } = _ref0;
+  const prices = PBStore.usePricesMap();
+  return React.createElement("div", null, React.createElement("div", {
+    className: "grid grid-2"
+  }, DATA.HEDGES.map(h => {
+    const q = prices['US:' + h.ticker];
+    return React.createElement("div", {
+      key: h.ticker,
+      className: "pos-card",
+      onClick: () => onOpenDetail(h.ticker, 'US')
+    }, React.createElement("div", {
+      className: "pos-head"
+    }, React.createElement("div", {
+      className: "flex-1"
+    }, React.createElement("div", {
+      className: "flex items-center gap-2"
+    }, React.createElement("span", {
+      className: "tkr"
+    }, h.ticker), React.createElement("span", {
+      className: "market-badge"
+    }, h.allocation, "%")), React.createElement("div", {
+      className: "tkr-name"
+    }, h.name))), React.createElement(PriceBlock, {
+      quote: q,
+      size: "lg",
+      market: 'US'
+    }), React.createElement("div", {
+      className: "text-xs text-dim mono mt-2",
+      style: {
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase'
+      }
+    }, h.role), React.createElement("div", {
+      className: "text-sm text-muted mt-2"
+    }, h.rationale));
+  })), React.createElement("div", {
+    className: "mt-6"
+  }, React.createElement("div", {
+    className: "eyebrow"
+  }, "Explicitly skipped"), React.createElement("div", {
+    className: "card"
+  }, React.createElement("ul", {
+    className: "bullet-list"
+  }, React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "TLT"), " \u2014 17-yr duration too sensitive to Fed error. IEF covers it with less drawdown risk.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "VIXY / UVXY"), " \u2014 constant contango decay. Structural money-loser for retail holders.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "SH / SPXS"), " \u2014 inverse equity erodes via compounding. Cash beats inverse ETFs over any holding period >1 month.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "GDXJ"), " \u2014 too correlated with tech beta. IAU alone delivers the gold exposure cleanly."))))));
+}
   window.PBViews = window.PBViews || {};
   window.PBViews.HotTopicsView = HotTopicsView;
   window.PBViews.PicksView = PicksView;
+  window.PBViews.HedgesView = HedgesView;
 })();
