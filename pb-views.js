@@ -1,6 +1,6 @@
-﻿// pb-view-hot.js - HotTopicsView, extracted from app.js (Phase 4 inc 7 spike).
-// Browser-only classic script. Registers window.PBViews.HotTopicsView and reads shared
-// app.js primitives (Icon + helpers) from window.PBApp at render time.
+﻿// pb-views.js - extracted view-component bucket (Phase 4). Browser-only classic script.
+// Registers window.PBViews.<View> and reads shared app.js primitives from window.PBApp
+// at render time (bridge). data.js/PBStore globals are read directly, not via the bridge.
 (function () {
   const { useEffect, useRef } = React; // UMD global; view uses these hooks unqualified
 // ─── Hot Topics ──────────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ const VERIFY_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <script src="/pb-store.js"></script>
 <script src="/pb-content.js"></script>
 <script src="/pb-import.js"></script>
-<script src="/pb-view-hot.js"></script>
+<script src="/pb-views.js"></script>
 <script src="/data.js"></script>
 <script src="/app.js"></script>
 </body></html>`;
