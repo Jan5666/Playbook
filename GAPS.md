@@ -274,3 +274,28 @@ plan (several items below are officially "owned" by that roadmap).*
 - **Old Stooq cookie in GitHub's unreachable-object cache** — history was
   rewritten and force-pushed 2026-06-28; GitHub may retain orphaned commits until
   its GC runs. Accepted for a trivial guest cookie (rotation still on Jan's list).
+
+## 18. stockanalysis.com's symbol API died upstream (added 2026-07-12)
+
+- **What**: every `stockanalysis.com/api/symbol/{s,q}/...` path returns
+  `{"status":404}` as of 2026-07-12 (verified direct AND via every proxy; only
+  `/api/quotes` survives, which has no fundamentals). The site also serves
+  `Access-Control-Allow-Origin: *` again, flipping PR #22's premise back.
+- **Why it matters**: stockanalysis was the only free source for analyst
+  targets, consensus, sector/industry and earnings dates. Those fields are now
+  absent from the stock card (the Yahoo `fundamentals-timeseries` source covers
+  the valuation/statement ratios); the sector self-heal and the Hot Topics
+  US earnings sweep silently return nothing. The Perplexity fallback fills
+  fundamentals only when a key is set.
+- **What was done (2026-07-12)**: the dead endpoints are now probed with ONE
+  direct time-boxed request (`fetchJsonDirect`, 4s abort) instead of the
+  6-proxy cascade — two dead URLs through the chain took ~25s inside the
+  `Promise.all` gating the card's stats render, which was the "missing
+  fundamentals" bug, and hammered shared-proxy rate limits. The probe
+  self-heals if the API returns. Guard: `fundamentals-parse.test.mjs`.
+- **Severity**: **Medium** (feature loss: analyst/sector/earnings enrichment;
+  the core stats block works via Yahoo timeseries).
+- **Fix (single task)**: find a replacement source for analyst targets +
+  earnings dates (candidates: Yahoo `v10 quoteSummary` with a crumb fetched
+  through the Worker; Finnhub/FMP free tiers with a key in Settings), or
+  accept Perplexity as the enrichment path.

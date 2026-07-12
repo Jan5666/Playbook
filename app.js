@@ -775,24 +775,34 @@ function stockAnalysisBase(ticker, market) {
   if (ex) return `https://stockanalysis.com/api/symbol/q/${ex}:${t}`;
   return `https://stockanalysis.com/api/symbol/s/${t}`;
 }
-// stockanalysis.com is CORS-open and (unlike Yahoo's now crumb-gated
-// quoteSummary) returns full fundamentals without auth — for US listings and,
-// via the /q/<EXCHANGE>:<TICKER> path, for JSE/LSE/ASX/EU listings too. This is
-// the only free fundamentals source that still works, since Yahoo's
-// quoteSummary now 401s without a crumb the CORS proxies can't carry.
+// stockanalysis.com's /api/symbol endpoints went dark on 2026-07-12: every
+// path 404s (only the /api/quotes endpoint survives, and it has no
+// fundamentals). The requests stay as a cheap opportunistic probe so the
+// source self-heals if the API ever comes back; analyst targets / sector /
+// earnings date are lost until then (Yahoo's timeseries covers the ratios).
+//
+// One direct, time-boxed request per URL - NEVER the 6-proxy cascade. The
+// site serves Access-Control-Allow-Origin: * again (PR #22's no-CORS
+// observation flipped back), and a dead URL through the proxy chain burned
+// ~25s (two proxies hang until their 8s abort) INSIDE the Promise.all that
+// gates the card's stats render - live timeseries data sat ready at ~400ms
+// while the block showed "Loading...". That render stall was the "missing
+// fundamentals" bug. Any direct-fetch failure mode (404, CORS, network) is
+// sub-second, and the abort timer bounds a hanging edge.
+async function fetchJsonDirect(url, timeoutMs = 4000) {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    const r = await fetch(url, { signal: ctrl ? ctrl.signal : undefined });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_e) {
+    return null;
+  } finally { if (t) clearTimeout(t); }
+}
 async function fetchFundamentalsStockAnalysis(ticker, market) {
   const base = stockAnalysisBase(ticker, market);
-  // Route through the CORS-proxy chain (the same one that serves our quotes,
-  // charts and news), NOT a direct fetch. stockanalysis.com does not send
-  // Access-Control-Allow-Origin for these /api paths, so a direct browser fetch
-  // is blocked by CORS and every fundamentals lookup silently failed (the whole
-  // "Key stats & ratios" block came back empty) — even though prices/charts kept
-  // working because those already go through the proxies.
-  const getJson = async (path) => {
-    const text = await fetchViaProxies(`${base}/${path}`);
-    if (!text) return null;
-    try { return JSON.parse(text); } catch (_e) { return null; }
-  };
+  const getJson = (path) => fetchJsonDirect(`${base}/${path}`);
   let ov = null, st = null;
   try {
     const [ovr, str] = await Promise.all([getJson('overview'), getJson('statistics')]);
@@ -951,13 +961,10 @@ async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
 // tickers into "Other". Returns raw labels; the caller normalises them.
 async function fetchSectorStockAnalysis(ticker) {
   try {
-    // Same CORS story as fetchFundamentalsStockAnalysis: these /api paths send
-    // no Access-Control-Allow-Origin, so a direct browser fetch always fails —
-    // route through the proxy chain like every other stockanalysis call.
-    const text = await fetchViaProxies(`https://stockanalysis.com/api/symbol/s/${encodeURIComponent(String(ticker).toUpperCase())}/overview`);
-    if (!text) return null;
-    let j;
-    try { j = JSON.parse(text); } catch (_e) { return null; }
+    // Direct + time-boxed like fetchFundamentalsStockAnalysis (see the note
+    // there): the API is 404-dead and CORS-open again, so riding the proxy
+    // cascade only burns ~25s and shared-proxy rate limits per lookup.
+    const j = await fetchJsonDirect(`https://stockanalysis.com/api/symbol/s/${encodeURIComponent(String(ticker).toUpperCase())}/overview`);
     const o = j && j.data ? j.data : null;
     if (!o || !Array.isArray(o.infoTable)) return null;
     const sector = o.infoTable.find(x => x.t === 'Sector')?.v || null;

@@ -105,5 +105,30 @@ ok('app.js calls PBCore.parseFundamentalsTimeseries', appSrc.includes('PBCore.pa
 ok('app.js merges via PBCore.mergeFundamentals', appSrc.includes('PBCore.mergeFundamentals('));
 ok('app.js fetches the timeseries endpoint', appSrc.includes('/ws/fundamentals-timeseries/v1/finance/timeseries/'));
 
+// -- Source guard: stockanalysis.com fetchers must fail FAST, never via the --
+// -- proxy cascade. Its /api/symbol paths went 404-dead (2026-07-12) while  --
+// -- serving ACAO:* again, so each proxied lookup burned the whole 6-proxy  --
+// -- chain (~25s, two hung 8s timeouts) INSIDE the Promise.all that gates   --
+// -- the card's stats render - live timeseries data sat ready at ~400ms     --
+// -- while the block showed "Loading...". Direct + abort keeps failure      --
+// -- sub-second and lets the source self-heal if the API ever returns.      --
+const fnBody = (name) => {
+  const start = appSrc.indexOf(`function ${name}(`);
+  if (start < 0) return null;
+  const rest = appSrc.slice(start + 1);
+  const next = rest.search(/\r?\n(?:async )?function /);
+  return next < 0 ? rest : rest.slice(0, next);
+};
+const saFund = fnBody('fetchFundamentalsStockAnalysis');
+const saSector = fnBody('fetchSectorStockAnalysis');
+ok('fetchFundamentalsStockAnalysis exists', !!saFund);
+ok('fetchSectorStockAnalysis exists', !!saSector);
+ok('fetchFundamentalsStockAnalysis does NOT ride the proxy chain', !!saFund && !saFund.includes('fetchViaProxies'));
+ok('fetchSectorStockAnalysis does NOT ride the proxy chain', !!saSector && !saSector.includes('fetchViaProxies'));
+ok('fetchFundamentalsStockAnalysis uses the time-boxed direct fetch', !!saFund && saFund.includes('fetchJsonDirect('));
+ok('fetchSectorStockAnalysis uses the time-boxed direct fetch', !!saSector && saSector.includes('fetchJsonDirect('));
+const directHelper = fnBody('fetchJsonDirect');
+ok('fetchJsonDirect helper exists and aborts on a timer', !!directHelper && directHelper.includes('AbortController') && directHelper.includes('setTimeout'));
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
