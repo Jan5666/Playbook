@@ -764,6 +764,83 @@ function mergeFundamentals(parts) {
   return out;
 }
 
+// ─── stockanalysis.com forecast page-data parser ────────────────────────────
+// Parses the SvelteKit __data.json behind stockanalysis.com's public
+// /forecast/ pages into a PARTIAL fundamentals object carrying only the
+// analyst-consensus fields (the /api/symbol tree that used to supply them went
+// 404-dead on 2026-07-12). Payload nodes use SvelteKit's "devalue" flat-array
+// encoding: a node's `data` is a flat array where objects are key→index maps
+// into that same array, arrays are lists of indices, and -1 means undefined.
+// Targets arrive in the listing's minor units (ZAc rand-cents, GBX pence) and
+// are scaled to natural units here — centDivisor owns that mapping — so they
+// match quote prices and the card's upside math. Pure: unit-tested in
+// backend/test/sa-forecast-parse.test.mjs.
+function devalueNode(data, i, seen) {
+  if (i == null || i === -1 || typeof i !== 'number') return undefined;
+  const v = data[i];
+  if (v === null || typeof v !== 'object') return v;
+  if (!seen) seen = new Set();
+  if (seen.has(i)) return undefined; // cycle guard — malformed payload
+  seen.add(i);
+  let out;
+  if (Array.isArray(v)) out = v.map(x => devalueNode(data, x, seen));
+  else {
+    out = {};
+    for (const k of Object.keys(v)) out[k] = devalueNode(data, v[k], seen);
+  }
+  seen.delete(i);
+  return out;
+}
+function parseSAForecast(json, market) {
+  const nodes = json && Array.isArray(json.nodes) ? json.nodes : null;
+  if (!nodes) return null;
+  let root = null;
+  for (const n of nodes) {
+    if (!n || n.type !== 'data' || !Array.isArray(n.data) || n.data.length === 0) continue;
+    let r;
+    try { r = devalueNode(n.data, 0); } catch (_e) { continue; }
+    if (r && typeof r === 'object' && (r.targets || r.priceTargets)) { root = r; break; }
+  }
+  if (!root) return null;
+  const num = (x) => (typeof x === 'number' && isFinite(x) && x > 0) ? x : null;
+  // Prefer the curated target set (`targets`) — it's what the public forecast
+  // page headlines and the only one with an `updated` date — falling back to
+  // the S&P Global pool (`priceTargets`, source "spg"), which covers listings
+  // the curated set skips (e.g. JSE names).
+  const cur = root.targets && typeof root.targets === 'object' ? root.targets : null;
+  const spg = root.priceTargets && typeof root.priceTargets === 'object' ? root.priceTargets : null;
+  let set = null;
+  if (cur && num(cur.count) && num(cur.average)) {
+    set = { mean: num(cur.average), high: num(cur.high), low: num(cur.low), count: num(cur.count), currency: cur.currency, updated: cur.updated };
+  } else if (spg && num(spg.numPriceTargets) && num(spg.avg)) {
+    set = { mean: num(spg.avg), high: num(spg.high), low: num(spg.low), count: num(spg.numPriceTargets), currency: spg.currency, updated: null };
+  }
+  if (!set) return null;
+  const div = centDivisor(market, set.currency || '') || 1;
+  const scale = (n) => (n != null ? n / div : null);
+  // Ratings consensus ("Buy", "Strong Buy", …) → the recommendationKey
+  // vocabulary the card already styles (rec-buy, rec-strong_buy, …). A pool of
+  // zero analysts is noise, not a consensus.
+  let recommendation = null;
+  const cr = root.currentRatings;
+  if (cr && typeof cr === 'object' && num(cr.count) && typeof cr.consensus === 'string') {
+    const key = cr.consensus.trim().toLowerCase().replace(/\s+/g, '_');
+    if (['strong_buy', 'buy', 'hold', 'sell', 'strong_sell'].indexOf(key) >= 0) recommendation = key;
+  }
+  const updatedMs = set.updated ? Date.parse(set.updated) : NaN;
+  return {
+    targetMean: scale(set.mean),
+    targetHigh: scale(set.high),
+    targetLow: scale(set.low),
+    analystCount: set.count,
+    recommendation,
+    targetUpdated: isFinite(updatedMs) ? updatedMs : null,
+    targetSource: 'stockanalysis.com',
+    fetchedAt: Date.now(),
+    source: 'sa-forecast'
+  };
+}
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
@@ -795,7 +872,8 @@ function mergeFundamentals(parts) {
     parseYahooQuote,
     parseDecimal,
     parseFundamentalsTimeseries,
-    mergeFundamentals
+    mergeFundamentals,
+    parseSAForecast
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the

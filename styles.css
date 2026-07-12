@@ -1353,6 +1353,8 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--text-dim); font-weight: 500;
 }
+/* Source attribution under the analyst targets ("Updated Jul 9 via ...") */
+.analyst-attrib { margin-top: 6px; font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.02em; }
 
 /* Earnings badge */
 .earnings-badge {

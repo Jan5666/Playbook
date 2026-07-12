@@ -293,9 +293,19 @@ plan (several items below are officially "owned" by that roadmap).*
   `Promise.all` gating the card's stats render, which was the "missing
   fundamentals" bug, and hammered shared-proxy rate limits. The probe
   self-heals if the API returns. Guard: `fundamentals-parse.test.mjs`.
-- **Severity**: **Medium** (feature loss: analyst/sector/earnings enrichment;
-  the core stats block works via Yahoo timeseries).
-- **Fix (single task)**: find a replacement source for analyst targets +
-  earnings dates (candidates: Yahoo `v10 quoteSummary` with a crumb fetched
-  through the Worker; Finnhub/FMP free tiers with a key in Settings), or
-  accept Perplexity as the enrichment path.
+- **Update (2026-07-12, later)**: analyst targets + consensus are RESTORED via
+  stockanalysis.com's `/forecast/` SvelteKit page-data (`__data.json`), which
+  still ships the S&P Global consensus (price targets, ratings) even though
+  the API tree is dead. That endpoint sends no ACAO header, so - unlike the
+  dead API probes - it rides the proxy chain, with an outer 12s time-box so it
+  can never re-create the render stall. See
+  `docs/superpowers/specs/2026-07-12-analyst-consensus-targets-design.md`,
+  parser `PBCore.parseSAForecast`, guards in `sa-forecast-parse.test.mjs`.
+- **Severity**: **Low/Medium** (remaining loss: sector/industry self-heal,
+  earnings dates, Hot Topics US earnings sweep; the stats block works via
+  Yahoo timeseries and analyst targets via the forecast page-data).
+- **Fix (single task)**: find a replacement source for sector/industry +
+  earnings dates (candidates: the same `/forecast/`-style page-data for the
+  overview page; Yahoo `v10 quoteSummary` with a crumb fetched through the
+  Worker; Finnhub/FMP free tiers with a key in Settings), or accept
+  Perplexity as the enrichment path.

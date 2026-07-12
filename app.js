@@ -556,6 +556,10 @@ async function fetchFundamentalsYahoo(ticker, market) {
       divisor = centDivisor(market, curr);
       const v = x => (x && typeof x.raw === 'number') ? x.raw : null;
       const pct = x => (x && typeof x.raw === 'number') ? x.raw * 100 : null;
+      // Analyst targets arrive in the quote's own units - pence/cents for
+      // GBp/ZAc listings - like bookValue; scale them to natural units so the
+      // card's upside math against the (already-scaled) quote price is right.
+      const tgt = x => { const n = v(x); return n != null ? n / divisor : null; };
       let earningsDate = null;
       let earningsDateEnd = null;
       const ed = ce?.earnings?.earningsDate;
@@ -599,9 +603,9 @@ async function fetchFundamentalsYahoo(ticker, market) {
         ebitda: v(fd.ebitda),
         mostRecentQuarter: v(ks.mostRecentQuarter) ? v(ks.mostRecentQuarter) * 1000 : null,
         lastFiscalYearEnd: v(ks.lastFiscalYearEnd) ? v(ks.lastFiscalYearEnd) * 1000 : null,
-        targetMean: v(fd.targetMeanPrice),
-        targetHigh: v(fd.targetHighPrice),
-        targetLow: v(fd.targetLowPrice),
+        targetMean: tgt(fd.targetMeanPrice),
+        targetHigh: tgt(fd.targetHighPrice),
+        targetLow: tgt(fd.targetLowPrice),
         recommendation: fd.recommendationKey || null,
         analystCount: v(fd.numberOfAnalystOpinions),
         volume: v(sd.volume) || v(sd.regularMarketVolume),
@@ -778,8 +782,9 @@ function stockAnalysisBase(ticker, market) {
 // stockanalysis.com's /api/symbol endpoints went dark on 2026-07-12: every
 // path 404s (only the /api/quotes endpoint survives, and it has no
 // fundamentals). The requests stay as a cheap opportunistic probe so the
-// source self-heals if the API ever comes back; analyst targets / sector /
-// earnings date are lost until then (Yahoo's timeseries covers the ratios).
+// source self-heals if the API ever comes back. Analyst targets now arrive
+// via the /forecast/ page-data instead (fetchAnalystForecastSA below); sector
+// and earnings date stay lost until then (Yahoo's timeseries covers ratios).
 //
 // One direct, time-boxed request per URL - NEVER the 6-proxy cascade. The
 // site serves Access-Control-Allow-Origin: * again (PR #22's no-CORS
@@ -884,6 +889,34 @@ async function fetchFundamentalsStockAnalysis(ticker, market) {
   const filled = Object.values(result).filter(v => typeof v === 'number' && isFinite(v)).length;
   return filled >= 3 ? result : null;
 }
+// stockanalysis.com's public /forecast/ pages still ship their SvelteKit
+// page-data (__data.json) even though the /api/symbol tree is 404-dead - it
+// carries the S&P Global analyst consensus (price targets + ratings) the dead
+// API used to supply. Unlike /api/symbol this endpoint sends NO
+// Access-Control-Allow-Origin header (verified 2026-07-12 with an explicit
+// Origin request header), so a direct browser fetch can never read it - it
+// HAS to ride the CORS-proxy chain, same as the Yahoo timeseries. The outer
+// Promise.race time-box keeps the lesson of the dead-API stall (see
+// fundamentals-parse.test.mjs): even a pathological proxy-chain crawl cannot
+// hold the card's stats render hostage - worst case the card ships without
+// analyst targets for one TTL cycle, which is exactly the pre-fix behaviour.
+async function fetchAnalystForecastSA(ticker, market) {
+  if (market === 'CRYPTO') return null;
+  const t = encodeURIComponent(String(ticker).toUpperCase());
+  const ex = SA_EXCHANGE[market];
+  const url = ex
+    ? `https://stockanalysis.com/quote/${ex.toLowerCase()}/${t}/forecast/__data.json`
+    : `https://stockanalysis.com/stocks/${t.toLowerCase()}/forecast/__data.json`;
+  const work = (async () => {
+    const text = await fetchViaProxies(url, { timeoutMs: 8000 });
+    if (!text) return null;
+    let data;
+    try { data = JSON.parse(text); } catch (_e) { return null; }
+    return PBCore.parseSAForecast(data, market);
+  })();
+  const timeBox = new Promise(resolve => setTimeout(() => resolve(null), 12000));
+  return Promise.race([work, timeBox]);
+}
 // Yahoo's fundamentals-timeseries API — the endpoint Yahoo's own statistics
 // page reads — is NOT crumb-gated like v10 quoteSummary, so it works keyless
 // through the same CORS-proxy chain that already serves quotes and charts in
@@ -936,20 +969,25 @@ async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
   // fundamentals on either, so it goes straight to quoteSummary.
   const parts = [];
   if (market !== 'CRYPTO') {
-    const [sa, ts] = await Promise.all([
+    const [fcast, sa, ts] = await Promise.all([
+      fetchAnalystForecastSA(ticker, market),
       fetchFundamentalsStockAnalysis(ticker, market),
       fetchFundamentalsYahooTimeseries(ticker, market)
     ]);
+    if (fcast) parts.push(fcast);
     if (sa) parts.push(sa);
     if (ts) parts.push(ts);
   }
   // quoteSummary usually 401s without a crumb, but it's free to try when the
   // primary sources came up empty (and it's the only non-AI crypto source).
-  if (parts.length === 0) {
+  // The forecast part carries only analyst fields, so it doesn't count as
+  // having fundamentals - the stats fallbacks still fire without it.
+  const hasStats = () => parts.some(p => p.source !== 'sa-forecast');
+  if (!hasStats()) {
     const yahoo = await fetchFundamentalsYahoo(ticker, market);
     if (yahoo) parts.push(yahoo);
   }
-  if (parts.length === 0 && perplexityKey) {
+  if (!hasStats() && perplexityKey) {
     const ai = await fetchFundamentalsPerplexity(ticker, market, companyName, perplexityKey);
     if (ai) parts.push(ai);
   }
@@ -9190,6 +9228,11 @@ function FundamentalsBlock(_refFB) {
     (f.targetLow != null && f.targetHigh != null) && React.createElement("div", { className: "analyst-range" },
       React.createElement("span", { className: "analyst-range-label" }, "Range"),
       React.createElement("span", { className: "mono" }, fmt(f.targetLow, market), " – ", fmt(f.targetHigh, market))
+    ),
+    f.targetSource && React.createElement("div", { className: "analyst-attrib" },
+      (f.targetUpdated
+        ? 'Updated ' + new Date(f.targetUpdated).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' via '
+        : 'via ') + f.targetSource
     )
   ) : null;
   const sectorRow = (f.sector || f.industry) ? React.createElement("div", { className: "sector-row" },
