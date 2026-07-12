@@ -155,6 +155,73 @@ function HotTopicsView(_refHT) {
     updated && React.createElement("div", { className: "hot-updated" }, updated)
   );
 }
+
+// --- New picks (moved from app.js, Phase 4 inc 8) ---
+function PicksView(_ref9) {
+  const { PriceBlock, fmt } = window.PBApp;
+  const DATA = window.PB_DATA;
+  let {
+    onOpenDetail
+  } = _ref9;
+  const prices = PBStore.usePricesMap();
+  return React.createElement("div", null, React.createElement("div", {
+    className: "grid grid-2"
+  }, DATA.NEW_PICKS.map(p => {
+    const q = prices['US:' + p.ticker];
+    const upsideNow = q && p.entryPrice ? (p.targetPrice - q.price) / q.price * 100 : null;
+    return React.createElement("div", {
+      key: p.ticker,
+      className: "pos-card",
+      onClick: () => onOpenDetail(p.ticker, 'US')
+    }, React.createElement("div", {
+      className: "pos-head"
+    }, React.createElement("div", {
+      className: "flex-1"
+    }, React.createElement("div", {
+      className: "flex items-center gap-2"
+    }, React.createElement("span", {
+      className: "tkr"
+    }, p.ticker), React.createElement("span", {
+      className: "market-badge"
+    }, p.allocation, "%")), React.createElement("div", {
+      className: "tkr-name"
+    }, p.name, " \xB7 ", p.sector)), React.createElement("span", {
+      className: `pill ${p.conviction === 'HIGH' ? 'pill-buy' : 'pill-hold'}`
+    }, p.conviction)), React.createElement("div", {
+      className: "current-price-label"
+    }, "Current"), React.createElement(PriceBlock, {
+      quote: q,
+      size: "lg",
+      market: 'US'
+    }), React.createElement("div", {
+      className: "kv-row mt-3"
+    }, React.createElement("div", {
+      className: "kv"
+    }, React.createElement("div", {
+      className: "kv-label"
+    }, "Entry"), React.createElement("div", {
+      className: "kv-val"
+    }, fmt(p.entryPrice, 'US'))), React.createElement("div", {
+      className: "kv"
+    }, React.createElement("div", {
+      className: "kv-label"
+    }, "Target"), React.createElement("div", {
+      className: "kv-val"
+    }, fmt(p.targetPrice, 'US'))), React.createElement("div", {
+      className: "kv"
+    }, React.createElement("div", {
+      className: "kv-label"
+    }, "Upside"), React.createElement("div", {
+      className: "kv-val up"
+    }, upsideNow != null ? (upsideNow >= 0 ? '+' : '') + upsideNow.toFixed(0) + '%' : '+' + p.upside + '%'))), React.createElement("div", {
+      className: "text-sm text-muted mt-3",
+      style: {
+        lineHeight: 1.5
+      }
+    }, p.thesis));
+  })));
+}
   window.PBViews = window.PBViews || {};
   window.PBViews.HotTopicsView = HotTopicsView;
+  window.PBViews.PicksView = PicksView;
 })();

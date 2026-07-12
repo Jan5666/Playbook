@@ -7955,68 +7955,8 @@ function HeatmapView(_ref8b) {
     }) : null
   );
 }
-function PicksView(_ref9) {
-  let {
-    onOpenDetail
-  } = _ref9;
-  const prices = PBStore.usePricesMap();
-  return React.createElement("div", null, React.createElement("div", {
-    className: "grid grid-2"
-  }, DATA.NEW_PICKS.map(p => {
-    const q = prices['US:' + p.ticker];
-    const upsideNow = q && p.entryPrice ? (p.targetPrice - q.price) / q.price * 100 : null;
-    return React.createElement("div", {
-      key: p.ticker,
-      className: "pos-card",
-      onClick: () => onOpenDetail(p.ticker, 'US')
-    }, React.createElement("div", {
-      className: "pos-head"
-    }, React.createElement("div", {
-      className: "flex-1"
-    }, React.createElement("div", {
-      className: "flex items-center gap-2"
-    }, React.createElement("span", {
-      className: "tkr"
-    }, p.ticker), React.createElement("span", {
-      className: "market-badge"
-    }, p.allocation, "%")), React.createElement("div", {
-      className: "tkr-name"
-    }, p.name, " \xB7 ", p.sector)), React.createElement("span", {
-      className: `pill ${p.conviction === 'HIGH' ? 'pill-buy' : 'pill-hold'}`
-    }, p.conviction)), React.createElement("div", {
-      className: "current-price-label"
-    }, "Current"), React.createElement(PriceBlock, {
-      quote: q,
-      size: "lg",
-      market: 'US'
-    }), React.createElement("div", {
-      className: "kv-row mt-3"
-    }, React.createElement("div", {
-      className: "kv"
-    }, React.createElement("div", {
-      className: "kv-label"
-    }, "Entry"), React.createElement("div", {
-      className: "kv-val"
-    }, fmt(p.entryPrice, 'US'))), React.createElement("div", {
-      className: "kv"
-    }, React.createElement("div", {
-      className: "kv-label"
-    }, "Target"), React.createElement("div", {
-      className: "kv-val"
-    }, fmt(p.targetPrice, 'US'))), React.createElement("div", {
-      className: "kv"
-    }, React.createElement("div", {
-      className: "kv-label"
-    }, "Upside"), React.createElement("div", {
-      className: "kv-val up"
-    }, upsideNow != null ? (upsideNow >= 0 ? '+' : '') + upsideNow.toFixed(0) + '%' : '+' + p.upside + '%'))), React.createElement("div", {
-      className: "text-sm text-muted mt-3",
-      style: {
-        lineHeight: 1.5
-      }
-    }, p.thesis));
-  })));
-}
+// PicksView is defined in pb-views.js (Phase 4 inc 8); bind it here.
+const PicksView = PBViews.PicksView;
 function HedgesView(_ref0) {
   let {
     onOpenDetail
@@ -8586,7 +8526,7 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
     infoPanel
   );
 }
-// HotTopicsView is defined in pb-view-hot.js (Phase 4 inc 7 spike); bind it here.
+// HotTopicsView is defined in pb-views.js (Phase 4 inc 7 spike); bind it here.
 const HotTopicsView = PBViews.HotTopicsView;
 function ruleSection(section, cardClass) {
   return [React.createElement("div", {
@@ -12290,7 +12230,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
