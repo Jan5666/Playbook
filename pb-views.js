@@ -273,8 +273,112 @@ function HedgesView(_ref0) {
     className: "bullet-list"
   }, React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "TLT"), " \u2014 17-yr duration too sensitive to Fed error. IEF covers it with less drawdown risk.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "VIXY / UVXY"), " \u2014 constant contango decay. Structural money-loser for retail holders.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "SH / SPXS"), " \u2014 inverse equity erodes via compounding. Cash beats inverse ETFs over any holding period >1 month.")), React.createElement("li", null, React.createElement("span", null, React.createElement("strong", null, "GDXJ"), " \u2014 too correlated with tech beta. IAU alone delivers the gold exposure cleanly."))))));
 }
+
+// --- Rules (moved from app.js, Phase 4 inc 10) ---
+function ruleSection(section, cardClass) {
+  return [React.createElement("div", {
+    key: section.id + '-eyebrow',
+    className: "eyebrow"
+  }, section.heading), React.createElement("div", {
+    key: section.id + '-card',
+    className: cardClass
+  }, React.createElement("ul", {
+    className: "bullet-list"
+  }, section.bullets.map((b, i) => React.createElement("li", {
+    key: i
+  }, React.createElement("span", null, b.strong ? React.createElement("strong", null, b.strong) : null, b.text)))))];
+}
+function RulesView() {
+  const RULES = PBContent.RULES;
+  const DATA = window.PB_DATA;
+  const byId = id => RULES.find(s => s.id === id);
+  return React.createElement("div", null, ...ruleSection(byId('trim'), "card mb-4"), ...ruleSection(byId('thesisBreak'), "card mb-4"), React.createElement("div", {
+    className: "eyebrow"
+  }, "Key risks"), React.createElement("div", {
+    className: "grid grid-2 mb-4"
+  }, DATA.RISKS.map((r, i) => React.createElement("div", {
+    key: i,
+    className: "card"
+  }, React.createElement("div", {
+    className: "flex justify-between items-center mb-2",
+    style: {
+      gap: 8
+    }
+  }, React.createElement("div", {
+    className: "font-semibold",
+    style: {
+      fontSize: 14,
+      lineHeight: 1.3
+    }
+  }, r.title), React.createElement("span", {
+    className: `pill ${r.probability === 'HIGH' ? 'pill-danger' : 'pill-warn'}`
+  }, r.probability)), React.createElement("div", {
+    className: "text-sm text-muted"
+  }, r.impact)))), ...ruleSection(byId('saTax'), "card"));
+}
+
+// --- Overview / Thesis (moved from app.js, Phase 4 inc 10) ---
+function OverviewView(_ref1) {
+  const { PriceBlock, THESIS_SNAPSHOT } = window.PBApp;
+  const DATA = window.PB_DATA;
+  const prices = PBStore.usePricesMap();
+  return React.createElement("div", null, React.createElement("div", {
+    className: "grid grid-3"
+  }, DATA.PILLARS.map(p => React.createElement("div", {
+    key: p.num,
+    className: "card"
+  }, React.createElement("div", {
+    className: "mono text-xs text-dim mb-3",
+    style: {
+      letterSpacing: '0.2em'
+    }
+  }, p.num), React.createElement("h3", {
+    className: "serif font-bold mb-2",
+    style: {
+      fontSize: 20,
+      lineHeight: 1.2
+    }
+  }, p.title), React.createElement("p", {
+    className: "text-sm text-muted",
+    style: {
+      lineHeight: 1.6
+    }
+  }, p.body), React.createElement("div", {
+    className: "mono text-xs text-dim mt-3",
+    style: {
+      paddingTop: 12,
+      borderTop: '1px solid var(--border)',
+      letterSpacing: '0.15em',
+      textTransform: 'uppercase'
+    }
+  }, "\u2192 ", p.action)))), React.createElement("div", {
+    className: "mt-6"
+  }, React.createElement("div", {
+    className: "eyebrow"
+  }, "Live snapshot \u2014 key names"), React.createElement("div", {
+    className: "grid grid-4"
+  }, THESIS_SNAPSHOT.map(t => {
+    const q = prices['US:' + t];
+    const h = DATA.HOLDINGS.find(x => x.ticker === t);
+    return React.createElement("div", {
+      key: t,
+      className: "pos-card"
+    }, React.createElement("div", {
+      className: "flex justify-between items-center mb-2"
+    }, React.createElement("span", {
+      className: "tkr-sm"
+    }, t), React.createElement("span", {
+      className: `pill pill-${h?.actionType || 'hold'}`
+    }, h?.action.split(' ')[0] || 'HOLD')), React.createElement(PriceBlock, {
+      quote: q,
+      market: 'US'
+    }));
+  }))));
+}
   window.PBViews = window.PBViews || {};
   window.PBViews.HotTopicsView = HotTopicsView;
   window.PBViews.PicksView = PicksView;
   window.PBViews.HedgesView = HedgesView;
+  window.PBViews.RulesView = RulesView;
+  window.PBViews.OverviewView = OverviewView;
 })();
