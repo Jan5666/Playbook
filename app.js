@@ -4388,40 +4388,9 @@ function SectorWeightRows({ rows, setRows }) {
       "Weights are applied relative to one another, so they needn't add up to exactly 100%.") : null
   );
 }
-// Dedicated "edit just the sector allocation" modal for one instrument, opened
-// from the sector-breakdown popup. Edits the shared pb.sectorWeights map (keyed
-// by MARKET:TICKER) so the change applies to that fund everywhere it's held.
-function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, onSave }) {
-  const [rows, setRows] = useState(() =>
-    Array.isArray(initialWeights) && initialWeights.length
-      ? initialWeights.map(w => ({ sector: w.sector || '', weight: w.weight != null ? String(w.weight) : '' }))
-      : [{ sector: '', weight: '' }]);
-  const panelRef = useRef(null);
-  useSwipeDownToClose(panelRef, onClose);
-  useBodyScrollLock();
-  const save = () => {
-    const clean = rows.map(r => ({ sector: r.sector, weight: parseFloat(r.weight) })).filter(r => r.sector && isFinite(r.weight) && r.weight > 0);
-    onSave(clean.length ? clean : null);
-    onClose();
-  };
-  return React.createElement("div", { className: "modal" },
-    React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
-    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 480 } },
-      React.createElement("div", { className: "modal-handle" }),
-      React.createElement("div", { className: "modal-header" },
-        React.createElement("div", null,
-          React.createElement("div", { className: "modal-title" }, "Sector allocation"),
-          React.createElement("div", { className: "modal-subtitle" }, ticker, name && name !== ticker ? " · " + name : "")),
-        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
-          React.createElement(Icon, { name: "x" }))),
-      React.createElement("div", { className: "modal-body" },
-        React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "Sector breakdown (ETFs & funds)"),
-          React.createElement(SectorWeightRows, { rows: rows, setRows: setRows })),
-        React.createElement("div", { className: "form-actions" },
-          React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
-          React.createElement("button", { className: "btn btn-primary", onClick: save }, "Save allocation")))));
-}
+// SectorAllocationModal moved to pb-modals.js (Phase 4 inc 11). SectorWeightRows stays in
+// app.js (also used by the position editor) and is reached via the PBApp bridge.
+const SectorAllocationModal = PBModals.SectorAllocationModal;
 // ── Donut palettes ──────────────────────────────────────────────────────────
 // The allocation donut offers two colour scales (Settings → Appearance), each
 // generated to exactly N distinct stops so every holding gets its own colour at
@@ -12094,7 +12063,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
