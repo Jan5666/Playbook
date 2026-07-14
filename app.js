@@ -9545,114 +9545,9 @@ function AlertsModal(_ref11) {
     size: 12
   })))))))));
 }
-function ContributionModal({ onClose, onSave, onOpenImport }) {
-  const [flow, setFlow] = useState('deposit'); // 'deposit' | 'withdraw'
-  const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('USD');
-  const [usdLanded, setUsdLanded] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [note, setNote] = useState('');
-  const panelRef = useRef(null);
-  useSwipeDownToClose(panelRef, onClose);
-  useBodyScrollLock();
-  const isWithdraw = flow === 'withdraw';
-  // The "USD landed" field only makes sense for a non-USD deposit funding a USD
-  // account (e.g. ZAR → USD). Hidden otherwise.
-  const showLanded = !isWithdraw && currency !== 'USD';
-  const submit = () => {
-    const a = parseDecimal(amount);
-    if (!isFinite(a) || a <= 0) return;
-    // Withdrawals are stored as negative cash flows so the contribution history
-    // and overall-return maths net them out automatically.
-    onSave(isWithdraw ? -a : a, currency, date, note, showLanded ? usdLanded : '');
-  };
-  const ccy = currency === 'ZAR' ? 'R' : '$';
-  return React.createElement("div", { className: "modal" },
-    React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
-    React.createElement("div", { className: "modal-panel", style: { maxWidth: 520 }, ref: panelRef },
-      React.createElement("div", { className: "modal-handle" }),
-      React.createElement("div", { className: "modal-header" },
-        React.createElement("div", null,
-          React.createElement("div", { className: "modal-title" }, isWithdraw ? "Log withdrawal" : "Log deposit"),
-          React.createElement("div", { className: "modal-subtitle" }, isWithdraw ? "Record cash taken out of your portfolio" : "Record cash deposited from outside your portfolio")
-        ),
-        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
-          React.createElement(Icon, { name: "x" })
-        )
-      ),
-      React.createElement("div", { className: "modal-body" },
-        React.createElement("div", { className: "flow-toggle" },
-          React.createElement("button", {
-            type: "button", className: "flow-toggle-btn" + (!isWithdraw ? " active deposit" : ""),
-            onClick: () => setFlow('deposit')
-          }, React.createElement(Icon, { name: "plus", size: 12 }), "Deposit"),
-          React.createElement("button", {
-            type: "button", className: "flow-toggle-btn" + (isWithdraw ? " active withdraw" : ""),
-            onClick: () => setFlow('withdraw')
-          }, React.createElement(Icon, { name: "minus", size: 12 }), "Withdrawal")
-        ),
-        onOpenImport ? React.createElement("button", {
-          className: "contrib-import-link", type: "button",
-          onClick: () => { onClose(); onOpenImport(); }
-        }, React.createElement(Icon, { name: "download", size: 12 }), "Import deposits & withdrawals from a file or list") : null,
-        React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "Currency"),
-          React.createElement("select", { value: currency, onChange: e => setCurrency(e.target.value) },
-            React.createElement("option", { value: "USD" }, "USD ($)"),
-            React.createElement("option", { value: "ZAR" }, "ZAR (R)"),
-            React.createElement("option", { value: "GBP" }, "GBP (\u00a3)"),
-            React.createElement("option", { value: "AUD" }, "AUD (A$)"),
-            React.createElement("option", { value: "EUR" }, "EUR (\u20ac)")
-          )
-        ),
-        React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, isWithdraw ? "Amount" : "Amount transferred"),
-          React.createElement("div", { className: "input-prefix-wrap" },
-            React.createElement("span", { className: "prefix" }, ccy),
-            React.createElement("input", {
-              type: "text", inputMode: "decimal",
-              autoComplete: "off", autoCorrect: "off", spellCheck: false,
-              placeholder: "0.00", value: amount,
-              onChange: e => setAmount(sanitizeDecimalInput(e.target.value)),
-              autoFocus: true,
-              onKeyDown: e => { if (e.key === 'Enter') submit(); }
-            })
-          )
-        ),
-        showLanded ? React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "USD landed in account"),
-          React.createElement("div", { className: "input-prefix-wrap" },
-            React.createElement("span", { className: "prefix" }, "$"),
-            React.createElement("input", {
-              type: "text", inputMode: "decimal",
-              autoComplete: "off", autoCorrect: "off", spellCheck: false,
-              placeholder: "0.00", value: usdLanded,
-              onChange: e => setUsdLanded(sanitizeDecimalInput(e.target.value)),
-              onKeyDown: e => { if (e.key === 'Enter') submit(); }
-            })
-          ),
-          React.createElement("div", { className: "text-dim", style: { fontSize: 12, marginTop: 6, lineHeight: 1.4 } },
-            "Optional — the dollars that actually arrived after conversion & fees. Locks in the real rate so overall profit compares what you put in to what you hold now.")
-        ) : null,
-        React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "Date"),
-          React.createElement("input", { type: "date", value: date, onChange: e => setDate(e.target.value) })
-        ),
-        React.createElement("div", { className: "form-group" },
-          React.createElement("label", { className: "form-label" }, "Note (optional)"),
-          React.createElement("input", {
-            type: "text", placeholder: "e.g. Monthly DCA, bonus deposit",
-            value: note, onChange: e => setNote(e.target.value), maxLength: 100
-          })
-        ),
-        React.createElement("div", { className: "form-actions" },
-          React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"),
-          React.createElement("button", { className: "btn btn-primary", onClick: submit }, isWithdraw ? "Add withdrawal" : "Add deposit")
-        )
-      )
-    )
-  );
-}
+// ContributionModal moved to pb-modals.js (Phase 4 inc 13). sanitizeDecimalInput stays
+// in app.js (shared decimal-input helper) and is reached via the PBApp bridge.
+const ContributionModal = PBModals.ContributionModal;
 // Import a batch of deposits / withdrawals from pasted text or a CSV/XLSX file.
 // Two stages: paste/drop → an editable review table where each dated amount can
 // be flipped between deposit and withdrawal and re-currencied before committing.
@@ -11930,7 +11825,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
