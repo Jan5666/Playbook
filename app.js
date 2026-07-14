@@ -9548,153 +9548,10 @@ function AlertsModal(_ref11) {
 // ContributionModal moved to pb-modals.js (Phase 4 inc 13). sanitizeDecimalInput stays
 // in app.js (shared decimal-input helper) and is reached via the PBApp bridge.
 const ContributionModal = PBModals.ContributionModal;
-// Import a batch of deposits / withdrawals from pasted text or a CSV/XLSX file.
-// Two stages: paste/drop → an editable review table where each dated amount can
-// be flipped between deposit and withdrawal and re-currencied before committing.
-function ContributionImportModal({ onClose, onImport }) {
-  const [stage, setStage] = useState('input'); // 'input' | 'review'
-  const [rows, setRows] = useState([]);
-  const [pasteText, setPasteText] = useState('');
-  const [parseError, setParseError] = useState('');
-  const [parsing, setParsing] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
-  const [defaultCurrency, setDefaultCurrency] = useState('USD');
-  const fileRef = useRef(null);
-  const panelRef = useRef(null);
-  useSwipeDownToClose(panelRef, () => { if (stage === 'input') onClose(); });
-  useBodyScrollLock();
-
-  const toRows = (flows) => flows.map(f => ({
-    id: uid(),
-    date: f.date || '',
-    amount: f.amount != null ? String(Math.abs(f.amount)) : '',
-    type: ((f.amount != null && f.amount < 0) || f.type === 'withdrawal') ? 'withdrawal' : 'deposit',
-    currency: f.currency || defaultCurrency,
-    note: f.note || '',
-    include: true
-  }));
-  const handleParsed = (flows) => {
-    if (!flows || flows.length === 0) {
-      setParseError("Couldn't find any dated amounts. Paste rows like “2026-01-15, 1000” or “15 Jan 2026, 500, withdrawal”.");
-      return;
-    }
-    setRows(toRows(flows));
-    setStage('review');
-    setParseError('');
-  };
-  const handlePaste = () => {
-    if (!pasteText.trim()) return;
-    setParsing(true); setParseError('');
-    try { handleParsed(parseCashFlowsFromText(pasteText)); }
-    catch (e) { setParseError('Could not parse that text.'); }
-    finally { setParsing(false); }
-  };
-  const handleFiles = async (files) => {
-    const file = files && files[0];
-    if (!file) return;
-    setParsing(true); setParseError('');
-    try { handleParsed(await parseCashFlowFile(file)); }
-    catch (e) { setParseError(e?.message || 'Could not read that file. Try CSV, XLSX, or paste the rows instead.'); }
-    finally { setParsing(false); }
-  };
-
-  const updateRow = (id, patch) => setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
-  const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
-  const rowValid = (r) => r.include && r.date && isFinite(parseDecimal(r.amount)) && parseDecimal(r.amount) > 0;
-  const validRows = rows.filter(rowValid);
-  const sym = (c) => CURRENCY_SYMBOLS[c] || '';
-  const deposits = validRows.filter(r => r.type === 'deposit');
-  const withdrawals = validRows.filter(r => r.type === 'withdrawal');
-
-  const doImport = () => {
-    const entries = validRows.map(r => ({
-      amount: (r.type === 'withdrawal' ? -1 : 1) * Math.abs(parseDecimal(r.amount)),
-      currency: r.currency, date: r.date, note: r.note
-    }));
-    if (entries.length === 0) return;
-    onImport(entries);
-    onClose();
-  };
-
-  const CCYS = ['USD', 'ZAR', 'GBP', 'AUD', 'EUR'];
-  const inputStage = React.createElement(React.Fragment, null,
-    React.createElement("div", { className: "import-market-pick" },
-      React.createElement("div", { className: "form-label" }, "Default currency"),
-      React.createElement("div", { className: "import-bulk-chips" },
-        CCYS.map(c => React.createElement("button", {
-          key: c, type: "button",
-          className: "import-bulk-chip" + (defaultCurrency === c ? " active" : ""),
-          onClick: () => setDefaultCurrency(c)
-        }, c, React.createElement("span", { className: "import-chip-sym" }, CURRENCY_SYMBOLS[c] || '')))),
-      React.createElement("div", { className: "form-help" }, "Applied to any pasted row that doesn't name its own currency — you can change any row in the next step.")),
-    React.createElement("div", {
-      className: "import-drop" + (dragOver ? " over" : ""),
-      onClick: () => fileRef.current && fileRef.current.click(),
-      onDragOver: e => { e.preventDefault(); setDragOver(true); },
-      onDragLeave: () => setDragOver(false),
-      onDrop: e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }
-    },
-      React.createElement(Icon, { name: parsing ? "refresh" : "download", size: 24, className: parsing ? "spin" : "" }),
-      React.createElement("div", { className: "import-drop-title" }, parsing ? "Reading…" : "Drop a CSV or Excel file, or tap to browse"),
-      React.createElement("div", { className: "import-drop-sub" }, "Columns in any order: date · amount · type · currency · note"),
-      React.createElement("input", {
-        ref: fileRef, type: "file", accept: ".csv,.tsv,.txt,.xlsx,.xls", style: { display: 'none' },
-        onChange: e => { handleFiles(e.target.files); e.target.value = ''; }
-      })),
-    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste rows")),
-    React.createElement("textarea", {
-      className: "import-paste", value: pasteText, placeholder: "2026-01-15, 1000, deposit, Monthly DCA\n2026-02-20, 500, withdrawal\n15 Mar 2026, R2 500, deposit",
-      onChange: e => setPasteText(e.target.value), rows: 5
-    }),
-    parseError ? React.createElement("div", { className: "verify-error", style: { marginTop: 10 } }, parseError) : null,
-    React.createElement("div", { className: "form-actions", style: { marginTop: 4 } },
-      React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
-      React.createElement("button", { className: "btn btn-primary", onClick: handlePaste, disabled: parsing || !pasteText.trim() }, parsing ? "Reading…" : "Review")));
-
-  const reviewStage = React.createElement(React.Fragment, null,
-    React.createElement("div", { className: "cfi-summary" },
-      React.createElement("span", null, validRows.length, " of ", rows.length, " ready"),
-      React.createElement("span", { className: "cfi-summary-sep" }, "·"),
-      React.createElement("span", { className: "up" }, deposits.length, " deposit", deposits.length === 1 ? "" : "s"),
-      React.createElement("span", { className: "cfi-summary-sep" }, "·"),
-      React.createElement("span", { className: "down" }, withdrawals.length, " withdrawal", withdrawals.length === 1 ? "" : "s")),
-    React.createElement("div", { className: "cfi-list" },
-      rows.map(r => React.createElement("div", { className: "cfi-row" + (r.include ? "" : " excluded") + (r.include && !rowValid(r) ? " invalid" : ""), key: r.id },
-        React.createElement("div", { className: "cfi-row-head" },
-          React.createElement("button", {
-            className: "cfi-type-toggle " + r.type, type: "button",
-            onClick: () => updateRow(r.id, { type: r.type === 'withdrawal' ? 'deposit' : 'withdrawal' }),
-            title: "Toggle deposit / withdrawal"
-          }, React.createElement(Icon, { name: r.type === 'withdrawal' ? 'minus' : 'plus', size: 11 }), r.type === 'withdrawal' ? 'Out' : 'In'),
-          React.createElement("input", { className: "cfi-date", type: "date", value: r.date, onChange: e => updateRow(r.id, { date: e.target.value }) }),
-          React.createElement("button", { className: "cfi-remove", onClick: () => removeRow(r.id), "aria-label": "Remove" }, React.createElement(Icon, { name: "x", size: 12 }))),
-        React.createElement("div", { className: "cfi-row-body" },
-          React.createElement("div", { className: "cfi-amount-wrap" },
-            React.createElement("span", { className: "cfi-amount-sym" }, sym(r.currency)),
-            React.createElement("input", {
-              className: "cfi-amount", type: "text", inputMode: "decimal", value: r.amount, placeholder: "0.00",
-              onChange: e => updateRow(r.id, { amount: sanitizeDecimalInput(e.target.value) })
-            })),
-          React.createElement("select", { className: "cfi-ccy", value: r.currency, onChange: e => updateRow(r.id, { currency: e.target.value }) },
-            CCYS.map(c => React.createElement("option", { key: c, value: c }, c))),
-          React.createElement("input", { className: "cfi-note", type: "text", value: r.note, placeholder: "Note", maxLength: 100, onChange: e => updateRow(r.id, { note: e.target.value }) })))),
-    ),
-    React.createElement("div", { className: "form-actions" },
-      React.createElement("button", { className: "btn btn-secondary", onClick: () => setStage('input') }, "Back"),
-      React.createElement("button", { className: "btn btn-primary", onClick: doImport, disabled: validRows.length === 0 },
-        "Import ", validRows.length, " ", validRows.length === 1 ? "entry" : "entries")));
-
-  return React.createElement("div", { className: "modal" },
-    React.createElement("div", { className: "modal-backdrop", onClick: () => { if (stage === 'input') onClose(); } }),
-    React.createElement("div", { className: "modal-panel", style: { maxWidth: 520 }, ref: panelRef },
-      React.createElement("div", { className: "modal-handle" }),
-      React.createElement("div", { className: "modal-header" },
-        React.createElement("div", null,
-          React.createElement("div", { className: "modal-title" }, "Import deposits & withdrawals"),
-          React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "Paste a list or drop a file — amounts and dates" : "Check each row, flip deposits/withdrawals, then import")),
-        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))),
-      React.createElement("div", { className: "modal-body" }, stage === 'input' ? inputStage : reviewStage)));
-}
+// ContributionImportModal moved to pb-modals.js (Phase 4 inc 14). uid,
+// parseCashFlowsFromText, parseCashFlowFile stay in app.js and are reached via the
+// PBApp bridge; CURRENCY_SYMBOLS is read from the PBContent global inside the bucket.
+const ContributionImportModal = PBModals.ContributionImportModal;
 function ImportModal({ onClose, onImport, defaultMarket }) {
   const todayISO = new Date().toISOString().slice(0, 10);
   const [stage, setStage] = useState('input'); // 'input' | 'review'
@@ -11825,7 +11682,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
