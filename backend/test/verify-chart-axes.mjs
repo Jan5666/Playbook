@@ -79,6 +79,7 @@ const page = (withDemo) => `<!DOCTYPE html><html lang="en"><head><meta charset="
 <script src="/pb-content.js"></script>
 <script src="/pb-import.js"></script>
 <script src="/pb-views.js"></script>
+<script src="/pb-modals.js"></script>
 <script src="/data.js"></script>
 ${withDemo ? '<script src="/demo-data.js"></script>' : ''}
 <script src="/app.js"></script>
