@@ -137,6 +137,7 @@ test('PBContent.CURRENCY_SYMBOLS agrees with DISPLAY_CURRENCIES', () => {
 // ── Anti-drift source guards: the content must live only in pb-content.js ──────
 import { readFileSync } from 'node:fs';
 const appSrc = readFileSync(new URL('../../app.js', import.meta.url), 'utf8');
+const modSrc = readFileSync(new URL('../../pb-modals.js', import.meta.url), 'utf8');
 
 test('app.js no longer defines the content blocks inline', () => {
   assert.ok(!appSrc.includes('const RIBBON_CATALOG = ['), 'RIBBON_CATALOG not inline');
@@ -161,7 +162,9 @@ test('app.js delegates the content blocks to PBContent', () => {
   assert.ok(appSrc.includes('const RULES = PBContent.RULES'), 'binds RULES');
   assert.ok(appSrc.includes('const SECTOR_ETF = PBContent.SECTOR_ETF'), 'binds SECTOR_ETF');
   assert.ok(appSrc.includes('const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS'), 'binds SECTOR_TREND_WINDOWS');
-  assert.ok(appSrc.includes('const SECTOR_FWD_PE = PBContent.SECTOR_FWD_PE'), 'binds SECTOR_FWD_PE');
+  // SECTOR_FWD_PE's only consumer (FundamentalsBlock -> sectorForwardPE) moved to pb-modals.js
+  // in inc-16, so its PBContent delegation now lives in the bucket — still delegated, not inlined.
+  assert.ok((appSrc + modSrc).includes('const SECTOR_FWD_PE = PBContent.SECTOR_FWD_PE'), 'binds SECTOR_FWD_PE');
   assert.ok(appSrc.includes('const MARKETS = PBContent.MARKETS'), 'binds MARKETS');
   assert.ok(appSrc.includes('const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES'), 'binds DISPLAY_CURRENCIES');
   assert.ok(appSrc.includes('const CURRENCY_SYMBOLS = PBContent.CURRENCY_SYMBOLS'), 'binds CURRENCY_SYMBOLS');
