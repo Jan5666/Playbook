@@ -34,20 +34,33 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
-Rule #3 (money/alert) + rule #5 (backup byte-compat) + the MONEY GATE decide the order:
+Re-verified by reading each modal body — the split is **display/delegate (safe verbatim move)** vs
+**contains money/alert math (characterization test first)**:
 
-1. **`PositionModal`** (~326 lines) — does **inline cost-basis math** -> rule-#3-adjacent. Move is
-   verbatim (no math change), but **write a characterization test pinning cost-basis/payload behavior
-   first**, then move. Uses already-bridged `SectorWeightRows`.
-2. **`ImportModal`** (~612 lines) — **import-matching = MONEY GATE**. Characterization test
-   (import-matching cases) first, then move.
-3. **`SellModal`** (~141) / **`BuyModal`** (~358) / **`AlertsModal`** (~172) — money/alert shape,
-   **rule-#3-GATED: a characterization test pinning current money/alert behavior is REQUIRED before
-   any move.** Do these last, as a deliberate money-tier sub-project.
+**NEXT -> inc-18: `AlertsModal`** (`app.js:8331-8507`, ~176 lines) — **SAFE, near-free.** Displays
+active alerts + triggered history and delegates everything (`onRemoveAlert`, `onClearTriggered`,
+`onRequestPerm`, `onOpenDetail`) — **no `onAddAlert`, no `evalAlert`/`marketOpen`, no money math**
+(alert eval lives in pb-core, untouched). Deps (`Icon`, `fmt`, `timeAgo`, `useSwipeDownToClose`,
+`useBodyScrollLock`, `CURRENCY_SYMBOLS`) are **all already bridged/IIFE-read -> expect 0 new bridge
+members**. At execution just confirm `openChart` is a local closure. Cheapest safe modal left; do it
+like inc-12–14.
 
-There is no remaining "large + safe" modal after Settings — the safe tier is done. Everything left
-touches protected code, so the next real step is **investing in characterization tests**, which also
-*improves* the app (adds coverage) per the no-regression priority.
+**THEN inc-19: `ImportModal`** (`app.js:8508-9119`, ~612 lines) — safe-ish. Display + delegate:
+`parseHoldingsFromText(...)` + `onImport(...)`; the import-matching stays put (pb-import / a stays-put
+helper). Verify no matching logic is inline in the modal, then verbatim move.
+
+**THEN the money tier — characterization test REQUIRED first (rule #3):**
+- **`BuyModal`** (~358) — recomputes **average cost basis** in-body
+  (`(shares*costBasis + n*price)/total`). Pin the averaging + buy payload, then move.
+- **`PositionModal`** (~326) — builds the cost-basis save payload (cost mode / currency /
+  crypto total-vs-per-unit). Pin the payload, then move. Uses already-bridged `SectorWeightRows`.
+- **`SellModal`** (~141) — share-quantity math (`shares * pct`); realized-gain/proceeds happen in the
+  `onSell` mutator (data layer), not the modal. Light characterization test, then move.
+
+**Roadmap correction (2026-07-14):** an earlier version of this file lumped `AlertsModal` into the
+rule-#3-gated tier. On re-reading, Alerts is display + CRUD only (no eval, no money) -> it is a safe
+move, promoted to next. The safe tier is **not** fully exhausted after Settings — Alerts (and likely
+Import) remain safe verbatim moves; only Buy/Position/Sell truly need tests first.
 
 ## The mechanical recipe (turnkey — every increment 15–17 followed this)
 
