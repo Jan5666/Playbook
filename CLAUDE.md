@@ -124,10 +124,12 @@ Adding a **new runtime file** additionally requires ALL of:
   (`GBp`/`GBX`, and bare `GBP` on LSE is treated as pence too) — `centDivisor`
   in pb-core handles it; never hand-divide by 100 elsewhere.
 
-## Current state (2026-07-10)
+## Current state (2026-07-14)
 
-Refactor Phases 0–3 complete; Phase 4 content extraction complete (increments 1–6
-merged). **Next planned work**: first view/modal component split (forces the
-deferred Vite-vs-no-build decision — Jan decides), then Phase 5 (IndexedDB).
-Highest-value quick fixes live at the top of [GAPS.md](GAPS.md) (#1 demo-data.js
-deploy gap, #2 sw.js drift, #3 Worker redeploy).
+Refactor Phases 0-3 complete. **Phase 4 modal/view extraction is in progress** on branch
+`claude/refactor-plan-continuation-fm72ce`; the living roadmap a fresh chat should read to resume is
+**[docs/superpowers/REFACTOR_STATUS.md](docs/superpowers/REFACTOR_STATUS.md)**. Done through
+**inc-17**: views (7-10) + modals (11-17) moved into pb-views.js / pb-modals.js; the `window.PBApp`
+bridge = 31 members; sw `CACHE_NAME` = `playbook-shell-v65`. Next: the rule-#3-gated money/alert
+modals (Sell/Buy/Alerts) - write a characterization test first; then Import/Position. Highest-value
+quick fixes still live at the top of [GAPS.md](GAPS.md).
