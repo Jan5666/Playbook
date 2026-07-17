@@ -841,6 +841,318 @@ function parseSAForecast(json, market) {
   };
 }
 
+// ─── Market rotation math (Rotation tab) ────────────────────────────────────
+// Pure aggregation/classification for the sector-rotation view: given the same
+// constituent rows the heatmap paints ({ticker, sector, m: static cap in
+// local-currency billions, changePct}), estimate where money moved today and
+// whether the day is a net inflow/outflow or an internal rotation. "Flow" here
+// is a price-based proxy (index weight x day move = market-cap delta), NOT
+// observed traded volume - the UI labels it as an estimate. Everything below is
+// deterministic given its inputs (no Date.now(), no globals) so the whole
+// pipeline is node-testable (backend/test/rotation-core.test.mjs).
+
+// Classification thresholds, in percentage points of day change. Exported so
+// the tests pin the boundaries and tuning stays a one-line change.
+const ROTATION_THRESHOLDS = {
+  NET: 0.25,        // |cap-weighted market move| >= NET -> net money in/out
+  FLAT: 0.15,       // |market move| < FLAT counts toward a "quiet" session
+  DISP: 0.50,       // cap-weighted sector dispersion >= DISP -> rotation candidate
+  SIDE: 0.30,       // a sector must move +/-SIDE (with matching deltaCap sign) to anchor a rotation
+  BREADTH_HI: 0.60, // net-down day with breadth above this reads "mixed", not outflow
+  BREADTH_LO: 0.40, // net-up day with breadth below this reads "mixed" (narrow rally)
+  QUIET_DISP: 0.35  // dispersion below this (with a flat market) -> "quiet"
+};
+
+// rows: [{ticker, sector, m, changePct|null}] -> per-sector + whole-market
+// aggregates. Rows without a finite changePct count toward count/weight (the
+// universe size) but are excluded from every price-derived stat (wPct, deltaCap,
+// breadth, top/bottom): a missing quote is "unknown", not "unchanged".
+// deltaCap = sum(m_i * changePct_i / 100) = estimated market-cap delta in the
+// index's local-currency billions; market.deltaCap === sum(sector.deltaCap).
+function aggregateSectorSnapshot(rows) {
+  const bySector = new Map();
+  for (const r of rows || []) {
+    if (!r || !r.sector) continue;
+    let s = bySector.get(r.sector);
+    if (!s) {
+      s = { sector: r.sector, count: 0, quoted: 0, weight: 0, quotedWeight: 0, wSum: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0, top: null, bottom: null };
+      bySector.set(r.sector, s);
+    }
+    const m = isFinite(r.m) && r.m > 0 ? r.m : 0;
+    s.count++; s.weight += m;
+    const pct = r.changePct;
+    if (pct == null || !isFinite(pct)) continue;
+    s.quoted++; s.quotedWeight += m;
+    s.wSum += m * pct;
+    s.deltaCap += m * pct / 100;
+    if (pct > 0) s.adv++; else if (pct < 0) s.dec++; else s.flat++;
+    if (!s.top || pct > s.top.changePct) s.top = { ticker: r.ticker, changePct: pct };
+    if (!s.bottom || pct < s.bottom.changePct) s.bottom = { ticker: r.ticker, changePct: pct };
+  }
+  const sectors = [...bySector.values()].map(s => ({
+    sector: s.sector, count: s.count, quoted: s.quoted, weight: s.weight, quotedWeight: s.quotedWeight,
+    wPct: s.quotedWeight > 0 ? s.wSum / s.quotedWeight : null,
+    deltaCap: s.deltaCap, adv: s.adv, dec: s.dec, flat: s.flat, top: s.top, bottom: s.bottom
+  }));
+  sectors.sort((a, b) => (b.deltaCap - a.deltaCap) || a.sector.localeCompare(b.sector));
+  const market = { count: 0, quoted: 0, totalWeight: 0, quotedWeight: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0 };
+  let mWSum = 0;
+  for (const s of sectors) {
+    market.count += s.count; market.quoted += s.quoted;
+    market.totalWeight += s.weight; market.quotedWeight += s.quotedWeight;
+    market.deltaCap += s.deltaCap; market.adv += s.adv; market.dec += s.dec; market.flat += s.flat;
+    if (s.wPct != null) mWSum += s.wPct * s.quotedWeight;
+  }
+  market.wPct = market.quotedWeight > 0 ? mWSum / market.quotedWeight : null;
+  return { sectors, market };
+}
+
+// snapshot -> plain-language classification of the session. Deterministic;
+// thresholds injectable for tests. "Rotating" requires BOTH real cross-sector
+// dispersion AND a two-sided move (some sector up >= SIDE gaining cap while
+// another is down >= SIDE losing cap) - dispersion alone can just be one
+// runaway sector, which is a narrow move, not a rotation.
+function classifyRotation(snapshot, thresholds) {
+  const T = thresholds || ROTATION_THRESHOLDS;
+  const sectors = (snapshot && snapshot.sectors) || [];
+  const market = (snapshot && snapshot.market) || {};
+  const marketPct = market.wPct != null ? market.wPct : 0;
+  const dirTotal = (market.adv || 0) + (market.dec || 0);
+  const breadthPct = dirTotal === 0 ? 0.5 : market.adv / dirTotal;
+  let varSum = 0, wTot = 0;
+  for (const s of sectors) {
+    if (s.wPct == null || !(s.quotedWeight > 0)) continue;
+    varSum += s.quotedWeight * Math.pow(s.wPct - marketPct, 2);
+    wTot += s.quotedWeight;
+  }
+  const dispersion = wTot > 0 ? Math.sqrt(varSum / wTot) : 0;
+  const net = marketPct >= T.NET ? 'in' : marketPct <= -T.NET ? 'out' : 'flat';
+  const hasUpSide = sectors.some(s => s.wPct != null && s.wPct >= T.SIDE && s.deltaCap > 0);
+  const hasDownSide = sectors.some(s => s.wPct != null && s.wPct <= -T.SIDE && s.deltaCap < 0);
+  const rotating = dispersion >= T.DISP && hasUpSide && hasDownSide;
+  let verdict;
+  if (net === 'flat' && !rotating && Math.abs(marketPct) < T.FLAT && dispersion < T.QUIET_DISP) verdict = 'quiet';
+  else if (net === 'in' && rotating) verdict = 'inflow-rotation';
+  else if (net === 'out' && rotating) verdict = 'outflow-rotation';
+  else if (rotating) verdict = 'rotation';
+  else if (net === 'in') verdict = breadthPct >= T.BREADTH_LO ? 'inflow' : 'mixed';
+  else if (net === 'out') verdict = breadthPct <= T.BREADTH_HI ? 'outflow' : 'mixed';
+  else verdict = 'mixed';
+  const confidence = (market.quoted >= 0.6 * market.count && market.quotedWeight >= 0.6 * market.totalWeight) ? 'high' : 'low';
+  const inflows = sectors.filter(s => s.deltaCap > 0).slice().sort((a, b) => b.deltaCap - a.deltaCap);
+  const outflows = sectors.filter(s => s.deltaCap < 0).slice().sort((a, b) => Math.abs(b.deltaCap) - Math.abs(a.deltaCap));
+  return { verdict, net, rotating, confidence, marketPct, breadthPct, dispersion, inflows, outflows };
+}
+
+// Proportionally allocate today's sector outflow pool onto the inflow pool for
+// the rotation ribbons: flow(out i -> in j) = matched * share_i * share_j. This
+// is a display allocation (who lost cap vs who gained it), not observed order
+// flow. Conservation is exact by construction - sum(flows.amount) === matched
+// (= min(totalIn, totalOut)) - and the view, not this function, drops sub-2%
+// ribbons so persisted/derived totals never drift from the math.
+function pairFlows(sectors) {
+  const ins = (sectors || []).filter(s => s.deltaCap > 0).slice().sort((a, b) => b.deltaCap - a.deltaCap);
+  const outs = (sectors || []).filter(s => s.deltaCap < 0).slice().sort((a, b) => Math.abs(b.deltaCap) - Math.abs(a.deltaCap));
+  const totalIn = ins.reduce((t, s) => t + s.deltaCap, 0);
+  const totalOut = outs.reduce((t, s) => t + Math.abs(s.deltaCap), 0);
+  const matched = Math.min(totalIn, totalOut);
+  const flows = [];
+  if (matched > 0) {
+    for (const o of outs) {
+      for (const i of ins) {
+        flows.push({ from: o.sector, to: i.sector, amount: matched * (Math.abs(o.deltaCap) / totalOut) * (i.deltaCap / totalIn) });
+      }
+    }
+  }
+  return { totalIn, totalOut, matched, net: totalIn - totalOut, flows };
+}
+
+// One intraday fetch leg per sector. US indices with a sector->ETF map get
+// 'etf' mode - one SPDR per sector actually present in THIS index (nasdaq100
+// has 7 sectors, not 11), deduped across alias keys (Financials/Financial
+// Services -> XLF). Everything else gets 'stocks' mode: the top-N constituents
+// by static cap, cap-weighted into a sector line later. Leg weight is the FULL
+// sector cap sum (not just top-N) so the benchmark combine matches index
+// composition. sectorEtf is passed in (PBContent.SECTOR_ETF in the app) so
+// pb-core stays dependency-free.
+function buildRotationFetchPlan(def, opts) {
+  const o = opts || {};
+  const topN = o.topN || 3;
+  const sectorEtf = o.sectorEtf || null;
+  const useEtf = !!(def && def.market === 'US' && sectorEtf);
+  const bySector = new Map();
+  for (const c of (def && def.constituents) || []) {
+    if (!c || !c.s) continue;
+    if (!bySector.has(c.s)) bySector.set(c.s, []);
+    bySector.get(c.s).push(c);
+  }
+  const legs = [];
+  const seenEtf = new Set();
+  for (const [sector, cons] of bySector) {
+    const weight = cons.reduce((t, c) => t + (isFinite(c.m) ? c.m : 0), 0);
+    if (useEtf) {
+      const meta = sectorEtf[sector];
+      if (!meta || !meta.etf) continue;    // unmapped sector: no timeline leg (snapshot still covers it)
+      if (seenEtf.has(meta.etf)) continue; // alias keys collapse to one ETF leg
+      seenEtf.add(meta.etf);
+      legs.push({ key: sector, weight, symbols: [{ ticker: meta.etf, market: 'US', w: 1 }] });
+    } else {
+      const top = cons.slice().sort((a, b) => (b.m || 0) - (a.m || 0)).slice(0, topN);
+      legs.push({ key: sector, weight, symbols: top.map(c => ({ ticker: c.t, market: def.market, w: isFinite(c.m) ? c.m : 0 })) });
+    }
+  }
+  legs.sort((a, b) => b.weight - a.weight);
+  return { mode: useEtf ? 'etf' : 'stocks', legs };
+}
+
+// Align several intraday bar series onto one timestamp grid and express each as
+// cumulative % from its base: prevClose when known (so the line's last value
+// matches the quote's day-% semantics), else the first regular-session bar,
+// else the first bar. Bars a series is missing forward-fill from its last
+// print; a series is null before its first bar (late open / halt) rather than
+// pretending it traded. benchmark = weight-renormalized mean of whichever
+// series are non-null at each point, so names dropping in and out never step
+// the market line.
+function buildIntradaySeries(inputs, opts) {
+  const o = opts || {};
+  let ts;
+  if (Array.isArray(o.grid)) {
+    ts = o.grid;
+  } else {
+    const tsSet = new Set();
+    for (const inp of inputs || []) for (const p of (inp && inp.points) || []) if (p && isFinite(p.t)) tsSet.add(p.t);
+    ts = [...tsSet].sort((a, b) => a - b);
+  }
+  const regularStart = isFinite(o.regularStart) ? o.regularStart : null;
+  const regularEnd = isFinite(o.regularEnd) ? o.regularEnd : null;
+  const sessionAt = ts.map(t => (regularStart != null && t < regularStart) ? 'pre' : (regularEnd != null && t > regularEnd) ? 'post' : 'regular');
+  const series = [];
+  for (const inp of inputs || []) {
+    const pts = ((inp && inp.points) || []).filter(p => p && isFinite(p.t) && isFinite(p.p));
+    let base = (inp && isFinite(inp.prevClose) && inp.prevClose > 0) ? inp.prevClose : null;
+    if (base == null && regularStart != null) { const fr = pts.find(p => p.t >= regularStart); if (fr) base = fr.p; }
+    if (base == null && pts.length) base = pts[0].p;
+    const cum = new Array(ts.length).fill(null);
+    let i = 0, last = null;
+    for (let g = 0; g < ts.length; g++) {
+      while (i < pts.length && pts[i].t <= ts[g]) { last = pts[i].p; i++; }
+      cum[g] = (last != null && base != null && base > 0) ? (last / base - 1) * 100 : null;
+    }
+    series.push({ key: inp.key, weight: isFinite(inp && inp.weight) ? inp.weight : 0, cum });
+  }
+  const benchmark = ts.map((_, g) => {
+    let ws = 0, vs = 0;
+    for (const s of series) {
+      const v = s.cum[g];
+      if (v == null || !(s.weight > 0)) continue;
+      ws += s.weight; vs += s.weight * v;
+    }
+    return ws > 0 ? vs / ws : null;
+  });
+  return { ts, sessionAt, series, benchmark, regularStart, regularEnd };
+}
+
+// plan (buildRotationFetchPlan) + fetched bars (keyed by priceKey) -> one
+// sector line per leg plus the market benchmark, all on one shared grid.
+// 'etf' legs have a single symbol so the sector line IS the ETF's cum series;
+// 'stocks' legs cap-weight their constituents. Legs whose symbols all failed
+// are omitted (the benchmark renormalizes over what's left). activity = rough
+// regular-session dollar-volume share per sector, null-safe because many non-US
+// 5m feeds omit volume - the view hides the bar when null.
+function combineSectorSeries(plan, barsBySymbol) {
+  const legs = (plan && plan.legs) || [];
+  const bars = barsBySymbol || {};
+  let regularStart = null, regularEnd = null;
+  const tsSet = new Set();
+  for (const leg of legs) {
+    for (const sym of leg.symbols) {
+      const b = bars[priceKey(sym.market, sym.ticker)];
+      if (!b || !Array.isArray(b.points)) continue;
+      if (regularStart == null && isFinite(b.regularStart)) regularStart = b.regularStart;
+      if (regularEnd == null && isFinite(b.regularEnd)) regularEnd = b.regularEnd;
+      for (const p of b.points) if (p && isFinite(p.t)) tsSet.add(p.t);
+    }
+  }
+  const ts = [...tsSet].sort((a, b) => a - b);
+  const sectorLines = [];
+  const activity = [];
+  for (const leg of legs) {
+    const inputs = [];
+    let dollarVol = 0, sawVol = false;
+    for (const sym of leg.symbols) {
+      const b = bars[priceKey(sym.market, sym.ticker)];
+      if (!b || !Array.isArray(b.points) || b.points.length === 0) continue;
+      inputs.push({ key: sym.ticker, weight: sym.w, prevClose: b.prevClose, points: b.points });
+      for (const p of b.points) {
+        if (!p || p.v == null || !isFinite(p.v) || !isFinite(p.p)) continue;
+        if (regularStart != null && p.t < regularStart) continue;
+        if (regularEnd != null && p.t > regularEnd) continue;
+        dollarVol += p.v * p.p; sawVol = true;
+      }
+    }
+    if (inputs.length === 0) { activity.push({ key: leg.key, dollarVol: null, share: null }); continue; }
+    const built = buildIntradaySeries(inputs, { grid: ts, regularStart, regularEnd });
+    sectorLines.push({ key: leg.key, weight: leg.weight, cum: built.benchmark });
+    activity.push({ key: leg.key, dollarVol: sawVol ? dollarVol : null, share: null });
+  }
+  const totalVol = activity.reduce((t, a) => t + (a.dollarVol != null ? a.dollarVol : 0), 0);
+  for (const a of activity) a.share = (a.dollarVol != null && totalVol > 0) ? a.dollarVol / totalVol : null;
+  const sessionAt = ts.map(t => (regularStart != null && t < regularStart) ? 'pre' : (regularEnd != null && t > regularEnd) ? 'post' : 'regular');
+  const benchmark = ts.map((_, g) => {
+    let ws = 0, vs = 0;
+    for (const s of sectorLines) {
+      const v = s.cum[g];
+      if (v == null || !(s.weight > 0)) continue;
+      ws += s.weight; vs += s.weight * v;
+    }
+    return ws > 0 ? vs / ws : null;
+  });
+  return { ts, sessionAt, series: sectorLines, benchmark, regularStart, regularEnd, activity };
+}
+
+// Thin a combined-series object for localStorage persistence (the display path
+// keeps the full-resolution object in memory): keep at most maxPoints grid
+// points, ALWAYS including the last one (walk back from the end so the newest
+// print survives), and round values to 2dp. ~48 points x 11 sectors x 9
+// exchanges stays well under 100KB total.
+function downsampleRotationSeries(built, maxPoints) {
+  if (!built || !Array.isArray(built.ts)) return built;
+  const cap = maxPoints || 48;
+  const n = built.ts.length;
+  const step = Math.max(1, Math.ceil(n / cap));
+  const idx = [];
+  for (let i = n - 1; i >= 0; i -= step) idx.push(i);
+  idx.reverse();
+  const r2 = v => v == null ? null : Math.round(v * 100) / 100;
+  return {
+    ts: idx.map(i => built.ts[i]),
+    sessionAt: Array.isArray(built.sessionAt) ? idx.map(i => built.sessionAt[i]) : built.sessionAt,
+    series: (built.series || []).map(s => ({ key: s.key, weight: s.weight, cum: idx.map(i => r2(s.cum[i])) })),
+    benchmark: Array.isArray(built.benchmark) ? idx.map(i => r2(built.benchmark[i])) : built.benchmark,
+    regularStart: built.regularStart, regularEnd: built.regularEnd,
+    activity: built.activity
+  };
+}
+
+// The data-driven sentence under the verdict title (the static titles live in
+// PBContent.ROTATION_COPY so copy edits never touch math). ASCII only.
+function rotationSummary(classified) {
+  if (!classified) return '';
+  const c = classified;
+  const pct = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+  const names = arr => arr.slice(0, 2).map(s => s.sector).join(' and ');
+  const secUp = c.inflows.length, secDown = c.outflows.length;
+  if (c.rotating) {
+    const outN = names(c.outflows), inN = names(c.inflows);
+    const lead = outN && inN ? 'Out of ' + outN + ', into ' + inN + '.' : (outN ? 'Out of ' + outN + '.' : (inN ? 'Into ' + inN + '.' : ''));
+    return (lead + ' Market net ' + pct(c.marketPct) + '.').trim();
+  }
+  if (c.verdict === 'inflow') return secUp + ' of ' + (secUp + secDown) + ' sectors gaining; breadth ' + Math.round(c.breadthPct * 100) + '%. Market ' + pct(c.marketPct) + '.';
+  if (c.verdict === 'outflow') return secDown + ' of ' + (secUp + secDown) + ' sectors losing; breadth ' + Math.round(c.breadthPct * 100) + '%. Market ' + pct(c.marketPct) + '.';
+  if (c.verdict === 'quiet') return 'Little net movement or sector dispersion. Market ' + pct(c.marketPct) + '.';
+  return 'No clear direction; breadth ' + Math.round(c.breadthPct * 100) + '%, dispersion ' + c.dispersion.toFixed(2) + 'pp. Market ' + pct(c.marketPct) + '.';
+}
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
@@ -873,7 +1185,16 @@ function parseSAForecast(json, market) {
     parseDecimal,
     parseFundamentalsTimeseries,
     mergeFundamentals,
-    parseSAForecast
+    parseSAForecast,
+    ROTATION_THRESHOLDS,
+    aggregateSectorSnapshot,
+    classifyRotation,
+    pairFlows,
+    buildRotationFetchPlan,
+    buildIntradaySeries,
+    combineSectorSeries,
+    downsampleRotationSeries,
+    rotationSummary
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the

@@ -779,11 +779,68 @@
     // until the user toggled ranges; now it self-heals like the live prices do.
     return (await sweep()) || (await sweep());
   }
+  // Like parseHistoryResult's 1d branch (same cent-divisor + pre/regular/post
+  // classification) but KEEPS per-bar volume, for the Rotation tab's intraday
+  // sector lines and its dollar-volume activity proxy. parseHistoryResult stays
+  // untouched (its callers don't want the extra field). Volume is a share count,
+  // so it is NOT divided by the pence/cents divisor (only prices are). Cumulative
+  // % is computed downstream from ratios, so the divisor cancels there anyway —
+  // dividing here just keeps prevClose in the same unit as the bars.
+  function parseIntradayResult(result, ticker, market) {
+    if (!result) return null;
+    const ts = result.timestamp;
+    const closes = result?.indicators?.quote?.[0]?.close;
+    if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
+    const vols = result?.indicators?.quote?.[0]?.volume;
+    const meta = result.meta || {};
+    const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
+    const divisor = centDivisor(market, currency);
+    cacheName(market, ticker, meta.shortName || meta.longName);
+    const ctp = meta.currentTradingPeriod || {};
+    const regularStart = ctp.regular?.start ? ctp.regular.start * 1000 : null;
+    const regularEnd = ctp.regular?.end ? ctp.regular.end * 1000 : null;
+    const points = [];
+    for (let i = 0; i < ts.length; i++) {
+      const c = closes[i];
+      if (c == null || !isFinite(c)) continue;
+      const tms = ts[i] * 1000;
+      let session = 'regular';
+      if (regularStart != null && regularEnd != null) {
+        if (tms < regularStart) session = 'pre';
+        else if (tms > regularEnd) session = 'post';
+      }
+      const v = (Array.isArray(vols) && vols[i] != null && isFinite(vols[i])) ? vols[i] : null;
+      points.push({ t: tms, p: c / divisor, v, session });
+    }
+    if (points.length < 2) return null;
+    const prevClose = isFinite(meta.chartPreviousClose) ? meta.chartPreviousClose / divisor : null;
+    return { points, prevClose, regularStart, regularEnd, fetchedAt: Date.now() };
+  }
+  // 5-minute intraday bars for one symbol, for the Rotation tab. Deliberately
+  // hits ONE host per sweep (query1, then query2 only if it comes back empty)
+  // rather than fetchHistory's race-both-hosts pattern: a non-US index fires
+  // ~20-27 of these at once, and racing both hosts would double the burst
+  // through the shared CORS-proxy pool. fetchViaProxies still applies the global
+  // pLimit(8) + in-flight de-dupe.
+  async function fetchIntradayBars(ticker, market) {
+    const sym = yahooSymbol(ticker, market);
+    const path = `/v8/finance/chart/${sym}?interval=5m&range=1d&includePrePost=true`;
+    const sweep = async (host) => {
+      const text = await fetchViaProxies(`https://${host}.finance.yahoo.com${path}`);
+      if (!text) return null;
+      try {
+        const result = JSON.parse(text)?.chart?.result?.[0];
+        return result ? parseIntradayResult(result, ticker, market) : null;
+      } catch (_e) { return null; }
+    };
+    return (await sweep('query1')) || (await sweep('query2'));
+  }
 
   const PBData = {
     configure,
     fetchViaProxies, looksLikeProxyError, orderedProxies,
     fetchQuote, fetchQuoteBatch, fetchQuoteLight, fetchQuoteBatchLight, fetchHistory,
+    parseIntradayResult, fetchIntradayBars,
     parseStooqCsv, stooqSymbol,
     isUnitTrustId, searchUnitTrusts, fetchUnitTrustQuote, fetchUnitTrustHistory,
     fetchIndicatorQuote, fetchIndicatorHistory,

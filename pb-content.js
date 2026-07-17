@@ -220,5 +220,44 @@ const DISPLAY_CURRENCIES = [
 ];
 const CURRENCY_SYMBOLS = { USD: '$', ZAR: 'R', GBP: '\u00a3', AUD: 'A$', EUR: '\u20ac' };
 
-return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS };
+// Rotation tab copy. Verdict titles keyed by classifyRotation()'s verdict; the
+// dynamic detail sentence is built by PBCore.rotationSummary(). Phase labels
+// keyed by marketSession()'s phase. ASCII only (no build step; special glyphs
+// would need \uXXXX escapes).
+const ROTATION_COPY = {
+  verdicts: {
+    inflow: 'Money is flowing into the market',
+    outflow: 'Money is leaving the market',
+    rotation: 'Money is rotating, not leaving',
+    'inflow-rotation': 'Inflows, with rotation underneath',
+    'outflow-rotation': 'Outflows, with rotation underneath',
+    mixed: 'Mixed - no clear direction',
+    quiet: 'Quiet session',
+  },
+  phase: {
+    pre: 'Pre-market',
+    open: 'Market open',
+    post: 'After hours',
+    closed: 'Closed - last session',
+  },
+  method: 'Flow estimate = index weight x day move (market-cap delta). A price-based proxy, not traded volume.',
+};
+// Shortened sector names for the tight flow-diagram blocks and legend chips.
+const ROTATION_SECTOR_SHORT = {
+  'Technology': 'Tech',
+  'Communication Services': 'Comm Svcs',
+  'Consumer Cyclical': 'Cons Cyclical',
+  'Consumer Defensive': 'Cons Defensive',
+  'Financial Services': 'Financials',
+  'Financials': 'Financials',
+  'Healthcare': 'Healthcare',
+  'Industrials': 'Industrials',
+  'Basic Materials': 'Materials',
+  'Materials': 'Materials',
+  'Real Estate': 'Real Estate',
+  'Energy': 'Energy',
+  'Utilities': 'Utilities',
+};
+
+return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS, ROTATION_COPY, ROTATION_SECTOR_SHORT };
 });

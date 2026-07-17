@@ -28,6 +28,7 @@ const BACKUP_SKIP = new Set([
   'pb.fxRates.v1',         // refreshed from network
   'pb.sectorCache.v1',     // sector classifications, refetched
   'pb.heatmap.lastgood.v1',// last-good heatmap snapshot, recomputed
+  'pb.rotation.lastgood.v1',// last-good rotation aggregates + series, recomputed
   'pb.installDismissed.v2',// per-device UI nag state
   'pb.backup.lastSync.v1'  // sync bookkeeping — excluding it avoids a sync loop
 ]);
@@ -2755,7 +2756,7 @@ class ModalBoundary extends React.Component {
 // appended (so an update never hides a new feature), unknown keys are dropped.
 const ALL_TABS = [
   ['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'],
-  ['hot', 'Hot Topics'], ['heatmap', 'Heatmap'], ['tfsa', 'TFSA'], ['picks', 'New picks'],
+  ['hot', 'Hot Topics'], ['heatmap', 'Heatmap'], ['rotation', 'Rotation'], ['tfsa', 'TFSA'], ['picks', 'New picks'],
   ['hedges', 'Hedges'], ['rules', 'Rules'], ['overview', 'Thesis']
 ];
 const ALL_TAB_KEYS = ALL_TABS.map(t => t[0]);
@@ -3436,6 +3437,10 @@ function App() {
       onOpenDetail: openDetail,
       displayCurrency: displayCurrency,
       fxRates: fxRates
+    }),
+    rotation: React.createElement(MarketRotationView, {
+      onOpenDetail: openDetail,
+      toast: toast
     }),
     picks: React.createElement(PicksView, {
       onOpenDetail: openDetail
@@ -7383,10 +7388,14 @@ function HeatmapTreemap(_ref8c) {
 // heatmap and the in-place sector popup, so the popup behaves exactly like the
 // big heatmap without ever going fullscreen.
 function ZoomPanHeatmap(_refZP) {
-  let { rows, loading, onOpenDetail, onOpenSector, lockScroll, stageClass, contentClass } = _refZP;
+  let { rows, loading, onOpenDetail, onOpenSector, lockScroll, stageClass, contentClass, portraitStretch } = _refZP;
   useBodyScrollLock(!!lockScroll);
   const wrapRef = useRef(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
+  // Latest content geometry, mirrored into a ref so commit()'s pan clamp works
+  // against the ACTUAL laid-out size (which can be taller than the stage when
+  // portraitStretch is on) instead of assuming content = stage x zoom.
+  const geomRef = useRef({ w: 0, h: 0, baseH: 0 });
   const [z, setZ] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const zRef = useRef(1);
@@ -7400,8 +7409,16 @@ function ZoomPanHeatmap(_refZP) {
   const MIN = 1, MAX = 5;
   const commit = (nz, x, y) => {
     nz = Math.max(MIN, Math.min(MAX, nz));
-    const el = wrapRef.current;
-    if (el) { const w = el.clientWidth, h = el.clientHeight; x = Math.min(0, Math.max(w - w * nz, x)); y = Math.min(0, Math.max(h - h * nz, y)); }
+    // Clamp the pan to the real content box. Content height is baseH*nz (baseH
+    // may exceed the stage height under portraitStretch), so at zoom 1 there is
+    // still vertical room to pan into — that's what lets you reach the bottom
+    // sectors the fixed-height fullscreen used to clip.
+    const g = geomRef.current;
+    const w = g.w || (wrapRef.current ? wrapRef.current.clientWidth : 0);
+    const h = g.h || (wrapRef.current ? wrapRef.current.clientHeight : 0);
+    const cw = w * nz, ch = (g.baseH || h) * nz;
+    x = Math.min(0, Math.max(w - cw, x));
+    y = Math.min(0, Math.max(h - ch, y));
     nextRef.current = { z: nz, x, y };
     zRef.current = nz; panRef.current = { x, y };
     if (!rafRef.current) rafRef.current = requestAnimationFrame(() => {
@@ -7417,9 +7434,15 @@ function ZoomPanHeatmap(_refZP) {
     // measurement can land mid-transition.
     const raf = requestAnimationFrame(measure);
     window.addEventListener('resize', measure);
+    // visualViewport fires when the mobile browser's retractable toolbar shows/
+    // hides — the fixed overlay's usable height changes then, so re-measure to
+    // keep the treemap sized to what's actually on screen.
+    const vv = window.visualViewport;
+    if (vv) vv.addEventListener('resize', measure);
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', measure);
+      if (vv) vv.removeEventListener('resize', measure);
     };
   }, []);
   useEffect(() => {
@@ -7448,7 +7471,7 @@ function ZoomPanHeatmap(_refZP) {
         const fx = g.mx - g.rect.left, fy = g.my - g.rect.top;
         commit(nz, fx - (fx - g.px) * k, fy - (fy - g.py) * k);
         e.preventDefault();
-      } else if (ptrs.current.size === 1 && drag.current && zRef.current > 1.01) {
+      } else if (ptrs.current.size === 1 && drag.current && (zRef.current > 1.01 || geomRef.current.baseH * zRef.current > geomRef.current.h + 1)) {
         const g = drag.current;
         const dx = e.clientX - g.x, dy = e.clientY - g.y;
         // Until the finger clears the threshold, treat it as a tap, not a pan:
@@ -7493,7 +7516,14 @@ function ZoomPanHeatmap(_refZP) {
   // Suppress tap-throughs that happened during a pan/pinch gesture.
   const handleOpen = (tk, mk) => { if (movedRef.current) return; onOpenDetail && onOpenDetail(tk, mk); };
   const handleSector = onOpenSector ? (name) => { if (movedRef.current) return; onOpenSector(name); } : undefined;
-  const cw = Math.round(stage.w * z), ch = Math.round(stage.h * z);
+  // In portrait fullscreen, lay the map out TALLER than the stage so all the
+  // sectors get legible tiles and the bottom rows stop being clipped to slivers;
+  // the user pans/pinches to explore. Landscape/desktop (and the sector popup,
+  // which passes no stretch) keep the fit-to-stage behaviour.
+  const portrait = stage.w > 0 && stage.h > stage.w;
+  const baseH = (portraitStretch && portraitStretch > 1 && portrait) ? Math.round(stage.h * portraitStretch) : stage.h;
+  geomRef.current = { w: stage.w, h: stage.h, baseH };
+  const cw = Math.round(stage.w * z), ch = Math.round(baseH * z);
   return React.createElement("div", { className: stageClass || "zoompan-stage", ref: wrapRef },
     React.createElement("div", {
       className: contentClass || "zoompan-content",
@@ -7501,8 +7531,8 @@ function ZoomPanHeatmap(_refZP) {
     },
       stage.w > 0 ? React.createElement(HeatmapTreemap, { rows: rows, width: cw, height: ch, onOpenDetail: handleOpen, onOpenSector: handleSector, loading: loading }) : null
     ),
-    z > 1.01 ? React.createElement("div", { className: "zoompan-badge" },
-      React.createElement("span", null, z.toFixed(1) + '×'),
+    (z > 1.01 || pan.y < -1) ? React.createElement("div", { className: "zoompan-badge" },
+      React.createElement("span", null, z > 1.01 ? z.toFixed(1) + '×' : 'Top'),
       React.createElement("button", { className: "zoompan-reset", onClick: reset }, "Reset")
     ) : null
   );
@@ -7521,7 +7551,8 @@ function HeatmapFullscreen(_refFS) {
     ),
     React.createElement(ZoomPanHeatmap, {
       rows: rows, loading: loading, onOpenDetail: onOpenDetail, onOpenSector: onOpenSector,
-      lockScroll: true, stageClass: "heatmap-fs-stage", contentClass: "heatmap-fs-content"
+      lockScroll: true, stageClass: "heatmap-fs-stage", contentClass: "heatmap-fs-content",
+      portraitStretch: 1.5
     })
   );
 }
@@ -7793,6 +7824,8 @@ function HeatmapView(_ref8b) {
 }
 // PicksView is defined in pb-views.js (Phase 4 inc 8); bind it here.
 const PicksView = PBViews.PicksView;
+// MarketRotationView (Rotation tab) is defined in pb-views.js; bind it here.
+const MarketRotationView = PBViews.MarketRotationView;
 // HedgesView is defined in pb-views.js (Phase 4 inc 9); bind it here.
 const HedgesView = PBViews.HedgesView;
 function fmtShares(n) {
@@ -9861,7 +9894,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, useContainerWidth };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
