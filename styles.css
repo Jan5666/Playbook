@@ -1988,6 +1988,15 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .ext-chg { font-size: 11px; font-weight: 600; }
 .ext-chg.up { color: var(--emerald); }
 .ext-chg.down { color: var(--rose); }
+/* FINAL (session-over) reading — the overnight "After close" move. Neutral pill
+   instead of the live amber so it reads as a record of the session, not a live
+   tape; the % keeps its up/down colour. */
+.ext-hours.ext-closed .ext-label {
+  background: color-mix(in srgb, var(--text-dim) 14%, transparent);
+  color: var(--text-muted);
+  border-color: color-mix(in srgb, var(--text-dim) 30%, transparent);
+}
+.daily-col.ext-closed .daily-label { color: var(--text-dim); }
 
 /* Per-symbol market-session badge (refresh-confidence UX). Mirrors .ext-label
    sizing; the dot colour encodes the session phase. */
@@ -2229,6 +2238,26 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   gap: 8px; margin-bottom: 6px;
 }
 .suggestions-head .btn { margin-bottom: 0; }
+/* Sub-headers inside the suggestion strip ("Hot right now" / "For you") */
+.sug-sub {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--text-dim); font-family: var(--mono);
+  margin: 10px 0 6px;
+}
+.sug-sub-flame { color: var(--amber); flex-shrink: 0; }
+/* Hot chips: soft amber accent + the live day-move badge */
+.chip.chip-hot {
+  border-color: color-mix(in srgb, var(--amber) 38%, var(--border));
+  background: color-mix(in srgb, var(--amber) 7%, var(--bg-raised));
+}
+.chip.chip-hot:hover { border-color: color-mix(in srgb, var(--amber) 60%, var(--border)); }
+.chip-pct {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  margin-left: 2px;
+}
+.chip-pct.up { color: var(--emerald); }
+.chip-pct.down { color: var(--rose); }
 
 /* Watchlist list layout */
 .watchlist-list {

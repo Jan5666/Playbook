@@ -154,6 +154,21 @@ Key mechanics:
   reference, which is what makes `React.memo` on leaf rows effective. `App()` itself
   does **not** subscribe to prices; only ~18 leaf consumers do via `usePricesMap()`.
   Result: one sweep ≈ one re-render of subscribers, not ~13 full-tree renders.
+- **Extended-hours quotes**: `PBCore.deriveIntradayExt` turns the 1m intraday chart
+  (fetched on the stale path with `includePrePost`) into the pre/post readout. Two
+  modes: a LIVE session (`extLive:true`, labels "Pre-market"/"After-hours", may
+  assert marketState PRE/POST) and a FINAL reading (`extLive:false`, label "After
+  close") — the post session's last trade vs that day's close, shown while the
+  market is fully closed (overnight/weekend) so the close→open move never vanishes
+  at the post bell. Windows anchor to `meta.tradingPeriods` (the bars' own day)
+  with a day-shifted `currentTradingPeriod` fallback.
+- **Watchlist suggestions**: `PBData.fetchHotStocks` (Yahoo trending + day-gainers/
+  most-actives screeners, best-effort per source) feeds a "Hot right now" chip
+  cluster, cached in `pb.hotStocks.v1` (BACKUP_SKIP, 10-min TTL). `buildSuggestions`
+  excludes everything already held or watched and ranks by market/sector affinity
+  from positions+watchlist plus the ticker-search history (`pb.searchHist.v1`,
+  durable, written by `recordSearchPick` in `TickerSearch`) — recently searched
+  symbols get a decaying boost and surface in the "For you" cluster.
 - **Alert evaluation** is the same state machine in the client and the Worker:
   `PBCore.evaluateAlerts` (fires on waiting→hit transitions only, 5-minute cooldown
   re-arm). The client adapter (`evaluateTriggers`, app.js:1265) additionally drops

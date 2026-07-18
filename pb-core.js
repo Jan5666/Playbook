@@ -564,26 +564,63 @@
     const suspect = matchesSuspect ? s : { price: next.price, at: now };
     return { quote: Object.assign({}, prev, { suspect }), rejected: true };
   }
-  // Derive the live extended-hours (pre/post) quote from an intraday chart result.
+  // Derive the extended-hours (pre/post) quote from an intraday chart result.
   // Yahoo's chart `meta` no longer carries preMarketPrice/postMarketPrice and the
   // v7 quote endpoint that did is now blocked — so the only reliable source is the
-  // intraday bars themselves (fetched with includePrePost). We classify "now"
-  // against the day's trading periods and, when we're actually in pre- or
-  // post-market, take the latest traded close in that session and measure it
-  // against the regular close — exactly the figure Google shows as
-  // "Pre-market" / "After hours". Returns null outside extended hours so the UI
-  // shows nothing during the regular session or when the market is fully closed.
+  // intraday bars themselves (fetched with includePrePost). Two modes come out of
+  // one classification:
+  //  - LIVE (extLive: true): "now" is inside the pre or post window. Latest traded
+  //    close in that session vs the regular close — exactly the figure Google
+  //    shows as "Pre-market" / "After hours".
+  //  - FINAL (extLive: false): the market is fully closed after a post session
+  //    (overnight, weekend, pre-dawn before the next pre-market prints). The post
+  //    session's LAST trade vs that day's close — this keeps "what happened after
+  //    the close" readable the next morning instead of vanishing at the post bell.
+  // Regular hours still return null (the daily change is the live figure), as do
+  // symbols with no genuine ext activity (bars forward-filled at the close).
+  //
+  // Session windows are anchored to meta.tradingPeriods — it describes the
+  // returned bars' OWN day — in preference to currentTradingPeriod, which rolls
+  // to the NEXT session at exchange midnight (a Saturday fetch would look for
+  // Friday's post bars inside Monday's windows and find nothing). When only ctp
+  // exists, its windows are walked back a day at a time until they cover the last
+  // bar (day-length shifts; a DST boundary can skew that fallback by an hour,
+  // which only matters the two weekends a year tradingPeriods is also absent).
   function deriveIntradayExt(result, market, now = Date.now()) {
     const meta = result?.meta;
-    const ctp = meta?.currentTradingPeriod;
     const ts = result?.timestamp;
     const closes = result?.indicators?.quote?.[0]?.close;
-    if (!meta || !ctp || !ctp.regular || !Array.isArray(ts) || !Array.isArray(closes)) return null;
+    if (!meta || !Array.isArray(ts) || !Array.isArray(closes) || !ts.length) return null;
     if (typeof meta.regularMarketPrice !== 'number') return null;
+    const validPeriod = (p) => p && typeof p.start === 'number' && typeof p.end === 'number' ? p : null;
+    // tradingPeriods object form: { pre: [[p]], regular: [[p]], post: [[p]] } with
+    // one inner array per returned day — take the most recent day's windows.
+    let pre = null, regular = null, post = null;
+    const tp = meta.tradingPeriods;
+    if (tp && !Array.isArray(tp) && Array.isArray(tp.regular) && tp.regular.length) {
+      const lastDay = (arr) => (Array.isArray(arr) && arr.length && Array.isArray(arr[arr.length - 1]))
+        ? validPeriod(arr[arr.length - 1][0]) : null;
+      regular = lastDay(tp.regular);
+      pre = lastDay(tp.pre);
+      post = lastDay(tp.post);
+    }
+    if (!regular) {
+      const ctp = meta.currentTradingPeriod;
+      if (!ctp || !validPeriod(ctp.regular)) return null;
+      pre = validPeriod(ctp.pre); regular = validPeriod(ctp.regular); post = validPeriod(ctp.post);
+      const lastBar = ts[ts.length - 1];
+      const DAY = 86400;
+      const shift = (p) => p ? { start: p.start - DAY, end: p.end - DAY } : null;
+      let guard = 0;
+      while (guard++ < 5 && typeof lastBar === 'number' && lastBar < (pre ? pre.start : regular.start)) {
+        pre = shift(pre); regular = shift(regular); post = shift(post);
+      }
+    }
     const nowSec = now / 1000;
-    let kind = null, sess = null;
-    if (ctp.post && nowSec >= ctp.post.start && nowSec < ctp.post.end) { kind = 'post'; sess = ctp.post; }
-    else if (ctp.pre && nowSec >= ctp.pre.start && nowSec < ctp.pre.end) { kind = 'pre'; sess = ctp.pre; }
+    let kind = null, sess = null, live = false;
+    if (post && nowSec >= post.start && nowSec < post.end) { kind = 'post'; sess = post; live = true; }
+    else if (pre && nowSec >= pre.start && nowSec < pre.end) { kind = 'pre'; sess = pre; live = true; }
+    else if (post && nowSec >= post.end) { kind = 'post'; sess = post; live = false; }
     else return null;
     // Latest non-null close inside the active extended session = the live ext
     // price. Yahoo's chart API leaves `volume` null on pre/post minute bars
@@ -594,11 +631,12 @@
     // filled flat at that close.
     let raw = null;      // latest in-window close → the live ext price
     let moved = false;   // any in-window close that differs from the reg close
+    let asOfSec = null;  // timestamp of that latest in-window close
     for (let i = ts.length - 1; i >= 0; i--) {
       const c = closes[i];
       if (c == null || !isFinite(c)) continue;
       if (ts[i] < sess.start || ts[i] >= sess.end) continue;
-      if (raw == null) raw = c;
+      if (raw == null) { raw = c; asOfSec = ts[i]; }
       if (c !== meta.regularMarketPrice) moved = true;
       if (raw != null && moved) break;
     }
@@ -614,13 +652,19 @@
     const extPrice = raw / divisor;
     const regularPrice = meta.regularMarketPrice / divisor;
     if (!(regularPrice > 0) || !(extPrice > 0)) return null;
-    return {
+    const out = {
       extPrice,
       extChange: extPrice - regularPrice,
       extChangePct: (extPrice - regularPrice) / regularPrice * 100,
       extKind: kind,
-      marketState: kind === 'post' ? 'POST' : 'PRE'
+      extLive: live,
+      extAsOf: asOfSec != null ? asOfSec * 1000 : null
     };
+    // Only a LIVE session may assert PRE/POST; the final (session-over) reading
+    // deliberately omits marketState so callers spreading this object never
+    // overwrite the real market state (CLOSED) with a stale session flag.
+    if (live) out.marketState = kind === 'post' ? 'POST' : 'PRE';
+    return out;
   }
   // Convert one Yahoo chart result into the app's normalized quote shape.
   // Returns null if the response shape is unusable so the caller can fall
@@ -672,6 +716,8 @@
       extChange: null,
       extChangePct: null,
       extKind: null,
+      extLive: null,
+      extAsOf: null,
       currency,
       marketState: meta.marketState || 'UNKNOWN',
       shortName: meta.shortName || meta.longName || null,

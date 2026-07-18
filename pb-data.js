@@ -258,7 +258,7 @@
       price, prevClose, change,
       changePct: prevClose > 0 ? (change / prevClose) * 100 : 0,
       yearHigh: null, yearLow: null, dayHigh: null, dayLow: null, volume: null,
-      extPrice: null, extChange: null, extChangePct: null, extKind: null,
+      extPrice: null, extChange: null, extChangePct: null, extKind: null, extLive: null, extAsOf: null,
       currency: 'ZAR',
       marketState: 'CLOSED',     // a unit trust strikes one NAV per day, not live
       shortName: r.Name, longName: r.Name,
@@ -577,8 +577,12 @@
                   extChange: ext ? ext.extChange : null,
                   extChangePct: ext ? ext.extChangePct : null,
                   extKind: ext ? ext.extKind : null,
+                  extLive: ext ? ext.extLive : null,
+                  extAsOf: ext ? ext.extAsOf : null,
                   regularMarketTime: fresh.regularMarketTime || quote.regularMarketTime,
-                  marketState: ext ? ext.marketState : (fresh.marketState || quote.marketState),
+                  // A FINAL (session-over) ext reading carries no marketState — only
+                  // a live pre/post session may override the daily quote's state.
+                  marketState: (ext && ext.marketState) ? ext.marketState : (fresh.marketState || quote.marketState),
                   fetchedAt: Date.now(),
                   source: 'yahoo+intraday'
                 };
@@ -847,11 +851,103 @@
     return (await sweep('query1')) || (await sweep('query2'));
   }
 
+  // ─── Hot stocks (watchlist suggestions) ─────────────────────────────────────
+  // "What's moving right now" for the watchlist's suggestion strip: Yahoo's
+  // trending-tickers feed plus two predefined screeners (day gainers / most
+  // actives), merged and rank-weighted. Every source is best-effort — the proxy
+  // chain flakes and Yahoo occasionally auth-walls the screener endpoint — so
+  // each returns [] on any failure and the merge works with whatever landed.
+  // Symbols are normalised to the app's {ticker, market} shape: trending is the
+  // US region feed, so plain symbols book as US; crypto pairs (BTC-USD) book on
+  // CRYPTO under the bare base symbol (same rule as the ticker search); indices,
+  // futures/FX and exchange-suffixed listings are dropped.
+  function hotSymbolToItem(symbol, name) {
+    const sym = String(symbol || '').trim().toUpperCase();
+    if (!sym || /[\^=\/]/.test(sym)) return null;                 // ^GSPC, ES=F, EURUSD=X
+    const cm = sym.match(/^([A-Z0-9]{2,10})-USD$/);
+    if (cm) return { ticker: cm[1], market: 'CRYPTO', name: name || null };
+    if (sym.includes('.')) return null;                           // ABC.JO / XYZ.L etc.
+    if (!/^[A-Z0-9]{1,7}(-[A-Z])?$/.test(sym)) return null;       // allow BRK-B class shares
+    return { ticker: sym, market: 'US', name: name || null };
+  }
+  async function fetchJsonViaProxies(url, timeoutMs) {
+    const text = await fetchViaProxies(url, { timeoutMs: timeoutMs || 9000 });
+    if (!text) return null;
+    try { return JSON.parse(text); } catch (_e) { return null; }
+  }
+  async function fetchTrendingSymbols(count) {
+    const n = count || 20;
+    for (const host of ['query1', 'query2']) {
+      const data = await fetchJsonViaProxies(`https://${host}.finance.yahoo.com/v1/finance/trending/US?count=${n}`);
+      const quotes = data?.finance?.result?.[0]?.quotes;
+      if (Array.isArray(quotes) && quotes.length) return quotes.map(q => q && q.symbol).filter(Boolean);
+    }
+    return [];
+  }
+  // Predefined-screener rows -> { symbol, name, changePct }. changePct tolerates
+  // both formatted:false (plain number) and the {raw} wrapper Yahoo sometimes
+  // returns anyway.
+  async function fetchScreenerSymbols(scrId, count) {
+    const n = count || 15;
+    for (const host of ['query1', 'query2']) {
+      const url = `https://${host}.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=${encodeURIComponent(scrId)}&count=${n}&formatted=false`;
+      const data = await fetchJsonViaProxies(url);
+      const quotes = data?.finance?.result?.[0]?.quotes;
+      if (Array.isArray(quotes) && quotes.length) {
+        return quotes.map(q => {
+          if (!q || !q.symbol) return null;
+          const rc = q.regularMarketChangePercent;
+          const pct = typeof rc === 'number' ? rc : (rc && typeof rc.raw === 'number' ? rc.raw : null);
+          return { symbol: q.symbol, name: q.shortName || q.longName || null, changePct: pct };
+        }).filter(Boolean);
+      }
+    }
+    return [];
+  }
+  async function fetchHotStocks() {
+    const [trend, gainers, actives] = await Promise.all([
+      fetchTrendingSymbols(20).catch(() => []),
+      fetchScreenerSymbols('day_gainers', 15).catch(() => []),
+      fetchScreenerSymbols('most_actives', 15).catch(() => []),
+    ]);
+    const byKey = new Map();
+    // Weight per source, decayed by list rank; a symbol on several lists sums
+    // its weights, so "trending AND a top gainer" floats to the front.
+    const fold = (list, weight, decay) => {
+      (list || []).forEach((entry, i) => {
+        const isObj = entry != null && typeof entry === 'object';
+        const item = hotSymbolToItem(isObj ? entry.symbol : entry, isObj ? entry.name : null);
+        if (!item) return;
+        const key = priceKey(item.market, item.ticker);
+        const rankBoost = weight * Math.max(0.4, 1 - i * decay);
+        const pct = isObj && typeof entry.changePct === 'number' && isFinite(entry.changePct) ? entry.changePct : null;
+        const ex = byKey.get(key);
+        if (ex) {
+          ex.hotScore += rankBoost;
+          if (ex.name == null && item.name) ex.name = item.name;
+          if (ex.changePct == null && pct != null) ex.changePct = pct;
+        } else {
+          byKey.set(key, { ...item, changePct: pct, hotScore: rankBoost });
+        }
+      });
+    };
+    fold(trend, 3, 0.04);
+    fold(gainers, 2.5, 0.05);
+    fold(actives, 1.5, 0.05);
+    const all = Array.from(byKey.values()).sort((a, b) => b.hotScore - a.hotScore);
+    // Cap crypto so a meme-coin day doesn't crowd out the equity suggestions.
+    let cryptoSeen = 0;
+    const out = all.filter(o => o.market !== 'CRYPTO' || ++cryptoSeen <= 2).slice(0, 24);
+    out.forEach(o => { if (o.name) cacheName(o.market, o.ticker, o.name); });
+    return out;
+  }
+
   const PBData = {
     configure,
     fetchViaProxies, looksLikeProxyError, orderedProxies,
     fetchQuote, fetchQuoteBatch, fetchQuoteLight, fetchQuoteBatchLight, fetchHistory,
     parseIntradayResult, fetchIntradayBars,
+    fetchTrendingSymbols, fetchScreenerSymbols, fetchHotStocks,
     parseStooqCsv, stooqSymbol,
     isUnitTrustId, searchUnitTrusts, fetchUnitTrustQuote, fetchUnitTrustHistory,
     fetchIndicatorQuote, fetchIndicatorHistory,

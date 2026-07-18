@@ -71,5 +71,112 @@ const NOW = Date.UTC(2026, 5, 29, 22, 25, 0); // Mon 18:25 ET → US post-market
   ok('regular-hours now → no ext', deriveIntradayExt(r, 'US', regularNow) == null, '');
 }
 
+// ─── FINAL (session-over) extended-hours readout ─────────────────────────────
+// The overnight/weekend upgrade: after the post session ends the derive now
+// returns the post session's FINAL move (extLive:false) instead of null, so the
+// "move after the close" stays readable until the next session prints. Windows
+// anchor to meta.tradingPeriods (the bars' own day); with only
+// currentTradingPeriod (which rolls to the NEXT day at exchange midnight) the
+// windows are walked back day-by-day until they cover the last bar.
+
+// US session windows (UTC seconds) for a given UTC midnight, EDT offsets.
+function dayPeriods(dayUtcMs) {
+  const sec = Math.floor(dayUtcMs / 1000);
+  return {
+    pre:     { start: sec + 8 * 3600,           end: sec + 13 * 3600 + 1800 },
+    regular: { start: sec + 13 * 3600 + 1800,   end: sec + 20 * 3600 },
+    post:    { start: sec + 20 * 3600,          end: sec + 24 * 3600 },
+  };
+}
+// Chart result with explicit bars + either tradingPeriods (object form) and/or
+// currentTradingPeriod, mirroring Yahoo's includePrePost intraday shape.
+function chartResult(regularMarketPrice, bars, { tradingPeriods, ctp } = {}) {
+  const meta = { regularMarketPrice, currency: 'USD' };
+  if (tradingPeriods) meta.tradingPeriods = {
+    pre: [[tradingPeriods.pre]], regular: [[tradingPeriods.regular]], post: [[tradingPeriods.post]]
+  };
+  if (ctp) meta.currentTradingPeriod = ctp;
+  return { meta, timestamp: bars.map(b => b.t), indicators: { quote: [{ close: bars.map(b => b.c) }] } };
+}
+const MON = Date.UTC(2026, 5, 29);          // Mon 2026-06-29 00:00 UTC
+const TUE = Date.UTC(2026, 5, 30);
+const FRI = Date.UTC(2026, 5, 26);
+const monP = dayPeriods(MON), tueP = dayPeriods(TUE), friP = dayPeriods(FRI);
+const CLOSE = 100;
+// Monday bars: a regular-session close bar, then three post-market trades.
+const monBars = [
+  { t: monP.regular.end - 60, c: CLOSE },
+  { t: monP.post.start + 60,  c: 101.0 },
+  { t: monP.post.start + 300, c: 101.5 },
+  { t: monP.post.start + 900, c: 102.2 },
+];
+
+// 5. Overnight (post ended, pre-dawn) with tradingPeriods for the bars' day and
+//    ctp already rolled to Tuesday — the after-midnight shape. Tue 01:00 ET.
+{
+  const r = chartResult(CLOSE, monBars, { tradingPeriods: monP, ctp: tueP });
+  const now = (TUE / 1000 + 5 * 3600) * 1000;
+  const ext = deriveIntradayExt(r, 'US', now);
+  ok('overnight final post readout appears', ext != null, JSON.stringify(ext));
+  ok('  final ext price = LAST post trade', ext && Math.abs(ext.extPrice - 102.2) < 1e-9, ext && ext.extPrice);
+  ok('  final ext change vs the close', ext && Math.abs(ext.extChange - 2.2) < 1e-9, ext && ext.extChange);
+  ok('  final ext kind = post', ext && ext.extKind === 'post', ext && ext.extKind);
+  ok('  final ext is NOT live', ext && ext.extLive === false, ext && String(ext.extLive));
+  ok('  final ext asOf = last post bar', ext && ext.extAsOf === (monP.post.start + 900) * 1000, ext && ext.extAsOf);
+  ok('  final ext carries NO marketState', ext && !('marketState' in ext), ext && JSON.stringify(Object.keys(ext)));
+}
+
+// 6. Weekend with ONLY currentTradingPeriod (already pointing at Monday): the
+//    day-shift fallback must walk Monday's windows back to Friday's bars.
+{
+  const friBars = [
+    { t: friP.regular.end - 60, c: CLOSE },
+    { t: friP.post.start + 120, c: 98.7 },
+    { t: friP.post.start + 600, c: 99.1 },
+  ];
+  const r = chartResult(CLOSE, friBars, { ctp: monP });
+  const satNoon = (FRI / 1000 + 24 * 3600 + 15 * 3600) * 1000; // Sat 15:00 UTC
+  const ext = deriveIntradayExt(r, 'US', satNoon);
+  ok('weekend (ctp-only) final post readout appears', ext != null, JSON.stringify(ext));
+  ok('  weekend ext price = last Friday post trade', ext && Math.abs(ext.extPrice - 99.1) < 1e-9, ext && ext.extPrice);
+  ok('  weekend ext not live', ext && ext.extLive === false, ext && String(ext.extLive));
+}
+
+// 7. Overnight forward-filled flat (no genuine AH trades) stays suppressed.
+{
+  const flat = [
+    { t: monP.regular.end - 60, c: CLOSE },
+    { t: monP.post.start + 60,  c: CLOSE },
+    { t: monP.post.start + 300, c: CLOSE },
+  ];
+  const r = chartResult(CLOSE, flat, { tradingPeriods: monP, ctp: tueP });
+  const now = (TUE / 1000 + 5 * 3600) * 1000;
+  ok('overnight forward-filled flat stays suppressed', deriveIntradayExt(r, 'US', now) == null, '');
+}
+
+// 8. Live post classified via tradingPeriods (no ctp at all) keeps the live
+//    shape: extLive true + marketState POST.
+{
+  const r = chartResult(CLOSE, monBars, { tradingPeriods: monP });
+  const now = (monP.post.start + 1200) * 1000;
+  const ext = deriveIntradayExt(r, 'US', now);
+  ok('live post via tradingPeriods works', ext != null && ext.extLive === true, JSON.stringify(ext));
+  ok('  live post asserts marketState POST', ext && ext.marketState === 'POST', ext && ext.marketState);
+}
+
+// 9. Regular hours with tradingPeriods → still null (day change is the live figure).
+{
+  const r = chartResult(CLOSE, monBars, { tradingPeriods: monP, ctp: monP });
+  const now = (monP.regular.start + 3600) * 1000;
+  ok('regular hours (tradingPeriods) still no ext', deriveIntradayExt(r, 'US', now) == null, '');
+}
+
+// 10. The original live-path shape now reports extLive:true.
+{
+  const closes = [283.0, 284.5, 285.1, 284.8];
+  const ext = deriveIntradayExt(postResult(281.74, closes, NOW), 'US', NOW);
+  ok('live post (ctp) reports extLive true', ext && ext.extLive === true && ext.marketState === 'POST', JSON.stringify(ext));
+}
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll deriveIntradayExt tests passed');
 process.exit(failures ? 1 : 0);

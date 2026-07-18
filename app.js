@@ -30,6 +30,7 @@ const BACKUP_SKIP = new Set([
   'pb.heatmap.lastgood.v1',// last-good heatmap snapshot, recomputed
   'pb.rotation.lastgood.v1',// last-good rotation aggregates + series, recomputed
   'pb.installDismissed.v2',// per-device UI nag state
+  'pb.hotStocks.v1',       // trending-stock suggestion cache, refetched
   'pb.backup.lastSync.v1'  // sync bookkeeping — excluding it avoids a sync loop
 ]);
 // Installed by useCloudBackup; called (debounced) whenever durable state changes
@@ -480,6 +481,7 @@ PBData.configure({ indicatorCatalog: RIBBON_CATALOG_MAP });
 const fetchQuote = PBData.fetchQuote;
 const fetchQuoteBatch = PBData.fetchQuoteBatch;
 const fetchQuoteBatchLight = PBData.fetchQuoteBatchLight;
+const fetchQuoteLight = PBData.fetchQuoteLight;
 const fetchHistory = PBData.fetchHistory;
 const searchUnitTrusts = PBData.searchUnitTrusts;
 const isUnitTrustId = PBData.isUnitTrustId;
@@ -1525,6 +1527,9 @@ const Icon = _ref => {
       r: "10"
     }), React.createElement("path", {
       d: "m9 12 2 2 4-4"
+    })),
+    flame: React.createElement("g", null, React.createElement("path", {
+      d: "M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"
     })),
     alert: React.createElement("g", null, React.createElement("circle", {
       cx: "12",
@@ -3450,6 +3455,7 @@ function App() {
     }),
     watchlist: React.createElement(WatchlistView, {
       watchlist: watchlist,
+      positions: positions,
       watchlistGroups: watchlistGroups,
       alerts: alerts,
       onAdd: addWatch,
@@ -3851,7 +3857,10 @@ function RefreshControl({ chipState, loading, onRefresh }) {
 // overnight as 'closed'). Renders nothing for CRYPTO (always open).
 const SessionBadge = React.memo(function SessionBadge({ market, quote }) {
   if (market === 'CRYPTO') return null;
-  const ext = quote && (quote.extKind === 'pre' || quote.extKind === 'post') ? quote.extKind : null;
+  // Only a LIVE ext reading may claim the pre/post phase — a FINAL (session
+  // over) after-close quote must not make an overnight card read as "After-hours
+  // live"; the clock kernel correctly reports those as closed.
+  const ext = quote && quote.extLive && (quote.extKind === 'pre' || quote.extKind === 'post') ? quote.extKind : null;
   const { phase, nextOpen } = ext ? { phase: ext, nextOpen: null } : marketSession(market);
   const label = phase === 'pre' ? 'Pre-market'
     : phase === 'post' ? 'After-hours'
@@ -3883,7 +3892,11 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
   const klass = size === 'xl' ? 'price price-xl' : size === 'lg' ? 'price price-lg' : 'price';
   const hasExt = quote.extPrice != null && quote.extChangePct != null;
   const extUp = hasExt && quote.extChangePct >= 0;
-  const extLabel = quote.extKind === 'pre' ? 'Pre-market' : quote.extKind === 'post' ? 'After-hours' : '';
+  // extLive false = the session ended and this is its FINAL reading (the
+  // overnight "move after the close"); label it "After close" so it never
+  // masquerades as a live after-hours tape.
+  const extFinal = hasExt && quote.extLive === false;
+  const extLabel = quote.extKind === 'pre' ? 'Pre-market' : quote.extKind === 'post' ? (extFinal ? 'After close' : 'After-hours') : '';
   const chgAbs = (typeof quote.change === 'number' && isFinite(quote.change)) ? quote.change : null;
   const extChgAbs = (typeof quote.extChange === 'number' && isFinite(quote.extChange)) ? quote.extChange : null;
   const prevClose = (typeof quote.prevClose === 'number' && isFinite(quote.prevClose) && quote.prevClose > 0) ? quote.prevClose : null;
@@ -3920,11 +3933,11 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
         React.createElement("span", { className: "daily-val mono prevclose-val" }, sym + fmtNum(prevClose))
       )
     ),
-    hasExt && React.createElement("div", { className: "daily-divider" }),
+    hasExt && React.createElement("div", { className: "daily-divider" + (extFinal ? " ext-closed" : "") }),
     // Extended-hours column mirrors the "Today" column: the live pre/post price on
     // top, then its move vs the regular close as "+%  ·  +cash" — the same figures
     // Google surfaces as e.g. "After hours 1 235,00 +23,62 (1,95%)".
-    hasExt && React.createElement("div", { className: "daily-col" },
+    hasExt && React.createElement("div", { className: "daily-col" + (extFinal ? " ext-closed" : "") },
       React.createElement("div", { className: "daily-row" },
         React.createElement("span", { className: "daily-label" }, extLabel),
         React.createElement("span", { className: "daily-val mono" }, sym + fmtNum(quote.extPrice))
@@ -3947,7 +3960,7 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
   // hideExt lets a caller (e.g. the watchlist card) lift the chip out of the
   // price block and place it elsewhere so the header price stays right-aligned.
   !showDailyRow && hasExt && !hideExt && React.createElement("div", {
-    className: "ext-hours"
+    className: "ext-hours" + (extFinal ? " ext-closed" : "")
   }, React.createElement("span", {
     className: "ext-label"
   }, extLabel), React.createElement("span", {
@@ -5983,6 +5996,26 @@ function MarketPicker({ value, onChange, disabled, style }) {
   );
 }
 
+// ── Search-pick history ─────────────────────────────────────────────────────
+// Every symbol the user commits from the ticker search (watchlist add, holding
+// add/edit, exact-symbol override) is remembered here as a durable taste
+// signal; the watchlist suggestions read it ("you searched it, you probably
+// want to track it"). Newest first, deduped by market:ticker, capped small.
+// Deliberately NOT in BACKUP_SKIP: it is real user signal, not a re-derivable
+// cache, so it rides along in the cloud backup like other pb.* state.
+const SEARCH_HIST_KEY = 'pb.searchHist.v1';
+const SEARCH_HIST_MAX = 40;
+function readSearchHist() {
+  const arr = LS.get(SEARCH_HIST_KEY, []);
+  return Array.isArray(arr) ? arr : [];
+}
+function recordSearchPick(s) {
+  if (!s || !s.ticker || !s.market) return;
+  const key = priceKey(s.market, s.ticker);
+  const rest = readSearchHist().filter(h => h && h.t && h.m && priceKey(h.m, h.t) !== key);
+  LS.set(SEARCH_HIST_KEY, [{ t: s.ticker, m: s.market, n: s.name || null, at: Date.now() }, ...rest].slice(0, SEARCH_HIST_MAX));
+}
+
 function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnter, disabled }) {
   const [query, setQuery] = useState(value || '');
   const [suggestions, setSuggestions] = useState([]);
@@ -6052,6 +6085,7 @@ function TickerSearch({ value, onChange, market, onMarketChange, onSelect, onEnt
   const selectSuggestion = (s) => {
     justSelected.current = true;
     remoteReqId.current++;
+    recordSearchPick(s);
     setQuery(s.ticker);
     onChange(s.ticker);
     // Respect the account the user explicitly chose. A JSE-listed result is
@@ -6262,44 +6296,151 @@ function watchListIds(w) {
   return [(w && w.listId) || 'default'];
 }
 
-function buildSuggestions(watchlist) {
+// ── Hot stocks (suggestion strip) ───────────────────────────────────────────
+// Live "what's moving right now" candidates from PBData.fetchHotStocks
+// (Yahoo trending + gainers/actives screeners), cached in localStorage so tab
+// flips don't refetch. The cache is volatile/re-derivable (in BACKUP_SKIP).
+// Trending symbols carry no quote data, so the first few names get their
+// day-move topped up with light quotes for the chips' % badge. Everything is
+// best-effort: offline / proxy failures leave the last cached list in place.
+const HOT_STOCKS_KEY = 'pb.hotStocks.v1';
+const HOT_STOCKS_TTL_MS = 10 * 60 * 1000;
+function useHotStocks() {
+  const [cache, setCache] = usePersistedState(HOT_STOCKS_KEY, null);
+  const cacheRef = useRef(cache);
+  useEffect(() => { cacheRef.current = cache; }, [cache]);
+  useEffect(() => {
+    let alive = true;
+    const cur = cacheRef.current;
+    if (cur && Array.isArray(cur.items) && Date.now() - (cur.fetchedAt || 0) < HOT_STOCKS_TTL_MS) return;
+    (async () => {
+      try {
+        const items = await PBData.fetchHotStocks();
+        if (!alive || !items || !items.length) return;
+        const missing = items.slice(0, 10).filter(it => it.changePct == null);
+        if (missing.length) {
+          await poolMap(missing, 4, async (it) => {
+            try {
+              const q = await fetchQuoteLight(it.ticker, it.market);
+              if (q && typeof q.changePct === 'number' && isFinite(q.changePct)) it.changePct = q.changePct;
+            } catch (_e) {}
+          });
+        }
+        if (alive) setCache({ fetchedAt: Date.now(), items });
+      } catch (_e) {}
+    })();
+    return () => { alive = false; };
+  }, []);
+  return (cache && Array.isArray(cache.items)) ? cache.items : [];
+}
+
+// Suggestion builder. Returns { hot, more }:
+//  - hot: live trending/gainer names the user does NOT yet hold or track,
+//    ranked by market heat + personal affinity (chips show their day-move);
+//  - more: the curated per-market lists plus recently-searched symbols,
+//    rescored by the same affinity model.
+// Personalisation signals: markets and sectors of the stocks the user holds
+// (positions) AND follows (watchlist), plus the ticker-search history — a
+// recently searched symbol gets a strong, recency-decayed boost and its sector
+// counts toward the taste profile. Anything already held/watched is excluded.
+function buildSuggestions(watchlist, positions, hotItems) {
   const taken = new Set(watchlist.map(w => priceKey(w.market, w.ticker)));
+  (positions || []).forEach(p => taken.add(priceKey(p.market, p.ticker)));
+  // Canonical sector for a symbol: curated info → heatmap constituents lookup.
+  const sectorOf = (ticker, market, known) => {
+    let sec = known;
+    if (!sec) {
+      const info = DATA.findInfo(ticker, market);
+      sec = info && info.sector;
+    }
+    if (!sec && DATA._sectorLookup) {
+      const hit = DATA._sectorLookup[market + ':' + ticker];
+      if (hit) sec = hit.sector;
+    }
+    if (!sec) return null;
+    const canon = DATA.normalizeSector ? DATA.normalizeSector(sec) : sec;
+    return canon && canon !== 'Other' ? canon : null;
+  };
   const marketCount = {};
-  watchlist.forEach(w => { marketCount[w.market] = (marketCount[w.market] || 0) + 1; });
-  const preferredMarket = Object.entries(marketCount).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   const sectorCount = {};
-  watchlist.forEach(w => {
-    const info = DATA.findInfo(w.ticker, w.market);
-    if (info?.sector) sectorCount[info.sector] = (sectorCount[info.sector] || 0) + 1;
+  const learn = (ticker, market, w) => {
+    marketCount[market] = (marketCount[market] || 0) + w;
+    const sec = sectorOf(ticker, market, null);
+    if (sec) sectorCount[sec] = (sectorCount[sec] || 0) + w;
+  };
+  watchlist.forEach(w => learn(w.ticker, w.market, 1));
+  (positions || []).forEach(p => learn(p.ticker, p.market, 1));
+  const preferredMarket = Object.entries(marketCount).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  // Search history: strong direct boost (half-life ~3 weeks) + sector signal.
+  const hist = readSearchHist();
+  const nowMs = Date.now();
+  const searchBoost = {};
+  hist.forEach(h => {
+    if (!h || !h.t || !h.m) return;
+    const sec = sectorOf(h.t, h.m, null);
+    if (sec) sectorCount[sec] = (sectorCount[sec] || 0) + 0.5;
+    const ageDays = Math.max(0, (nowMs - (h.at || 0)) / 86400000);
+    const key = priceKey(h.m, h.t);
+    searchBoost[key] = Math.max(searchBoost[key] || 0, 6 * Math.pow(0.5, ageDays / 21));
   });
+  const affinity = (p) => {
+    let score = 0;
+    if (preferredMarket && p.market === preferredMarket) score += 4;
+    const sec = sectorOf(p.ticker, p.market, p.sector);
+    if (sec && sectorCount[sec]) score += 2 * Math.min(3, sectorCount[sec]);
+    const sb = searchBoost[priceKey(p.market, p.ticker)];
+    if (sb) score += sb;
+    return score;
+  };
+  // Hot candidates: heat score from the feed + personal affinity on top.
+  const hotScored = [];
+  const hotSeen = new Set();
+  (hotItems || []).forEach(h => {
+    if (!h || !h.ticker || !h.market) return;
+    const key = priceKey(h.market, h.ticker);
+    if (taken.has(key) || hotSeen.has(key)) return;
+    hotSeen.add(key);
+    const name = h.name || cachedName(h.market, h.ticker) || h.ticker;
+    hotScored.push({
+      ticker: h.ticker, market: h.market,
+      name: prettyName(name) || h.ticker,
+      changePct: (typeof h.changePct === 'number' && isFinite(h.changePct)) ? h.changePct : null,
+      hot: true,
+      score: (h.hotScore || 0) + affinity({ ticker: h.ticker, market: h.market })
+    });
+  });
+  hotScored.sort((a, b) => b.score - a.score);
+  const hot = hotScored.slice(0, 6);
+  // Curated + searched-but-never-added candidates fill the "more" row.
   const popular = [];
   DATA.HOLDINGS.forEach(h => popular.push({ ticker: h.ticker, name: h.name, market: 'US', sector: h.sector }));
   DATA.NEW_PICKS.forEach(p => popular.push({ ticker: p.ticker, name: p.name, market: 'US', sector: p.sector }));
   DATA.HEDGES.forEach(h => popular.push({ ticker: h.ticker, name: h.name, market: 'US' }));
+  (DATA.US_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'US' }));
   (DATA.JSE_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'JSE' }));
   (DATA.TFSA_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'TFSA' }));
   (DATA.LSE_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'LSE' }));
   (DATA.ASX_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: 'ASX' }));
   (DATA.EU_SUGGESTIONS || []).forEach(s => popular.push({ ticker: s.ticker, name: s.name, market: s.exchange || 'FRA' }));
-  const dedupe = new Set();
+  hist.forEach(h => { if (h && h.t && h.m) popular.push({ ticker: h.t, name: h.n || h.t, market: h.m }); });
+  const dedupe = new Set(hot.map(s => priceKey(s.market, s.ticker)));
   const scored = [];
   popular.forEach(p => {
     const key = priceKey(p.market, p.ticker);
     if (dedupe.has(key) || taken.has(key)) return;
     dedupe.add(key);
-    let score = 0;
-    if (preferredMarket && p.market === preferredMarket) score += 4;
-    if (p.sector && sectorCount[p.sector]) score += 2 * sectorCount[p.sector];
+    let score = affinity(p);
     if (p.market === 'US') score += 1;
-    scored.push({ ...p, score });
+    scored.push({ ticker: p.ticker, name: p.name, market: p.market, score });
   });
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, 14);
+  return { hot, more: scored.slice(0, Math.max(6, 14 - hot.length)) };
 }
 
 function WatchlistView(_ref8) {
   let {
     watchlist,
+    positions,
     watchlistGroups,
     alerts,
     onAdd,
@@ -6710,7 +6851,8 @@ function WatchlistView(_ref8) {
     setTimeout(() => onRemove(id), 220);
   };
 
-  const suggestions = useMemo(() => buildSuggestions(watchlist), [watchlist]);
+  const hotStocks = useHotStocks();
+  const suggestions = useMemo(() => buildSuggestions(watchlist, positions, hotStocks), [watchlist, positions, hotStocks]);
   const addSuggestion = (s) => {
     const key = priceKey(s.market, s.ticker);
     if (watchlist.some(w => priceKey(w.market, w.ticker) === key)) return;
@@ -6759,14 +6901,15 @@ function WatchlistView(_ref8) {
       const cb = qb && typeof qb.changePct === 'number' && isFinite(qb.changePct) ? qb.changePct : -Infinity;
       return cb - ca;
     });
-    // Pre-market move: rank by the live pre-session % (q.extKind === 'pre').
-    // Only counts a genuine pre-market quote — symbols with no pre move (post /
-    // regular / closed / no data) sink to the bottom, so outside pre-market hours
-    // the option just degrades gracefully rather than scrambling the list.
+    // Pre/post move: rank by whatever extended-hours reading a symbol carries —
+    // the live pre-market % before the open, the live after-hours % in the
+    // evening, or the FINAL overnight "after close" move once the session ends.
+    // Symbols with no ext reading (regular hours / no data / no ext trading)
+    // sink to the bottom, so the option degrades gracefully around the clock.
     else if (sortMode === 'premarket') arr = [...arr].sort((a, b) => {
       const qa = prices[priceKey(a.market, a.ticker)], qb = prices[priceKey(b.market, b.ticker)];
-      const pa = qa && qa.extKind === 'pre' && typeof qa.extChangePct === 'number' && isFinite(qa.extChangePct) ? qa.extChangePct : -Infinity;
-      const pb = qb && qb.extKind === 'pre' && typeof qb.extChangePct === 'number' && isFinite(qb.extChangePct) ? qb.extChangePct : -Infinity;
+      const pa = qa && qa.extKind && typeof qa.extChangePct === 'number' && isFinite(qa.extChangePct) ? qa.extChangePct : -Infinity;
+      const pb = qb && qb.extKind && typeof qb.extChangePct === 'number' && isFinite(qb.extChangePct) ? qb.extChangePct : -Infinity;
       return pb - pa;
     });
     return arr;
@@ -6777,7 +6920,7 @@ function WatchlistView(_ref8) {
   const sortOptions = [
     { id: 'manual', label: reorderEnabled ? 'Manual order' : 'Default order' },
     { id: 'today', label: "Today's move" },
-    { id: 'premarket', label: 'Pre-market move' },
+    { id: 'premarket', label: 'Pre/post move' },
     { id: 'name', label: 'Name A–Z' },
     { id: 'recent', label: 'Recently added' }
   ];
@@ -6990,7 +7133,10 @@ function WatchlistView(_ref8) {
         // of the header price block so the price stays pinned to the right edge.
         const hasExt = q && q.extPrice != null && q.extChangePct != null;
         const extUp = hasExt && q.extChangePct >= 0;
-        const extLabel = q && q.extKind === 'pre' ? 'Pre-market' : q && q.extKind === 'post' ? 'After-hours' : '';
+        // Final (session-over) readings label as "After close" — the overnight
+        // move stays on the card, but never masquerades as a live tape.
+        const extFinal = hasExt && q.extLive === false;
+        const extLabel = q && q.extKind === 'pre' ? 'Pre-market' : q && q.extKind === 'post' ? (extFinal ? 'After close' : 'After-hours') : '';
         const extSym = (MARKET_CURRENCY[w.market] || MARKET_CURRENCY.US).sym;
         const extChgAbs = hasExt && typeof q.extChange === 'number' && isFinite(q.extChange) ? q.extChange : null;
         return React.createElement("div", {
@@ -7045,7 +7191,7 @@ function WatchlistView(_ref8) {
               React.createElement(SessionBadge, { market: w.market, quote: q })),
             // Pre/after-hours readout on its own centered line at the foot of the
             // card so it reads as a secondary detail without crowding the name.
-            hasExt && React.createElement("div", { className: "watch-ext ext-hours" },
+            hasExt && React.createElement("div", { className: "watch-ext ext-hours" + (extFinal ? " ext-closed" : "") },
               React.createElement("span", { className: "ext-label" }, extLabel),
               React.createElement("span", { className: "ext-price mono" }, extSym, fmtNum(q.extPrice)),
               React.createElement("span", { className: `ext-chg mono ${extUp ? 'up' : 'down'}` },
@@ -7118,20 +7264,37 @@ function WatchlistView(_ref8) {
         onClick: () => setShowSuggestions(v => !v),
         'aria-label': showSuggestions ? "Hide suggestions" : "Show suggestions"
       }, showSuggestions ? "Hide" : "Show")),
-    showSuggestions && (suggestions.length === 0 && justAdded.length === 0
+    showSuggestions && (suggestions.hot.length === 0 && suggestions.more.length === 0 && justAdded.length === 0
       ? React.createElement("div", { className: "text-sm text-dim" }, "No more suggestions — you're tracking the popular names already.")
-      : React.createElement("div", { className: "chip-row" },
-          justAdded.map(s => React.createElement("div", {
-            key: 'added:' + priceKey(s.market, s.ticker),
-            className: "chip added"
-          }, React.createElement(Icon, { name: "checkCircle", size: 13 }),
-             " ", s.ticker, React.createElement("span", { className: "chip-sub" }, "Added to watchlist"))),
-          suggestions.map(s => React.createElement("button", {
-            key: priceKey(s.market, s.ticker),
-            className: "chip",
-            onClick: () => addSuggestion(s)
-          }, React.createElement(Icon, { name: "plus", size: 12, className: "chip-plus" }),
-             " ", s.ticker, React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market)))))
+      : React.createElement(React.Fragment, null,
+          justAdded.length > 0 && React.createElement("div", { className: "chip-row" },
+            justAdded.map(s => React.createElement("div", {
+              key: 'added:' + priceKey(s.market, s.ticker),
+              className: "chip added"
+            }, React.createElement(Icon, { name: "checkCircle", size: 13 }),
+               " ", s.ticker, React.createElement("span", { className: "chip-sub" }, "Added to watchlist")))),
+          // Live movers the user doesn't hold/track yet — flame header, and each
+          // chip carries the day's % so "hot" is visible at a glance.
+          suggestions.hot.length > 0 && React.createElement("div", { className: "sug-sub" },
+            React.createElement(Icon, { name: "flame", size: 12, className: "sug-sub-flame" }), "Hot right now"),
+          suggestions.hot.length > 0 && React.createElement("div", { className: "chip-row" },
+            suggestions.hot.map(s => React.createElement("button", {
+              key: priceKey(s.market, s.ticker),
+              className: "chip chip-hot",
+              onClick: () => addSuggestion(s)
+            }, React.createElement(Icon, { name: "plus", size: 12, className: "chip-plus" }),
+               " ", s.ticker,
+               s.changePct != null && React.createElement("span", { className: "chip-pct " + (s.changePct >= 0 ? "up" : "down") },
+                 (s.changePct >= 0 ? "+" : "") + s.changePct.toFixed(1) + "%"),
+               React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market)))),
+          suggestions.more.length > 0 && suggestions.hot.length > 0 && React.createElement("div", { className: "sug-sub" }, "For you"),
+          suggestions.more.length > 0 && React.createElement("div", { className: "chip-row" },
+            suggestions.more.map(s => React.createElement("button", {
+              key: priceKey(s.market, s.ticker),
+              className: "chip",
+              onClick: () => addSuggestion(s)
+            }, React.createElement(Icon, { name: "plus", size: 12, className: "chip-plus" }),
+               " ", s.ticker, React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market))))))
   );
 }
 

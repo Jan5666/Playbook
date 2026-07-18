@@ -33,6 +33,16 @@ const TSLA = {
   extPrice: 405.18, extChange: -6.82, extChangePct: -1.66, extKind: 'pre',
   marketState: 'PRE', fetchedAt: Date.now(),
 };
+// A FINAL (session-over) after-hours reading — the overnight "move after the
+// close" that must stay visible once the post session has ended. extLive:false
+// switches the label to "After close" and applies the muted ext-closed styling.
+const NVDA = {
+  price: 190.14, change: 2.31, changePct: 1.23, prevClose: 187.83,
+  currency: 'USD',
+  extPrice: 194.13, extChange: 3.99, extChangePct: 2.10, extKind: 'post',
+  extLive: false, extAsOf: Date.now() - 10 * 3600 * 1000,
+  marketState: 'CLOSED', fetchedAt: Date.now(),
+};
 
 const SEED = {
   'pb.positions.v2': [
@@ -41,8 +51,9 @@ const SEED = {
   'pb.watchlist.v2': [
     { id: 'w1', ticker: 'MU', market: 'US', name: 'Micron Technology Inc' },
     { id: 'w2', ticker: 'TSLA', market: 'US', name: 'Tesla Inc.' },
+    { id: 'w3', ticker: 'NVDA', market: 'US', name: 'NVIDIA Corporation' },
   ],
-  'pb.prices.v1': { 'US:MU': MU, 'US:TSLA': TSLA },
+  'pb.prices.v1': { 'US:MU': MU, 'US:TSLA': TSLA, 'US:NVDA': NVDA },
 };
 
 const seedJson = JSON.stringify(SEED).replace(/</g, '\\u003c');
@@ -118,7 +129,20 @@ try {
   await cdp(ws, 'Runtime.enable'); await cdp(ws, 'Page.enable');
   await cdp(ws, 'Emulation.setDeviceMetricsOverride', { width: 440, height: 1100, deviceScaleFactor: 2, mobile: true });
 
-  const mounted = await evals(ws, `const dl=Date.now()+12000; while(Date.now()<dl){ const r=document.querySelector('#root'); if(r&&r.children.length>0) return true; await new Promise(r=>setTimeout(r,100)); } return false;`);
+  // The first eval races the page's initial navigation — if devtools attaches
+  // while Chrome is still swapping from about:blank to the verify page, the
+  // in-flight eval dies with "Execution context was destroyed". Retry it: the
+  // navigation only happens once, so a later attempt lands on the real page.
+  let mounted = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      mounted = await evals(ws, `const dl=Date.now()+12000; while(Date.now()<dl){ const r=document.querySelector('#root'); if(r&&r.children.length>0) return true; await new Promise(r=>setTimeout(r,100)); } return false;`);
+      break;
+    } catch (e) {
+      if (!/Execution context was destroyed|Cannot find context/.test(String(e && e.message))) throw e;
+      await sleep(400);
+    }
+  }
   console.log('  app mounted:', mounted);
   await sleep(700);
 
@@ -131,7 +155,7 @@ try {
     for (const el of document.querySelectorAll('.ext-hours')) {
       const label=el.querySelector('.ext-label'); const price=el.querySelector('.ext-price'); const chg=el.querySelector('.ext-chg');
       out.push({ label: label?label.textContent.trim():null, price: price?price.textContent.trim():null,
-                 chg: chg?chg.textContent.trim():null, chgClass: chg?chg.className:null });
+                 chg: chg?chg.textContent.trim():null, chgClass: chg?chg.className:null, cls: el.className });
     }
     return JSON.stringify(out);
   `));
@@ -145,6 +169,12 @@ try {
   ok('watchlist: MU chip colored green (up)', !!muChip && /\bup\b/.test(muChip.chgClass));
   ok('watchlist: TSLA shows Pre-market label', !!tslaChip, tslaChip && tslaChip.label);
   ok('watchlist: TSLA pre-market is red (down) with -cash', !!tslaChip && /\bdown\b/.test(tslaChip.chgClass) && /-\$6\.82/.test(tslaChip.chg), tslaChip && (tslaChip.chg + ' / ' + tslaChip.chgClass));
+  // FINAL (extLive:false) reading survives the session's end as "After close".
+  const nvdaChip = chips.find(c => c.price && c.price.includes('194.13'));
+  ok('watchlist: NVDA final reading shows After close label', !!nvdaChip && nvdaChip.label === 'After close', nvdaChip && nvdaChip.label);
+  ok('watchlist: NVDA final chip carries ext-closed styling', !!nvdaChip && /\bext-closed\b/.test(nvdaChip.cls || ''), nvdaChip && nvdaChip.cls);
+  ok('watchlist: NVDA final chip shows +2.10% and +$3.99', !!nvdaChip && /\+2\.10%/.test(nvdaChip.chg) && /\+\$3\.99/.test(nvdaChip.chg), nvdaChip && nvdaChip.chg);
+  ok('watchlist: NVDA final move still colored green (up)', !!nvdaChip && /\bup\b/.test(nvdaChip.chgClass));
 
   // ── 2. DETAIL CARD (showDailyRow) ───────────────────────────────────────────
   await evals(ws, `const b=document.querySelector('[data-tab="current"]'); if(b) b.click(); return true;`);
