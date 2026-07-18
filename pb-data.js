@@ -17,7 +17,7 @@
   // the destructure is established once. (priceKey is the only one the proxy
   // ladder itself could need; the rest are forward-looking.)
   const { yahooSymbol, centDivisor, parseYahooQuote, buildDailyBars, derivePrevClose,
-          deriveIntradayExt, MARKET_CURRENCY, priceKey, pLimit } = PBCore;
+          deriveIntradayExt, plausiblePriceMove, MARKET_CURRENCY, priceKey, pLimit } = PBCore;
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
   // pb-data never reaches into app.js globals (which would break the Node tests).
@@ -558,28 +558,35 @@
           // (the daily endpoint has no pre/post data); null outside ext hours.
           const ext = result ? deriveIntradayExt(result, market) : null;
           if (fresh && fresh.price > 0) {
+            // Unit-mismatch guard for the splice: parseYahooQuote normalises
+            // `currency` to the filed market, so a divisor disagreement between
+            // the daily and intraday responses is only visible as an
+            // implausible gap between the two prices. Skip the splice rather
+            // than mix pence onto a pounds quote (a ~100x day move).
             if (quote) {
-              // Splice fresher price/change/extended-hours onto the daily quote.
-              quote = {
-                ...quote,
-                price: fresh.price,
-                change: fresh.price - quote.prevClose,
-                changePct: quote.prevClose > 0 ? (fresh.price - quote.prevClose) / quote.prevClose * 100 : 0,
-                dayHigh: fresh.dayHigh || quote.dayHigh,
-                dayLow: fresh.dayLow || quote.dayLow,
-                extPrice: ext ? ext.extPrice : null,
-                extChange: ext ? ext.extChange : null,
-                extChangePct: ext ? ext.extChangePct : null,
-                extKind: ext ? ext.extKind : null,
-                extLive: ext ? ext.extLive : null,
-                extAsOf: ext ? ext.extAsOf : null,
-                regularMarketTime: fresh.regularMarketTime || quote.regularMarketTime,
-                // A FINAL (session-over) ext reading carries no marketState — only
-                // a live pre/post session may override the daily quote's state.
-                marketState: (ext && ext.marketState) ? ext.marketState : (fresh.marketState || quote.marketState),
-                fetchedAt: Date.now(),
-                source: 'yahoo+intraday'
-              };
+              if (plausiblePriceMove(quote.price, fresh.price)) {
+                // Splice fresher price/change/extended-hours onto the daily quote.
+                quote = {
+                  ...quote,
+                  price: fresh.price,
+                  change: fresh.price - quote.prevClose,
+                  changePct: quote.prevClose > 0 ? (fresh.price - quote.prevClose) / quote.prevClose * 100 : 0,
+                  dayHigh: fresh.dayHigh || quote.dayHigh,
+                  dayLow: fresh.dayLow || quote.dayLow,
+                  extPrice: ext ? ext.extPrice : null,
+                  extChange: ext ? ext.extChange : null,
+                  extChangePct: ext ? ext.extChangePct : null,
+                  extKind: ext ? ext.extKind : null,
+                  extLive: ext ? ext.extLive : null,
+                  extAsOf: ext ? ext.extAsOf : null,
+                  regularMarketTime: fresh.regularMarketTime || quote.regularMarketTime,
+                  // A FINAL (session-over) ext reading carries no marketState — only
+                  // a live pre/post session may override the daily quote's state.
+                  marketState: (ext && ext.marketState) ? ext.marketState : (fresh.marketState || quote.marketState),
+                  fetchedAt: Date.now(),
+                  source: 'yahoo+intraday'
+                };
+              } // implausible gap: keep the daily quote untouched
             } else {
               quote = ext ? { ...fresh, ...ext } : fresh;
             }
@@ -724,7 +731,9 @@
     const points = [];
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
-      if (c == null || !isFinite(c)) continue;
+      // Same bar-validity rule as buildDailyBars (pb-core): a zero/negative
+      // close is a data hole, not a price — it would spike any chart it lands in.
+      if (c == null || !isFinite(c) || c <= 0) continue;
       const tms = ts[i] * 1000;
       let session = 'regular';
       if (r === '1d' && regularStart != null && regularEnd != null) {
@@ -806,7 +815,9 @@
     const points = [];
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];
-      if (c == null || !isFinite(c)) continue;
+      // Same bar-validity rule as buildDailyBars (pb-core): a zero/negative
+      // close is a data hole, not a price — it would spike any chart it lands in.
+      if (c == null || !isFinite(c) || c <= 0) continue;
       const tms = ts[i] * 1000;
       let session = 'regular';
       if (regularStart != null && regularEnd != null) {
