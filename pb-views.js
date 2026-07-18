@@ -501,8 +501,17 @@ function RotationFlowDiagram(_p) {
       });
     }
     drawBlocks(outL, 'out'); drawBlocks(inL, 'in');
-    if (outL.length === 0) els.push(RE('text', { key: 'no-out', x: colW / 2, y: H / 2, className: 'rot-flow-note', textAnchor: 'middle' }, 'No measurable outflows'));
-    if (inL.length === 0) els.push(RE('text', { key: 'no-in', x: W - colW / 2, y: H / 2, className: 'rot-flow-note', textAnchor: 'middle' }, 'No measurable inflows'));
+    // One-sided session: no ribbons exist, so the empty side gets the whole free
+    // region as a contained placeholder instead of a bare label on the narrow
+    // column (which used to spill past the panel edge).
+    if (outL.length === 0 || inL.length === 0) {
+      const emptyIn = inL.length === 0;
+      const ex0 = emptyIn ? colW + 16 : 0;
+      const ex1 = emptyIn ? W : W - colW - 16;
+      els.push(RE('rect', { key: 'empty-box', x: ex0, y: 0, width: ex1 - ex0, height: H, rx: 8, className: 'rot-flow-empty' }));
+      els.push(RE('text', { key: 'empty-note', x: (ex0 + ex1) / 2, y: H / 2 + 4, className: 'rot-flow-note', textAnchor: 'middle' },
+        emptyIn ? 'No measurable inflows' : 'No measurable outflows'));
+    }
   }
   return RE('div', { ref: wrapRef, className: 'rot-flow-wrap' },
     width > 20 ? RE('svg', { className: 'rot-flow-svg', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H, role: 'img', 'aria-label': 'Sector money-flow diagram' },

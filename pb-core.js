@@ -392,6 +392,43 @@
     const gainPct = (value != null && cost > 0) ? (value - cost) / cost * 100 : null;
     return { ccy, native, cost, value, gain, gainPct };
   }
+  // Sum per-position daily value series into one portfolio series, carrying
+  // each position's last known value across calendar dates where it has no bar.
+  // Mixed-exchange portfolios (US/JSE/LSE holiday calendars differ) otherwise
+  // undercount on any date where only a subset of holdings traded — the
+  // recurring downward spikes on the Growth Tracker. Input: [{ entryDate:
+  // 'YYYY-MM-DD'|null, points: [{ d: 'YYYY-MM-DD', v: number }] }] (values
+  // pre-converted to the display currency by the caller; a later point for the
+  // same date wins). Output: [{ date, value }] ascending; a position
+  // contributes from its first bar at/after entryDate through the final date.
+  function forwardFillPortfolio(positionSeries) {
+    const list = Array.isArray(positionSeries) ? positionSeries : [];
+    const dates = new Set();
+    const series = [];
+    for (const s of list) {
+      if (!s || !Array.isArray(s.points)) continue;
+      const entry = typeof s.entryDate === 'string' && s.entryDate ? s.entryDate : null;
+      const byDate = new Map();
+      for (const pt of s.points) {
+        if (!pt || typeof pt.d !== 'string' || typeof pt.v !== 'number' || !isFinite(pt.v)) continue;
+        if (entry && pt.d < entry) continue;
+        byDate.set(pt.d, pt.v);
+      }
+      if (byDate.size === 0) continue;
+      for (const d of byDate.keys()) dates.add(d);
+      series.push(byDate);
+    }
+    const all = [...dates].sort();
+    const last = series.map(() => null);
+    return all.map(d => {
+      let value = 0;
+      for (let i = 0; i < series.length; i++) {
+        if (series[i].has(d)) last[i] = series[i].get(d);
+        if (last[i] != null) value += last[i];
+      }
+      return { date: d, value };
+    });
+  }
   function resolvePositionUpdates(existing, updates, ctx) {
     const next = { ...updates };
     if (!existing) return next;
@@ -490,6 +527,42 @@
     const ratio = candidate / livePrice;
     if (ratio > 0.01 && ratio < 100) return candidate;
     return fallback;
+  }
+  // ─── Live-quote plausibility guard (merge path) ─────────────────────────────
+  // Yahoo intermittently reports an unexpected meta.currency for a pence/cents
+  // listing; centDivisor then returns 1 and the whole quote arrives ~100x off
+  // (price AND prevClose share the divisor, so the quote is internally
+  // consistent — only comparison against the last accepted quote can catch it).
+  // guardQuote gates such a jump at the store-merge seam: the bogus quote is
+  // held back (the last good one keeps rendering, with the contested level
+  // recorded as `suspect`) until a later fetch confirms the new level for at
+  // least QUOTE_CONFIRM_MS — a real split/consolidation persists and is
+  // accepted within minutes, a one-poll glitch never renders at all. The value
+  // math (valuePositionInCostCcy) stays clamp-free by design; see
+  // backend/test/quote-guard.test.mjs.
+  const QUOTE_JUMP_MAX_RATIO = 20;        // > this vs last accepted price = implausible
+  const QUOTE_CONFIRM_RATIO = 2;          // a repeat within this of the suspect level confirms it
+  const QUOTE_CONFIRM_MS = 5 * 60 * 1000; // suspect must persist this long to be believed
+  const QUOTE_GUARD_STALE_MS = 3 * 24 * 3600 * 1000; // don't second-guess moves across a long gap
+  function plausiblePriceMove(prevPrice, nextPrice) {
+    if (!(prevPrice > 0) || !(nextPrice > 0) || !isFinite(prevPrice) || !isFinite(nextPrice)) return true;
+    const r = nextPrice / prevPrice;
+    return r < QUOTE_JUMP_MAX_RATIO && r > 1 / QUOTE_JUMP_MAX_RATIO;
+  }
+  function guardQuote(prev, next, nowMs) {
+    if (!next || typeof next.price !== 'number' || !isFinite(next.price) || next.price <= 0) return { quote: next, rejected: false };
+    if (!prev || typeof prev.price !== 'number' || !isFinite(prev.price) || prev.price <= 0) return { quote: next, rejected: false };
+    const now = nowMs != null ? nowMs : Date.now();
+    if (!prev.fetchedAt || now - prev.fetchedAt > QUOTE_GUARD_STALE_MS) return { quote: next, rejected: false };
+    if (plausiblePriceMove(prev.price, next.price)) return { quote: next, rejected: false };
+    const s = prev.suspect;
+    const matchesSuspect = !!(s && isFinite(s.price) && s.price > 0 &&
+      next.price / s.price < QUOTE_CONFIRM_RATIO && next.price / s.price > 1 / QUOTE_CONFIRM_RATIO);
+    if (matchesSuspect && now - s.at >= QUOTE_CONFIRM_MS) return { quote: next, rejected: false };
+    // Keep the original sighting time while the same level keeps arriving so
+    // the confirmation clock runs from first sight, not the latest poll.
+    const suspect = matchesSuspect ? s : { price: next.price, at: now };
+    return { quote: Object.assign({}, prev, { suspect }), rejected: true };
   }
   // Derive the live extended-hours (pre/post) quote from an intraday chart result.
   // Yahoo's chart `meta` no longer carries preMarketPrice/postMarketPrice and the
@@ -841,6 +914,55 @@ function parseSAForecast(json, market) {
   };
 }
 
+// Next-earnings date from stockanalysis.com's OVERVIEW page-data (same
+// SvelteKit __data.json transport as the forecast parser above; the dead
+// /api/symbol tree used to serve this as `data.earningsDate`). The payload
+// shape isn't pinned by a contract, so this walks every data node and
+// deep-searches for the site's own key vocabulary rather than assuming a
+// path; anything unrecognised degrades to null, never a throw. Accepts a
+// parseable date string or an epoch in seconds/ms; returns epoch ms or null.
+function saEpochMs(v) {
+  if (typeof v === 'number' && isFinite(v)) {
+    if (v > 1e12) return v;                    // already ms
+    if (v > 1e9) return v * 1000;              // seconds
+    return null;
+  }
+  if (typeof v === 'string' && v) {
+    const ms = Date.parse(v);
+    return isNaN(ms) ? null : ms;
+  }
+  return null;
+}
+function findEarningsDateDeep(node, depth) {
+  if (node == null || typeof node !== 'object' || depth > 6) return null;
+  if (!Array.isArray(node)) {
+    for (const k of Object.keys(node)) {
+      if (/^(next)?[_ ]?earnings[_ ]?date$/i.test(k)) {
+        const ms = saEpochMs(node[k]);
+        if (ms != null) return ms;
+      }
+    }
+  }
+  const vals = Array.isArray(node) ? node : Object.values(node);
+  for (const v of vals) {
+    const ms = findEarningsDateDeep(v, depth + 1);
+    if (ms != null) return ms;
+  }
+  return null;
+}
+function parseSAOverviewEarnings(json) {
+  const nodes = json && Array.isArray(json.nodes) ? json.nodes : null;
+  if (!nodes) return null;
+  for (const n of nodes) {
+    if (!n || n.type !== 'data' || !Array.isArray(n.data) || n.data.length === 0) continue;
+    let r;
+    try { r = devalueNode(n.data, 0); } catch (_e) { continue; }
+    const ms = findEarningsDateDeep(r, 0);
+    if (ms != null) return ms;
+  }
+  return null;
+}
+
 // ─── Market rotation math (Rotation tab) ────────────────────────────────────
 // Pure aggregation/classification for the sector-rotation view: given the same
 // constituent rows the heatmap paints ({ticker, sector, m: static cap in
@@ -1175,17 +1297,21 @@ function rotationSummary(classified) {
     marketCurrency,
     positionCostCcy,
     valuePositionInCostCcy,
+    forwardFillPortfolio,
     resolvePositionUpdates,
     mergeCostBasis,
     buildDailyBars,
     marketDayKey,
     derivePrevClose,
+    plausiblePriceMove,
+    guardQuote,
     deriveIntradayExt,
     parseYahooQuote,
     parseDecimal,
     parseFundamentalsTimeseries,
     mergeFundamentals,
     parseSAForecast,
+    parseSAOverviewEarnings,
     ROTATION_THRESHOLDS,
     aggregateSectorSnapshot,
     classifyRotation,
