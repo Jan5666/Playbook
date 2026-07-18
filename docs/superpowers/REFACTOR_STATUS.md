@@ -4,8 +4,10 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-fm72ce` (off `origin/main`). **Jan reviews + lands;
-never push `main`, never open a PR.** Last landed on `main`: PR #25 (inc 11–14).
+**Branch:** `claude/refactor-plan-continuation-jrgahr` (off latest `origin/main`). **Jan reviews +
+lands; never push `main`, never open a PR.** Last landed on `main`: inc 15–17 (PR #26); feature PRs
+#27–#29 (rotation tab, watchlist suggestions) landed after, bumping `sw` `CACHE_NAME` to v67 and the
+bridge to 33 members without a refactor increment.
 
 ## The refactor in one paragraph
 
@@ -28,24 +30,24 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   **bridge shrank 29->23**; `content.test.mjs` guard followed `SECTOR_FWD_PE` to the bucket.
 - **inc-17** `SettingsModal` + single-caller `TabReorderList` -> bucket; **bridge 23->31**; +4 IIFE
   reads (`useLayoutEffect` + PBContent `DISPLAY_CURRENCIES`/`MARKETS`/`RIBBON_CATALOG`).
+- **inc-18** `AlertsModal` -> bucket; **safe verbatim move, 0 new bridge members / 0 new IIFE reads**
+  (`Icon`, `fmt`, `timeAgo`, `useSwipeDownToClose`, `useBodyScrollLock` already bridged; `useRef`
+  already IIFE-read). Display + CRUD only — alert eval + money math stay in pb-core, untouched.
 
-**Current state:** `pb-modals.js` holds **6 modals + the detail subtree + the settings subtree**;
-`window.PBApp` bridge = **31** members; `sw.js` `CACHE_NAME` = **playbook-shell-v65**.
+**Current state:** `pb-modals.js` holds **7 modals + the detail subtree + the settings subtree**;
+`window.PBApp` bridge = **33** members (33 as of feature PRs #27–#29; inc-18 added none); `sw.js`
+`CACHE_NAME` = **playbook-shell-v68**.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
 Re-verified by reading each modal body — the split is **display/delegate (safe verbatim move)** vs
 **contains money/alert math (characterization test first)**:
 
-**NEXT -> inc-18: `AlertsModal`** (`app.js:8331-8507`, ~176 lines) — **SAFE, near-free.** Displays
-active alerts + triggered history and delegates everything (`onRemoveAlert`, `onClearTriggered`,
-`onRequestPerm`, `onOpenDetail`) — **no `onAddAlert`, no `evalAlert`/`marketOpen`, no money math**
-(alert eval lives in pb-core, untouched). Deps (`Icon`, `fmt`, `timeAgo`, `useSwipeDownToClose`,
-`useBodyScrollLock`, `CURRENCY_SYMBOLS`) are **all already bridged/IIFE-read -> expect 0 new bridge
-members**. At execution just confirm `openChart` is a local closure. Cheapest safe modal left; do it
-like inc-12–14.
+**DONE — inc-18: `AlertsModal`** — SAFE verbatim move completed. As predicted: 0 new bridge members,
+0 new IIFE reads (`openChart` confirmed a local closure; all deps already bridged/IIFE-read). Mount
+gate + a dedicated render probe (active alerts + triggered history + note branch + perm box) green.
 
-**THEN inc-19: `ImportModal`** (`app.js:8508-9119`, ~612 lines) — safe-ish. Display + delegate:
+**NEXT -> inc-19: `ImportModal`** (~612 lines) — safe-ish. Display + delegate:
 `parseHoldingsFromText(...)` + `onImport(...)`; the import-matching stays put (pb-import / a stays-put
 helper). Verify no matching logic is inline in the modal, then verbatim move.
 

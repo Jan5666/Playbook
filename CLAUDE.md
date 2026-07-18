@@ -124,12 +124,14 @@ Adding a **new runtime file** additionally requires ALL of:
   (`GBp`/`GBX`, and bare `GBP` on LSE is treated as pence too) — `centDivisor`
   in pb-core handles it; never hand-divide by 100 elsewhere.
 
-## Current state (2026-07-14)
+## Current state (2026-07-18)
 
 Refactor Phases 0-3 complete. **Phase 4 modal/view extraction is in progress** on branch
-`claude/refactor-plan-continuation-fm72ce`; the living roadmap a fresh chat should read to resume is
+`claude/refactor-plan-continuation-jrgahr`; the living roadmap a fresh chat should read to resume is
 **[docs/superpowers/REFACTOR_STATUS.md](docs/superpowers/REFACTOR_STATUS.md)**. Done through
-**inc-17**: views (7-10) + modals (11-17) moved into pb-views.js / pb-modals.js; the `window.PBApp`
-bridge = 31 members; sw `CACHE_NAME` = `playbook-shell-v65`. Next: the rule-#3-gated money/alert
-modals (Sell/Buy/Alerts) - write a characterization test first; then Import/Position. Highest-value
-quick fixes still live at the top of [GAPS.md](GAPS.md).
+**inc-18**: views (7-10) + modals (11-18) moved into pb-views.js / pb-modals.js — pb-modals.js now
+holds 7 modals + the detail subtree + the settings subtree. The `window.PBApp` bridge = 33 members
+(feature PRs #27-#29 grew it from 31; inc-18 added none); sw `CACHE_NAME` = `playbook-shell-v68`.
+Next: **inc-19 `ImportModal`** (safe-ish verbatim), then the rule-#3-gated money modals
+(Buy/Position/Sell) — write a characterization test first. Highest-value quick fixes still live at
+the top of [GAPS.md](GAPS.md).
