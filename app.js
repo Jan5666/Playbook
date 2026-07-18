@@ -992,7 +992,16 @@ async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
     const ai = await fetchFundamentalsPerplexity(ticker, market, companyName, perplexityKey);
     if (ai) parts.push(ai);
   }
-  return PBCore.mergeFundamentals(parts);
+  const merged = PBCore.mergeFundamentals(parts);
+  // None of the keyless primaries carries an earnings date any more (the
+  // timeseries parser never did, the SA symbol API is dead) — backfill it
+  // from the overview page-data probe, which is 12h-cached and usually
+  // already warmed by the Hot Topics sweep.
+  if (merged && merged.earningsDate == null && market === 'US') {
+    const ed = await fetchEarningsDateSA(ticker);
+    if (ed) merged.earningsDate = ed;
+  }
+  return merged;
 }
 // Lightweight sector/industry lookup for the background allocator fill — one
 // CORS-open request to stockanalysis.com (US listings). Used to self-heal any
@@ -1140,9 +1149,14 @@ Order every array by date ascending. Use real, accurate dates; if unsure of a da
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch (_e) { return null; }
 }
-// Per-ticker upcoming earnings date from stockanalysis.com (CORS-open, fetched
-// directly — no proxy). Cached 12h. Reliable for US names; JSE/other are left to
-// the AI path, which covers exchanges stockanalysis doesn't.
+// Per-ticker upcoming earnings date from stockanalysis.com's overview
+// page-data (__data.json). The /api/symbol tree this used to read died
+// upstream on 2026-07-12 (GAPS.md #18); the SvelteKit page-data still ships
+// the date, but sends no ACAO header, so — like the forecast page-data — it
+// has to ride the CORS-proxy chain, with an outer time-box so a pathological
+// proxy crawl can't stall the Hot Topics build. Cached 12h (nulls too).
+// Reliable for US names; JSE/other are left to the AI path, which covers
+// exchanges stockanalysis doesn't.
 const SA_EARN_CACHE = {};
 async function fetchEarningsDateSA(ticker) {
   const up = (ticker || '').toUpperCase();
@@ -1150,11 +1164,16 @@ async function fetchEarningsDateSA(ticker) {
   const c = SA_EARN_CACHE[up];
   if (c && Date.now() - c.fetchedAt < 12 * 3600 * 1000) return c.date;
   try {
-    const r = await fetch(`https://stockanalysis.com/api/symbol/s/${encodeURIComponent(up)}/overview`);
-    if (!r.ok) { SA_EARN_CACHE[up] = { date: null, fetchedAt: Date.now() }; return null; }
-    const j = await r.json();
-    const ed = j?.data?.earningsDate;
-    const ms = ed && !isNaN(Date.parse(ed)) ? Date.parse(ed) : null;
+    const url = `https://stockanalysis.com/stocks/${encodeURIComponent(up.toLowerCase())}/__data.json`;
+    const work = (async () => {
+      const text = await fetchViaProxies(url, { timeoutMs: 8000 });
+      if (!text) return null;
+      let data;
+      try { data = JSON.parse(text); } catch (_e) { return null; }
+      return PBCore.parseSAOverviewEarnings(data);
+    })();
+    const timeBox = new Promise(resolve => setTimeout(() => resolve(null), 12000));
+    const ms = await Promise.race([work, timeBox]);
     SA_EARN_CACHE[up] = { date: ms, fetchedAt: Date.now() };
     return ms;
   } catch (_e) { return null; }
@@ -1763,14 +1782,27 @@ function usePriceFeed(order, fetchKey) {
     if (persistRef.current) clearTimeout(persistRef.current);
     persistRef.current = setTimeout(() => LS.set(PRICES_LS_KEY, obj), 1200);
   }, []);
+  // Plausibility-gate a quote batch against the currently accepted quotes
+  // before it reaches the store: a transiently mis-scaled Yahoo response (the
+  // pence/cents divisor glitch) is held back so it never renders a bogus
+  // holding value, while a real split/repricing is accepted once it persists
+  // (PBCore.guardQuote owns the rules). Rejected symbols keep their last good
+  // quote; untouched symbols are not cloned, preserving the memo contract.
+  const guardBatch = useCallback((obj) => {
+    const cur = PBStore.getPrices();
+    const now = Date.now();
+    const out = {};
+    for (const k in obj) out[k] = obj[k] ? PBCore.guardQuote(cur[k], obj[k], now).quote : obj[k];
+    return out;
+  }, []);
   // Merge externally-fetched quotes (e.g. a just-added holding) so the
   // dashboard charts update the instant a position is created, without waiting
   // for the next 90s poll to cycle through every ticker.
   const mergePrices = useCallback((obj) => {
     if (!obj || !Object.keys(obj).length) return;
-    PBStore.mergePrices(obj);
+    PBStore.mergePrices(guardBatch(obj));
     persistPrices(PBStore.getPrices());
-  }, [persistPrices]);
+  }, [persistPrices, guardBatch]);
   // A manual tap that arrives mid-fetch sets this so the in-flight run loops
   // once more (with cache-bust) the moment it finishes — the press always ends
   // in genuinely fresh data instead of being silently dropped by the guard.
@@ -1785,7 +1817,7 @@ function usePriceFeed(order, fetchKey) {
         const newPrices = await fetchQuoteBatch(orderRef.current, {
           cacheBust: force,
           // Merge each batch as it lands so holdings paint progressively.
-          onBatch: (partial) => { PBStore.mergePrices(partial); persistPrices(PBStore.getPrices()); }
+          onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(PBStore.getPrices()); }
         });
         if (Object.keys(newPrices).length > 0) {
           setLastUpdate(new Date());
@@ -1800,7 +1832,7 @@ function usePriceFeed(order, fetchKey) {
     }
     loadingRef.current = false;
     setLoading(false);
-  }, [persistPrices]);
+  }, [persistPrices, guardBatch]);
   // Auto-poll: skip if a fetch is already running (no point double-polling).
   const refresh = useCallback(() => {
     if (loadingRef.current) return;
@@ -4067,19 +4099,27 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
     const dateMap = {};
     const contribSorted = contributions.slice().sort((a, b) => a.date.localeCompare(b.date));
 
+    // Per-position value series → one forward-filled portfolio series
+    // (PBCore.forwardFillPortfolio): on dates where an exchange was shut, the
+    // position's last known value carries instead of dropping out of the sum —
+    // mixed-calendar portfolios used to spike down on every foreign holiday.
+    const positionSeries = [];
     positions.forEach(p => {
       const key = priceKey(p.market, p.ticker);
       const hist = historyCache[key];
       if (!hist || hist.length === 0) return;
       const native = marketCurrency(p.market);
       const entryDate = p.purchaseDate || p.addedAt?.slice(0, 10) || today;
+      const points = [];
       hist.forEach(pt => {
         const d = new Date(pt.t).toISOString().slice(0, 10);
-        if (d < entryDate) return;
-        if (!dateMap[d]) dateMap[d] = { date: d, value: 0, contributed: 0 };
         const val = convertCcy(p.shares * pt.p, native, displayCurrency, rates);
-        if (val != null) dateMap[d].value += val;
+        if (val != null) points.push({ d, v: val });
       });
+      positionSeries.push({ entryDate, points });
+    });
+    PBCore.forwardFillPortfolio(positionSeries).forEach(r => {
+      dateMap[r.date] = { date: r.date, value: r.value, contributed: 0 };
     });
 
     positions.forEach(p => {
