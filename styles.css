@@ -4178,6 +4178,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .rot-grad-from { stop-color: var(--rose); stop-opacity: 0.5; }
 .rot-grad-to { stop-color: var(--emerald); stop-opacity: 0.55; }
 .rot-flow-note { font-family: var(--mono); font-size: 12px; fill: var(--text-dim); }
+.rot-flow-empty { fill: none; stroke: var(--border); stroke-dasharray: 4 4; stroke-width: 1; opacity: 0.7; }
 
 .rot-chart-outer { display: flex; flex-direction: column; gap: 10px; }
 .rot-chart-wrap { width: 100%; }
