@@ -16,6 +16,13 @@
   const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES; // PBContent global
   const MARKETS = PBContent.MARKETS; // PBContent global
   const RIBBON_CATALOG = PBContent.RIBBON_CATALOG; // PBContent global
+  const parseHoldingsFromText = PBImport.parseHoldingsFromText; // PBImport global (loaded before this script)
+  const rankImportCandidates = PBImport.rankImportCandidates; // PBImport global
+  const companyNameScore = PBImport.companyNameScore; // PBImport global
+  const looksLikeTickerToken = PBImport.looksLikeTickerToken; // PBImport global
+  const normaliseCompanyName = PBImport.normaliseCompanyName; // PBImport global
+  const parseEasyEquitiesScreenshot = PBImport.parseEasyEquitiesScreenshot; // PBImport global
+  const dedupeEeHoldings = PBImport.dedupeEeHoldings; // PBImport global
 // Dedicated "edit just the sector allocation" modal for one instrument, opened
 // from the sector-breakdown popup. Edits the shared pb.sectorWeights map (keyed
 // by MARKET:TICKER) so the change applies to that fund everywhere it's held.
@@ -2471,6 +2478,620 @@ function AlertsModal(_ref11) {
     size: 12
   })))))))));
 }
+function ImportModal({ onClose, onImport, defaultMarket }) {
+  const { Icon, fmt, uid, sanitizeDecimalInput, resolveTickerName, useSwipeDownToClose, useBodyScrollLock, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti } = window.PBApp;
+  const DATA = window.PB_DATA; // data.js loads after this bucket - read at render time
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const [stage, setStage] = useState('input'); // 'input' | 'review'
+  const [rows, setRows] = useState([]);
+  const [parsing, setParsing] = useState(false);
+  const [parseError, setParseError] = useState('');
+  const [pasteText, setPasteText] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  // The market the user expects these holdings to live on. It biases every
+  // name→listing match (e.g. "Anglo American" → AGL.JO on JSE vs AAL.L on LSE).
+  const [chosenMarket, setChosenMarket] = useState(defaultMarket || 'US');
+  // Sector the user picks for a row the classifier can't place ("Other"). Saved
+  // to the persistent sector cache on import so it's remembered next time.
+  const [sectorByRow, setSectorByRow] = useState({});
+  // On-device OCR of Easy Equities screenshots: progress + status while reading.
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrStep, setOcrStep] = useState('');
+  const [ocrError, setOcrError] = useState('');
+  // Confirm before discarding a review in progress (only the X button can close
+  // the review stage — swipe and backdrop are disabled there).
+  const [confirmClose, setConfirmClose] = useState(false);
+  const fileRef = useRef(null);
+  const imgRef = useRef(null);
+  const panelRef = useRef(null);
+  // Swipe-to-dismiss only on the input stage; the review stage is locked so
+  // scrolling the matches can never flick the sheet closed.
+  useSwipeDownToClose(panelRef, onClose, stage === 'input');
+  useBodyScrollLock();
+  // The X (and any close intent) prompts when there's a review in flight.
+  const requestClose = () => {
+    if (stage === 'review' && rows.length > 0 && !importing) setConfirmClose(true);
+    else onClose();
+  };
+
+  const toRows = (holdings, market) => holdings.map(h => ({
+    id: uid(),
+    query: h.query || '',
+    tickerHint: h.tickerHint || null,
+    market: h.marketHint || market,
+    // The import row explicitly named its market (a ticker exchange suffix or an
+    // exchange/market column) — so the matcher must stay on it and never drift to
+    // a foreign cross-listing.
+    marketExplicit: !!h.marketHint,
+    ticker: '',                 // resolved live symbol
+    resolvedName: h.nameHint || h.query || '',
+    candidates: [],
+    shares: h.shares != null ? String(h.shares) : '',
+    costBasis: h.costBasis != null ? String(h.costBasis) : '',
+    purchaseDate: h.purchaseDate || '',
+    status: null,               // null | 'resolving' | 'ok' | 'notfound'
+    currentPrice: null,
+    include: true,
+    showAlts: false,
+  }));
+
+  const handleParsed = (holdings) => {
+    if (!holdings || holdings.length === 0) {
+      setParseError("Couldn't find anything to import. Paste a list of company names (one per line) — e.g. \"Broadcom\", \"Naspers\" — or broker rows like \"Broadcom, 10, 800\".");
+      return;
+    }
+    const r = toRows(holdings, chosenMarket);
+    setRows(r);
+    setStage('review');
+    setParseError('');
+    resolveRows(r);
+  };
+
+  const isImageFile = (f) => !!f && (/^image\//.test(f.type) || /\.(png|jpe?g|webp|heic|heif|bmp|gif)$/i.test(f.name || ''));
+
+  const handleFiles = async (files) => {
+    const file = files && files[0];
+    if (!file) return;
+    // Screenshots (Easy Equities holdings) route to the on-device OCR path; every
+    // other file type (CSV / XLSX / PDF / text) goes through the native parsers.
+    if (isImageFile(file)) return handleScreenshots(files);
+    setParsing(true); setParseError('');
+    try {
+      const holdings = await parseImportFile(file);
+      handleParsed(holdings);
+    } catch (e) {
+      setParseError(e?.message || 'Could not read that file. Try CSV, XLSX, or paste the rows instead.');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  // OCR one or more Easy Equities screenshots in-browser, then hand the extracted
+  // holdings to the same review flow as a pasted list. Each detail screenshot
+  // yields one holding; a portfolio-list screenshot can yield several.
+  const handleScreenshots = async (files) => {
+    const imgs = Array.from(files || []).filter(isImageFile);
+    if (!imgs.length) return;
+    setOcrBusy(true); setOcrError(''); setParseError(''); setOcrProgress(0);
+    try {
+      const all = [];
+      for (let k = 0; k < imgs.length; k++) {
+        setOcrStep(imgs.length > 1 ? `Reading screenshot ${k + 1} of ${imgs.length}…` : 'Reading screenshot…');
+        setOcrProgress(0);
+        const { text, headerText } = await ocrImageFile(imgs[k], p => setOcrProgress(p));
+        // Each holding's market comes from the screenshot's own EXCHANGE field,
+        // falling back to the market the user started from (defaultMarket). The
+        // dedicated title-bar read (headerText) gives the cleanest full name.
+        all.push(...parseEasyEquitiesScreenshot(text, defaultMarket, { headerText }));
+      }
+      if (!all.length) {
+        setOcrError("Couldn't read any holdings from those images. Use an Easy Equities holding page (“# Shares” + “Avg. Purchase Price”), a trade confirmation, a transaction-history row, or your portfolio list — and crop out anything else.");
+        return;
+      }
+      // The same trade can arrive twice — its emailed broker note and its
+      // transaction-history row — so collapse duplicates before review, otherwise
+      // the per-ticker merge on commit would double the position.
+      const deduped = dedupeEeHoldings(all);
+      // Highlight the market most rows landed on (their detected exchange, else
+      // the tab the user started from) so the review chips match.
+      const mk = deduped.find(h => h.marketHint)?.marketHint;
+      if (mk) setChosenMarket(mk);
+      handleParsed(deduped);
+    } catch (e) {
+      setOcrError(e?.message || 'Could not read those screenshots. Try again, or paste your holdings instead.');
+    } finally {
+      setOcrBusy(false); setOcrStep(''); setOcrProgress(0);
+    }
+  };
+
+  const handlePaste = () => {
+    if (!pasteText.trim()) return;
+    setParsing(true); setParseError('');
+    try {
+      handleParsed(parseHoldingsFromText(pasteText));
+    } catch (e) {
+      setParseError('Could not parse that text.');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  // Resolve one row: search live listings by the company name, rank with the
+  // chosen market biasing the pick, then confirm with a real quote. Falls back
+  // to the bare ticker hint and to other-market candidates so a name still
+  // resolves even when its primary listing isn't on the chosen exchange.
+  const resolveRow = async (r) => {
+    const market = r.market;
+    const remote = await searchListingsMulti(r.query, r.tickerHint, market).catch(() => []);
+    const ranked = rankImportCandidates(r.query, r.tickerHint, market, remote);
+    // A symbol-like query / hint is the user's intended ticker on the chosen
+    // market. Try the chosen market first and only drift off-market as a last
+    // resort, so a US ticker is never booked as its European cross-listing (EUR).
+    const symHint = (r.tickerHint && looksLikeTickerToken(r.tickerHint)) ? String(r.tickerHint).toUpperCase()
+                  : (looksLikeTickerToken(r.query) ? String(r.query).toUpperCase() : null);
+    // A candidate whose ticker still carries an exchange suffix (".VI", ":MI") is a
+    // foreign listing that slipped through — never let it pass as an on-market pick,
+    // even if its market field happens to equal the chosen one.
+    const onMarket = ranked.filter(c => c.market === market && !/[.:]/.test(c.ticker));
+    let offMarketRanked = ranked.filter(c => c.market !== market);
+    // Never auto-book a holding onto a different-currency cross-listing — European
+    // brokers quote US shares in EUR, and dual-listed names (iShares ETFs, etc.)
+    // surface London/pence listings, which used to silently land under the user's
+    // import at the wrong-currency "live rate". Restrict the off-market fallback to
+    // markets that settle in the same currency as the chosen one; everything else
+    // stays in `candidates` so it can still be chosen by hand if genuinely meant.
+    const chosenCcy = (MARKET_CURRENCY[market] || {}).code;
+    if (chosenCcy) offMarketRanked = offMarketRanked.filter(c => (MARKET_CURRENCY[c.market] || {}).code === chosenCcy);
+    // When the row explicitly named its market, don't drift off it at all — a miss
+    // becomes "not matched" (overridable) rather than a wrong foreign listing.
+    if (r.marketExplicit) offMarketRanked = [];
+    const attempts = [];
+    const pushAttempt = (c) => { if (c && c.ticker && !attempts.some(a => a.ticker === c.ticker && a.market === c.market)) attempts.push(c); };
+    if (onMarket[0]) pushAttempt(onMarket[0]);                                   // best name match on the chosen market
+    if (symHint) pushAttempt({ ticker: symHint, market, name: null, nameScore: null }); // the bare symbol on the chosen market
+    onMarket.slice(1).forEach(pushAttempt);                                     // other chosen-market candidates
+    offMarketRanked.forEach(pushAttempt);                                       // finally, anything elsewhere
+    let pick = null, q = null;
+    for (const c of attempts.slice(0, 6)) {
+      const cq = await fetchQuote(c.ticker, c.market).catch(() => null);
+      if (cq) { pick = c; q = cq; break; }
+    }
+    // Confidence = how well the matched listing's name fits the query. Low
+    // confidence (or a pick that landed off the chosen market) is surfaced so
+    // the user can sanity-check or pick an alternative.
+    // Name priority: the candidate's own name → the search result for that exact
+    // listing (clean "Vanguard S&P 500 ETF"-style names) → the live quote's name →
+    // the query. The middle step matters for ticker/symbol imports where `pick` is
+    // a bare-symbol attempt with no name, so ETFs don't show a cryptic quote name.
+    const matchedCand = pick ? ranked.find(c => c.ticker === pick.ticker && c.market === pick.market) : null;
+    const resolvedName = q && pick
+      ? (pick.name || (matchedCand && matchedCand.name) || resolveTickerName(pick.ticker, pick.market, q) || r.query)
+      : r.resolvedName;
+    const conf = q && pick ? (pick.nameScore != null ? pick.nameScore : companyNameScore(r.query, resolvedName)) : 0;
+    const offMarket = !!(q && pick && pick.market !== market);
+    return {
+      ticker: q && pick ? pick.ticker : (r.tickerHint || ''),
+      market: q && pick ? pick.market : market,
+      resolvedName,
+      currentPrice: q ? q.price : null,
+      status: q ? 'ok' : 'notfound',
+      confidence: conf,
+      lowConfidence: !!(q && (conf < 0.5 || offMarket)),
+      candidates: ranked.slice(0, 7),
+    };
+  };
+
+  const resolveRows = async (list) => {
+    setResolving(true);
+    setRows(prev => prev.map(x => list.some(l => l.id === x.id) ? { ...x, status: 'resolving' } : x));
+    let i = 0;
+    const worker = async () => {
+      while (i < list.length) {
+        const r = list[i++];
+        if (!r.query.trim()) { setRows(prev => prev.map(x => x.id === r.id ? { ...x, status: 'notfound' } : x)); continue; }
+        const res = await resolveRow(r);
+        setRows(prev => prev.map(x => x.id === r.id ? { ...x, ...res } : x));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, list.length) }, worker));
+    setResolving(false);
+  };
+
+  const updateRow = (id, patch) => setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
+  const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
+
+  // Re-resolve a single row (after the user edits its search text or market).
+  const reResolveRow = async (id) => {
+    let target = null;
+    setRows(prev => prev.map(r => { if (r.id === id) { target = r; return { ...r, status: 'resolving' }; } return r; }));
+    if (!target) return;
+    const res = await resolveRow({ ...target, status: 'resolving' });
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ...res } : r));
+  };
+
+  // User explicitly picks one of the alternative listings.
+  const chooseCandidate = async (id, cand) => {
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ticker: cand.ticker, market: cand.market, resolvedName: cand.name, status: 'resolving', showAlts: false, lowConfidence: false } : r));
+    const q = await fetchQuote(cand.ticker, cand.market).catch(() => null);
+    setRows(prev => prev.map(r => r.id === id ? {
+      ...r,
+      status: q ? 'ok' : 'notfound',
+      currentPrice: q ? q.price : null,
+      lowConfidence: false,
+      resolvedName: q ? (resolveTickerName(cand.ticker, cand.market, q) || cand.name) : cand.name,
+    } : r));
+  };
+
+  // One-tap "these are all JSE / US / …": set the bias market, apply it to every
+  // included row, and re-run name matching so each maps to that exchange.
+  const setAllMarket = (market) => {
+    setChosenMarket(market);
+    const next = rows.map(r => r.include ? { ...r, market, status: null, currentPrice: null, ticker: '' } : r);
+    setRows(next);
+    resolveRows(next.filter(r => r.include));
+  };
+
+  const hasShares = (r) => isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0;
+  const hasCost = (r) => isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0;
+  // The sector this row will be allocated to in the dashboard — the same static
+  // resolution the allocation chart uses (listing map first, then the name), so
+  // what the user sees here is exactly where it'll land.
+  const sectorForRow = (r) => {
+    if (!(r.status === 'ok' && r.ticker)) return 'Other';
+    const f = DATA.findSector(r.ticker, r.market);
+    if (f.sector !== 'Other') return f.sector;
+    const byName = r.resolvedName ? DATA.classifySectorByName(r.resolvedName) : 'Other';
+    return (byName && byName !== 'Other') ? byName : 'Other';
+  };
+  // The effective sector to commit: an explicit user pick wins, else the detected
+  // one (null only when genuinely unknown, so we never persist "Other").
+  const effectiveSector = (r) => {
+    if (sectorByRow[r.id]) return sectorByRow[r.id];
+    const det = sectorForRow(r);
+    return det !== 'Other' ? det : null;
+  };
+  // Importable only once matched to a confirmed live listing with valid qty/cost.
+  const validRows = rows.filter(r => r.include && r.ticker.trim() && r.status === 'ok' && hasShares(r) && hasCost(r));
+  const notFoundCount = rows.filter(r => r.include && r.status === 'notfound').length;
+  const needQtyCount = rows.filter(r => r.include && r.status === 'ok' && (!hasShares(r) || !hasCost(r))).length;
+  // Guard against silent collapse: when two *differently-named* included rows
+  // resolve to the same live listing, importing merges them (sums the shares) —
+  // the exact failure where several distinct ETFs land on one ticker and the
+  // committed value is the sum of unrelated holdings. Flag those rows so the user
+  // re-checks the match before committing. (Same name twice is a real averaged
+  // buy and is left alone.)
+  const collisionKeys = (() => {
+    const byKey = {};
+    rows.forEach(r => {
+      if (!r.include || r.status !== 'ok' || !r.ticker.trim()) return;
+      const k = priceKey(r.market, r.ticker.trim().toUpperCase());
+      (byKey[k] = byKey[k] || []).push(r);
+    });
+    const out = new Set();
+    Object.keys(byKey).forEach(k => {
+      const list = byKey[k];
+      if (list.length > 1 && new Set(list.map(r => normaliseCompanyName(r.query || ''))).size > 1) out.add(k);
+    });
+    return out;
+  })();
+  const isCollisionRow = (r) => r.include && r.status === 'ok' && !!r.ticker.trim() &&
+    collisionKeys.has(priceKey(r.market, r.ticker.trim().toUpperCase()));
+  const collisionCount = rows.filter(isCollisionRow).length;
+
+  const doImport = async () => {
+    if (validRows.length === 0) return;
+    setImporting(true);
+    try {
+      await onImport(validRows.map(r => ({
+        ticker: r.ticker.trim().toUpperCase(),
+        market: r.market,
+        name: r.resolvedName || null,
+        shares: parseDecimal(r.shares),
+        costBasis: parseDecimal(r.costBasis),
+        purchaseDate: r.purchaseDate || null,
+        notes: '',
+        sector: effectiveSector(r),
+      })));
+      onClose();
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const renderInput = () => React.createElement("div", { className: "modal-body" },
+    React.createElement("div", { className: "import-market-pick" },
+      React.createElement("div", { className: "form-label" }, "Which market are these holdings on?"),
+      React.createElement("div", { className: "import-bulk-chips" },
+        MARKETS.map(m => React.createElement("button", {
+          key: m.value, type: "button",
+          className: "import-bulk-chip" + (chosenMarket === m.value ? " active" : ""),
+          onClick: () => setChosenMarket(m.value),
+          title: m.country + " · " + m.exchange
+        }, m.label))),
+      React.createElement("div", { className: "form-help" }, "Guides name matching — e.g. “Naspers” → NPN on JSE. You can change any row afterwards.")
+    ),
+    React.createElement("div", { className: "ee-scan" },
+      React.createElement("div", { className: "ee-scan-head" },
+        React.createElement("div", { className: "ee-scan-badge" }, React.createElement(Icon, { name: "image", size: 18 })),
+        React.createElement("div", null,
+          React.createElement("div", { className: "ee-scan-title" }, "Scan Easy Equities screenshots"),
+          React.createElement("div", { className: "ee-scan-sub" }, "Add holdings from screenshots — read on your device, nothing uploaded."))),
+      React.createElement("div", {
+        className: "ee-scan-drop" + (ocrBusy ? " busy" : ""),
+        onDragOver: e => { e.preventDefault(); },
+        onDrop: e => { e.preventDefault(); if (!ocrBusy) handleScreenshots(e.dataTransfer.files); },
+        onClick: () => { if (!ocrBusy) imgRef.current?.click(); }
+      },
+        ocrBusy
+          ? React.createElement(React.Fragment, null,
+              React.createElement(Icon, { name: "refresh", size: 22, className: "spin" }),
+              React.createElement("div", { className: "ee-scan-status" }, ocrStep || "Reading…"),
+              React.createElement("div", { className: "ee-scan-bar" },
+                React.createElement("div", { className: "ee-scan-bar-fill", style: { width: Math.round(ocrProgress * 100) + "%" } })),
+              React.createElement("div", { className: "ee-scan-hint" }, "First scan downloads the on-device reader — a few seconds."))
+          : React.createElement(React.Fragment, null,
+              React.createElement(Icon, { name: "image", size: 24 }),
+              React.createElement("div", { className: "ee-scan-cta" }, "Tap to choose screenshots"),
+              React.createElement("div", { className: "ee-scan-hint" }, "Holding pages, trade confirmations, transaction-history rows, or your portfolio list — add several at once.")),
+        React.createElement("input", {
+          ref: imgRef, type: "file", accept: "image/*", multiple: true,
+          style: { display: 'none' },
+          onChange: e => { handleScreenshots(e.target.files); e.target.value = ''; }
+        })
+      ),
+      ocrError ? React.createElement("div", { className: "verify-error", style: { marginTop: 8 } }, ocrError) : null
+    ),
+    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or import a file")),
+    React.createElement("div", {
+      className: "import-drop" + (dragOver ? " over" : ""),
+      onDragOver: e => { e.preventDefault(); setDragOver(true); },
+      onDragLeave: () => setDragOver(false),
+      onDrop: e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); },
+      onClick: () => fileRef.current?.click()
+    },
+      React.createElement(Icon, { name: parsing ? "refresh" : "download", size: 26, className: parsing ? "spin" : "" }),
+      React.createElement("div", { className: "import-drop-title" }, parsing ? "Reading your file…" : "Drop a file or tap to browse"),
+      React.createElement("div", { className: "import-drop-sub" }, "CSV · Excel (.xlsx) · PDF · Markdown · plain text"),
+      React.createElement("input", {
+        ref: fileRef, type: "file", accept: ".csv,.tsv,.txt,.md,.xls,.xlsx,.pdf,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf",
+        style: { display: 'none' },
+        onChange: e => handleFiles(e.target.files)
+      })
+    ),
+    React.createElement("div", { className: "import-or" }, React.createElement("span", null, "or paste your holdings")),
+    React.createElement("div", { className: "form-help", style: { marginBottom: 8 } },
+      "One holding per line: ", React.createElement("strong", null, "date, company or ticker, shares, cost per share"),
+      ". Order is flexible, and a name on its own works too — you can fill in the rest in the next step."),
+    React.createElement("textarea", {
+      className: "import-paste",
+      placeholder: "2024-10-01, Apple, 10, 150.25\n2025-02-14, Naspers, 5, 3200\nAnglo American, 100, 480\nBroadcom",
+      value: pasteText,
+      onChange: e => setPasteText(e.target.value),
+      rows: 6
+    }),
+    parseError ? React.createElement("div", { className: "verify-error", style: { marginTop: 10 } }, parseError) : null,
+    React.createElement("div", { className: "form-actions", style: { marginTop: 14 } },
+      React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
+      React.createElement("button", {
+        className: "btn btn-primary",
+        onClick: handlePaste,
+        disabled: !pasteText.trim() || parsing
+      }, "Match holdings")
+    )
+  );
+
+  const statusDot = (r) => {
+    if (r.status === 'resolving') return React.createElement("span", { className: "import-status checking", title: "Matching…" });
+    if (r.status === 'ok') return React.createElement("span", { className: "import-status ok", title: r.currentPrice != null ? ("Matched · now " + fmt(r.currentPrice, r.market)) : "Matched" });
+    if (r.status === 'notfound') return React.createElement("span", { className: "import-status bad", title: "No live match on this market" });
+    return React.createElement("span", { className: "import-status", title: "Not matched" });
+  };
+
+  const renderCard = (r) => {
+    const sharesBad = !(isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0);
+    const costBad = !(isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0);
+    // Holding amount = shares × cost/share — shown so the user can confirm the
+    // app derived the position size correctly from the four imported fields.
+    const amt = (!sharesBad && !costBad) ? parseDecimal(r.shares) * parseDecimal(r.costBasis) : null;
+    const alts = (r.candidates || []).filter(c => !(c.ticker === r.ticker && c.market === r.market)).slice(0, 6);
+    const lowConf = r.status === 'ok' && r.lowConfidence;
+    const collide = isCollisionRow(r);
+    // The sector this holding will land in (same resolution as the chart). Shown
+    // for every matched row; when it can't be classified we flag it and the user's
+    // pick is learned (persisted) so the allocation chart stops saying "Other".
+    const matched = r.status === 'ok' && !!r.ticker;
+    const detectedSector = matched ? sectorForRow(r) : null;
+    const sectorValue = sectorByRow[r.id] || (detectedSector && detectedSector !== 'Other' ? detectedSector : '');
+    const sectorUnknown = matched && detectedSector === 'Other' && !sectorByRow[r.id];
+    return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") + (lowConf ? " is-low" : "") + (collide ? " is-dup" : "") },
+      React.createElement("div", { className: "import-card-top" },
+        React.createElement("label", {
+          className: "import-include" + (r.include ? " on" : ""),
+          title: r.include ? "This holding will be imported — toggle off to skip it" : "Skipped — toggle on to import this holding"
+        },
+          React.createElement("input", { type: "checkbox", className: "import-include-input", checked: r.include, onChange: e => updateRow(r.id, { include: e.target.checked }) }),
+          React.createElement("span", { className: "import-include-track" }, React.createElement("span", { className: "import-include-thumb" })),
+          React.createElement("span", { className: "import-include-label" }, r.include ? "Include" : "Skipped")),
+        React.createElement("button", { className: "import-del", onClick: () => removeRow(r.id), "aria-label": "Remove row" },
+          React.createElement(Icon, { name: "x", size: 13 }))
+      ),
+      React.createElement("input", {
+        className: "import-query-input",
+        value: r.query, placeholder: "Company name",
+        autoComplete: "off", spellCheck: false,
+        onChange: e => updateRow(r.id, { query: e.target.value }),
+        onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); reResolveRow(r.id); } },
+        onBlur: () => { if (r.query.trim() && r.status !== 'resolving') reResolveRow(r.id); }
+      }),
+      React.createElement("div", { className: "import-card-match" },
+        statusDot(r),
+        r.ticker
+          ? React.createElement(React.Fragment, null,
+              isUnitTrustId(r.ticker)
+                ? React.createElement("span", { className: "market-badge" }, "Unit trust")
+                : React.createElement("span", { className: "import-match-tkr" }, r.ticker),
+              React.createElement("span", { className: "import-match-name" }, r.resolvedName || ''),
+              lowConf ? React.createElement("span", { className: "import-conf-low", title: "Loose match — please confirm or pick an alternative" }, "check?") : null)
+          : React.createElement("span", { className: "import-match-name text-dim" },
+              r.status === 'resolving' ? "Searching live listings…" : (r.status === 'notfound' ? "No match — try the exact name or another market" : "Not matched yet")),
+        alts.length > 0 ? React.createElement("button", {
+          className: "btn btn-ghost btn-xs import-alts-toggle",
+          onClick: () => updateRow(r.id, { showAlts: !r.showAlts, manualSearch: false })
+        }, r.showAlts ? "Hide" : "Change") : null,
+        React.createElement("button", {
+          className: "btn btn-ghost btn-xs import-alts-toggle" + (r.manualSearch ? " active" : ""),
+          onClick: () => updateRow(r.id, { manualSearch: !r.manualSearch, showAlts: false }),
+          title: "Search live listings and pick the exact one"
+        }, r.manualSearch ? "Close" : (r.status === 'notfound' ? "Find" : "Search")),
+        React.createElement("button", {
+          className: "btn btn-ghost btn-xs import-alts-toggle",
+          onClick: () => reResolveRow(r.id), title: "Re-match"
+        }, React.createElement(Icon, { name: "refresh", size: 12 }))
+      ),
+      collide ? React.createElement("div", { className: "import-dup-warn" },
+        React.createElement(Icon, { name: "alert", size: 12 }),
+        React.createElement("span", null, "Same listing as another row — importing will merge them into one position. Use ", React.createElement("b", null, "Search"), " to pick the correct listing for this holding.")) : null,
+      r.showAlts && alts.length > 0 ? React.createElement("div", { className: "import-alts" },
+        alts.map(c => React.createElement("button", {
+          key: priceKey(c.market, c.ticker), className: "import-alt",
+          onClick: () => chooseCandidate(r.id, c)
+        },
+          isUnitTrustId(c.ticker) ? null : React.createElement("span", { className: "import-alt-tkr" }, c.ticker),
+          React.createElement("span", { className: "market-badge" }, isUnitTrustId(c.ticker) ? "Unit trust" : c.market),
+          React.createElement("span", { className: "import-alt-name" }, c.name)))
+      ) : null,
+      // Manual matcher: search every live exchange by name or symbol and pick the
+      // exact listing when auto-matching missed or the user wants a different one.
+      r.manualSearch ? React.createElement("div", { className: "import-manual-search" },
+        React.createElement("div", { className: "import-manual-hint" },
+          "Search by company name, or type the exact symbol (e.g. ", React.createElement("code", null, "AAPL"),
+          " or ", React.createElement("code", null, "AGL.JO"), ") and pick “Use this exact symbol” to force the match. Set the market with the dropdown above first if needed."),
+        React.createElement(TickerSearch, {
+          value: r.query,
+          market: r.market,
+          onChange: () => {},
+          onMarketChange: () => {},
+          onSelect: (sel) => { updateRow(r.id, { manualSearch: false }); chooseCandidate(r.id, { ticker: sel.ticker, market: sel.market, name: sel.name }); }
+        })
+      ) : null,
+      React.createElement("div", { className: "import-card-meta" },
+        React.createElement("div", { className: "import-qty-field import-exch-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Exchange"),
+          React.createElement("select", {
+            className: "import-input import-field-select", value: r.market,
+            onChange: e => { updateRow(r.id, { market: e.target.value, status: 'resolving', ticker: '' }); reResolveRow(r.id); }
+          }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value },
+              m.label + " — " + m.country)))),
+        React.createElement("div", { className: "import-qty-field import-date-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Date"),
+          React.createElement("input", {
+            className: "import-input", type: "date", max: todayISO,
+            value: r.purchaseDate || '',
+            onChange: e => updateRow(r.id, { purchaseDate: e.target.value })
+          }))),
+      React.createElement("div", { className: "import-card-qty" },
+        React.createElement("div", { className: "import-qty-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Shares"),
+          React.createElement("input", {
+            className: "import-input" + (sharesBad ? " bad" : ""),
+            inputMode: "decimal", value: r.shares, placeholder: "0",
+            onChange: e => updateRow(r.id, { shares: sanitizeDecimalInput(e.target.value) })
+          })),
+        React.createElement("div", { className: "import-qty-field" },
+          React.createElement("span", { className: "import-qty-label" }, "Cost/share (", (MARKET_CURRENCY[r.market] || MARKET_CURRENCY.US).code, ")"),
+          React.createElement("input", {
+            className: "import-input" + (costBad ? " bad" : ""),
+            inputMode: "decimal", value: r.costBasis, placeholder: "0.00",
+            onChange: e => updateRow(r.id, { costBasis: sanitizeDecimalInput(e.target.value) })
+          }))),
+      amt != null ? React.createElement("div", { className: "import-amount-line" },
+        React.createElement("span", null, "Holding amount"),
+        React.createElement("span", { className: "mono" }, fmt(amt, r.market))) : null,
+      matched ? React.createElement("div", { className: "import-qty-field import-sector-field" + (sectorUnknown ? " is-unknown" : "") },
+        React.createElement("span", { className: "import-qty-label" },
+          "Sector",
+          React.createElement("span", { className: "import-sector-hint" },
+            sectorUnknown
+              ? React.createElement(React.Fragment, null, React.createElement(Icon, { name: "alert", size: 11 }), " pick one — we'll remember it")
+              : " · where it lands in your allocation")),
+        React.createElement("select", {
+          className: "import-input import-field-select" + (sectorUnknown ? " bad" : ""),
+          value: sectorValue,
+          onChange: e => setSectorByRow(prev => ({ ...prev, [r.id]: e.target.value }))
+        },
+          React.createElement("option", { value: "" }, sectorUnknown ? "Choose sector…" : "Other (uncategorised)"),
+          (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s)))
+      ) : null
+    );
+  };
+
+  const renderReview = () => React.createElement("div", { className: "modal-body" },
+    React.createElement("div", { className: "import-review-head" },
+      React.createElement("span", null, validRows.length, " of ", rows.length, " ready"),
+      notFoundCount > 0 ? React.createElement("span", { className: "text-down text-xs" }, notFoundCount, " unmatched") : null,
+      resolving ? React.createElement("span", { className: "text-dim text-xs" }, "Matching…") : React.createElement("button", {
+        className: "btn btn-ghost btn-xs", onClick: () => resolveRows(rows.filter(r => r.include))
+      }, React.createElement(Icon, { name: "refresh", size: 12 }), " Re-match all")
+    ),
+    React.createElement("div", { className: "import-bulk-market" },
+      React.createElement("span", { className: "import-bulk-label" }, "Match all rows against exchange"),
+      React.createElement("div", { className: "import-bulk-chips" },
+        MARKETS.map(m => React.createElement("button", {
+          key: m.value,
+          type: "button",
+          className: "import-bulk-chip" + (chosenMarket === m.value ? " active" : ""),
+          onClick: () => setAllMarket(m.value),
+          title: m.country + " · " + m.exchange + " · " + (MARKET_CURRENCY[m.value] || MARKET_CURRENCY.US).code
+        }, m.label)))
+    ),
+    React.createElement("div", { className: "import-cards" }, rows.map(renderCard)),
+    collisionCount > 0 && !resolving ? React.createElement("div", { className: "import-gate-note import-dup-note" },
+      React.createElement(Icon, { name: "alert", size: 13 }),
+      React.createElement("span", null, `${collisionCount} rows matched a listing that another row also uses — importing as-is will combine them into a single position with summed shares. Re-check the flagged rows so each holding lands on its own listing.`)
+    ) : null,
+    (notFoundCount > 0 || needQtyCount > 0) && !resolving ? React.createElement("div", { className: "import-gate-note" },
+      notFoundCount > 0
+        ? `${notFoundCount} row${notFoundCount !== 1 ? 's' : ''} couldn't be matched to a live listing — refine the name, switch the market, or tap Change to pick from alternatives. Only matched holdings import.`
+        : `${needQtyCount} matched row${needQtyCount !== 1 ? 's' : ''} still need shares and cost before importing.`
+    ) : null,
+    React.createElement("div", { className: "form-actions", style: { marginTop: 14 } },
+      React.createElement("button", { className: "btn btn-secondary", onClick: () => { setStage('input'); setRows([]); } }, "Back"),
+      React.createElement("button", {
+        className: "btn btn-primary", onClick: doImport,
+        disabled: validRows.length === 0 || importing || resolving
+      }, importing ? "Importing…" : resolving ? "Matching…" : "Import " + validRows.length + " holding" + (validRows.length !== 1 ? "s" : ""))
+    )
+  );
+
+  return React.createElement("div", { className: "modal" },
+    React.createElement("div", { className: "modal-backdrop", onClick: stage === 'input' ? onClose : undefined }),
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 520 } },
+      stage === 'input' ? React.createElement("div", { className: "modal-handle" }) : null,
+      React.createElement("div", { className: "modal-header" },
+        React.createElement("div", null,
+          React.createElement("div", { className: "modal-title" }, defaultMarket === 'TFSA' ? "Import TFSA holdings" : "Import holdings"),
+          React.createElement("div", { className: "modal-subtitle" }, stage === 'input' ? "Match company names to live listings" : "Review matches before importing")
+        ),
+        React.createElement("button", { className: "modal-close", onClick: requestClose, "aria-label": "Close" }, React.createElement(Icon, { name: "x" }))
+      ),
+      stage === 'input' ? renderInput() : renderReview()
+    ),
+    confirmClose ? React.createElement("div", { className: "import-confirm" },
+      React.createElement("div", { className: "import-confirm-card" },
+        React.createElement("div", { className: "import-confirm-title" }, "Discard this import?"),
+        React.createElement("div", { className: "import-confirm-body" },
+          "You're reviewing ", React.createElement("strong", null, rows.length, " holding", rows.length !== 1 ? "s" : ""),
+          ". Closing now discards these matches — nothing will be added to your portfolio."),
+        React.createElement("div", { className: "import-confirm-actions" },
+          React.createElement("button", { className: "btn btn-secondary", onClick: () => setConfirmClose(false) }, "Keep editing"),
+          React.createElement("button", { className: "btn btn-danger", onClick: () => { setConfirmClose(false); onClose(); } }, "Discard import"))
+      )
+    ) : null
+  );
+}
   window.PBModals = window.PBModals || {};
   window.PBModals.SectorAllocationModal = SectorAllocationModal;
   window.PBModals.SectorDetailModal = SectorDetailModal;
@@ -2479,4 +3100,5 @@ function AlertsModal(_ref11) {
   window.PBModals.DetailModal = DetailModal;
   window.PBModals.SettingsModal = SettingsModal;
   window.PBModals.AlertsModal = AlertsModal;
+  window.PBModals.ImportModal = ImportModal;
 })();
