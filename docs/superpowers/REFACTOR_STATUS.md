@@ -45,10 +45,15 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   (`(shares*costBasis + n*price)/newTotalShares`) + the `onBuy(..., costCcy)` payload are byte-identical
   (verbatim), pinned by a before/after render probe (US + crypto-in-ZAR). `Icon`/`useSwipeDownToClose`/
   `useBodyScrollLock`/`sanitizeDecimalInput` already bridged; the buy mutator stays in the data layer.
+- **inc-21** `SellModal` (~138 lines) -> bucket; **+0 IIFE / +0 bridge** (all deps already wired). The
+  %<->shares sync (both directions + chip), `pnl = (price - costBasis) * shares` (sign + format), the
+  validity cap (shares <= holding), and the 6-arg `onSell` payload (**no** costCcy) are byte-identical
+  (verbatim), pinned by a before/after render probe (sell + loss + over-holding). Realized
+  gain/proceeds stay in the `onSell` mutator (data layer).
 
-**Current state:** `pb-modals.js` holds **9 modals + the detail subtree + the settings subtree**;
+**Current state:** `pb-modals.js` holds **10 modals + the detail subtree + the settings subtree**;
 `window.PBApp` bridge = **37** members (33 after feature PRs #27–#29; inc-19 added 4); `sw.js`
-`CACHE_NAME` = **playbook-shell-v70**.
+`CACHE_NAME` = **playbook-shell-v71**.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
@@ -70,20 +75,22 @@ review cards; DATA sector field; TickerSearch subtree; no import fired) green.
 `onBuy` payload, US + crypto-in-ZAR) was green **before & after** the verbatim move. +1 IIFE read
 (`positionCostCcy`), 0 new bridge.
 
-**NEXT -> the money tier (continued) — characterization test REQUIRED first (rule #3):**
-- **`SellModal`** (~141) — `pnl = (price - costBasis) * shares` + the %<->shares sync (100% -> whole
-  position, 4dp rounding); realized gain/proceeds happen in the `onSell` mutator (data layer), not the
-  modal. Pin pnl + the sync + the `onSell` payload, then move. **0 new bridge / 0 new IIFE reads.**
+**DONE — inc-21: `SellModal`** (~138 lines) — the %<->shares sync (both directions + chip), `pnl =
+(price - costBasis) * shares` (sign + format), the validity cap, and the 6-arg `onSell` payload (no
+costCcy) were pinned by a before/after render probe (sell + loss + over-holding), green both sides.
+**0 new bridge / 0 new IIFE reads** — verbatim. Realized gain/proceeds stay in the `onSell` mutator.
+
+**NEXT -> the money tier (last one) — characterization test REQUIRED first (rule #3):**
 - **`PositionModal`** (~326) — builds the cost-basis save payload (cost mode / currency /
   crypto total-vs-per-unit) + `diffChanges`. New bridge member `MarketPicker` (multi-caller with
   `WatchlistView`); `DATA` read at render time. Pin the payload + diff, then move. Uses already-bridged
-  `SectorWeightRows`.
+  `SectorWeightRows`. **Deferred (per the Buy+Sell scope for this session).**
 
 **Roadmap correction (2026-07-14, confirmed 2026-07-18):** an earlier version of this file lumped
 `AlertsModal` into the rule-#3-gated tier. On re-reading, Alerts is display + CRUD only (no eval, no
 money) -> a safe move. Borne out by inc-18 (Alerts) and inc-19 (Import): both were safe verbatim
-moves. **The safe verbatim-move tier is now exhausted** — only the rule-#3-gated Buy/Position/Sell
-money modals remain, each needing a characterization test first.
+moves. **The safe verbatim-move tier is now exhausted** — Buy (inc-20) + Sell (inc-21) are landed; only
+the rule-#3-gated `PositionModal` remains, needing a characterization test first.
 
 ## The mechanical recipe (turnkey — every increment 15–17 followed this)
 
