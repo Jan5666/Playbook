@@ -40,10 +40,15 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   is read **at render time** (data.js loads after the bucket — the `pb-views.js` pattern). No
   cost-basis / import-matching / backup code moved — the import mutator lives in the data layer (via
   the `onImport` prop).
+- **inc-20** `BuyModal` (~92 lines) -> bucket; **+1 IIFE read (`positionCostCcy`) / +0 bridge**. First
+  rule-#3 money-tier move: the in-body average cost-basis re-blend
+  (`(shares*costBasis + n*price)/newTotalShares`) + the `onBuy(..., costCcy)` payload are byte-identical
+  (verbatim), pinned by a before/after render probe (US + crypto-in-ZAR). `Icon`/`useSwipeDownToClose`/
+  `useBodyScrollLock`/`sanitizeDecimalInput` already bridged; the buy mutator stays in the data layer.
 
-**Current state:** `pb-modals.js` holds **8 modals + the detail subtree + the settings subtree**;
+**Current state:** `pb-modals.js` holds **9 modals + the detail subtree + the settings subtree**;
 `window.PBApp` bridge = **37** members (33 after feature PRs #27–#29; inc-19 added 4); `sw.js`
-`CACHE_NAME` = **playbook-shell-v69**.
+`CACHE_NAME` = **playbook-shell-v70**.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
@@ -61,13 +66,18 @@ matchers). `DATA` read at render time. No inline matching/money logic — confir
 `onImport` (the mutator is data-layer). Mount gate + a render probe (input stage; paste -> 2 matched
 review cards; DATA sector field; TickerSearch subtree; no import fired) green.
 
-**NEXT -> the money tier — characterization test REQUIRED first (rule #3):**
-- **`BuyModal`** (~358) — recomputes **average cost basis** in-body
-  (`(shares*costBasis + n*price)/total`). Pin the averaging + buy payload, then move.
+**DONE — inc-20: `BuyModal`** (~92 lines) — first money-tier move; the rule-#3 pin (avg re-blend +
+`onBuy` payload, US + crypto-in-ZAR) was green **before & after** the verbatim move. +1 IIFE read
+(`positionCostCcy`), 0 new bridge.
+
+**NEXT -> the money tier (continued) — characterization test REQUIRED first (rule #3):**
+- **`SellModal`** (~141) — `pnl = (price - costBasis) * shares` + the %<->shares sync (100% -> whole
+  position, 4dp rounding); realized gain/proceeds happen in the `onSell` mutator (data layer), not the
+  modal. Pin pnl + the sync + the `onSell` payload, then move. **0 new bridge / 0 new IIFE reads.**
 - **`PositionModal`** (~326) — builds the cost-basis save payload (cost mode / currency /
-  crypto total-vs-per-unit). Pin the payload, then move. Uses already-bridged `SectorWeightRows`.
-- **`SellModal`** (~141) — share-quantity math (`shares * pct`); realized-gain/proceeds happen in the
-  `onSell` mutator (data layer), not the modal. Light characterization test, then move.
+  crypto total-vs-per-unit) + `diffChanges`. New bridge member `MarketPicker` (multi-caller with
+  `WatchlistView`); `DATA` read at render time. Pin the payload + diff, then move. Uses already-bridged
+  `SectorWeightRows`.
 
 **Roadmap correction (2026-07-14, confirmed 2026-07-18):** an earlier version of this file lumped
 `AlertsModal` into the rule-#3-gated tier. On re-reading, Alerts is display + CRUD only (no eval, no

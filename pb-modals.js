@@ -9,6 +9,7 @@
   const marketCurrency = PBCore.marketCurrency; // PBCore global
   const convertCcy = PBCore.convertCcy; // PBCore global
   const valuePositionInCostCcy = PBCore.valuePositionInCostCcy; // PBCore global (money helper - stays in PBCore)
+  const positionCostCcy = PBCore.positionCostCcy; // PBCore global (money helper)
   const INDICATOR_INFO = PBContent.INDICATOR_INFO; // PBContent global
   const fetchQuote = PBData.fetchQuote; // PBData global (browser-only; loaded before this script)
   const isUnitTrustId = PBData.isUnitTrustId; // PBData global
@@ -3092,6 +3093,103 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     ) : null
   );
 }
+// Buy more of an existing holding. Adds shares at a new cost/share and lets the
+// shared addPosition merge + re-average the position. Previews the resulting
+// share count and blended average cost before committing.
+function BuyModal({ position, fxRates, onClose, onBuy }) {
+  const { Icon, useSwipeDownToClose, useBodyScrollLock, sanitizeDecimalInput } = window.PBApp;
+  const prices = PBStore.usePricesMap();
+  const [shares, setShares] = useState('');
+  const [buyPrice, setBuyPrice] = useState('');
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const [buyDate, setBuyDate] = useState(todayISO);
+  const [notes, setNotes] = useState('');
+  const panelRef = useRef(null);
+  useSwipeDownToClose(panelRef, onClose);
+  useBodyScrollLock();
+  const q = prices[priceKey(position.market, position.ticker)];
+  // Top up in the same currency the holding's cost is booked in: native for a
+  // normal holding, the chosen fiat for crypto bought in ZAR. The live quote is
+  // in the market's native currency, so seed it converted into the cost currency.
+  const isCryptoPos = position.market === 'CRYPTO';
+  const nativeCode = marketCurrency(position.market);
+  const costCcy = positionCostCcy(position);
+  const rates = fxRates?.rates || null;
+  const seededPrice = q ? (costCcy === nativeCode ? q.price : convertCcy(q.price, nativeCode, costCcy, rates)) : null;
+  useEffect(() => {
+    if (seededPrice != null && isFinite(seededPrice) && !buyPrice) setBuyPrice(seededPrice.toFixed(2));
+  }, [seededPrice]);
+  const ccy = isCryptoPos ? (CURRENCY_SYMBOLS[costCcy] || '$') : (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
+  const numShares = parseDecimal(shares);
+  const numPrice = parseDecimal(buyPrice);
+  const dateOk = !buyDate || buyDate <= todayISO;
+  const valid = isFinite(numShares) && numShares > 0 && isFinite(numPrice) && numPrice > 0 && dateOk;
+  const addAmount = valid ? numShares * numPrice : null;
+  const newTotalShares = valid ? position.shares + numShares : position.shares;
+  const newAvg = valid ? (position.shares * position.costBasis + numShares * numPrice) / newTotalShares : null;
+  const submit = () => {
+    if (!valid) return;
+    onBuy(position.ticker, position.market, numShares, numPrice, buyDate, notes, costCcy);
+    onClose();
+  };
+  return React.createElement("div", { className: "modal" },
+    React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
+    React.createElement("div", { className: "modal-panel", ref: panelRef, style: { maxWidth: 520 } },
+      React.createElement("div", { className: "modal-handle" }),
+      React.createElement("div", { className: "modal-header" },
+        React.createElement("div", null,
+          React.createElement("div", { className: "modal-title" }, "Buy more ", position.ticker),
+          React.createElement("div", { className: "modal-subtitle" },
+            position.shares, isCryptoPos ? " held \xB7 avg " : (position.shares === 1 ? " share held \xB7 avg " : " shares held \xB7 avg "), ccy, position.costBasis.toFixed(2))),
+        React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
+          React.createElement(Icon, { name: "x" }))),
+      React.createElement("div", { className: "modal-body" },
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, isCryptoPos ? "Amount to buy" : "Shares to buy"),
+          React.createElement("input", {
+            type: "text", inputMode: "decimal",
+            autoComplete: "off", autoCorrect: "off", spellCheck: false,
+            placeholder: isCryptoPos ? "0.5" : "10",
+            value: shares, onChange: e => setShares(sanitizeDecimalInput(e.target.value))
+          })),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, isCryptoPos ? ("Cost per coin (" + costCcy + ")") : "Cost per share"),
+          React.createElement("div", { className: "input-prefix-wrap" },
+            React.createElement("span", { className: "prefix" }, ccy),
+            React.createElement("input", {
+              type: "text", inputMode: "decimal",
+              autoComplete: "off", autoCorrect: "off", spellCheck: false,
+              placeholder: seededPrice != null && isFinite(seededPrice) ? seededPrice.toFixed(2) : '0.00',
+              value: buyPrice, onChange: e => setBuyPrice(sanitizeDecimalInput(e.target.value))
+            }))),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Purchase date"),
+          React.createElement("input", {
+            type: "date", value: buyDate, max: todayISO,
+            onChange: e => setBuyDate(e.target.value)
+          })),
+        React.createElement("div", { className: "form-group" },
+          React.createElement("label", { className: "form-label" }, "Notes (optional)"),
+          React.createElement("input", {
+            type: "text", maxLength: "200", placeholder: "e.g. Added on the dip",
+            value: notes, onChange: e => setNotes(e.target.value)
+          })),
+        addAmount != null && React.createElement("div", {
+          className: "card buy-preview", style: { padding: '10px 14px' }
+        },
+          React.createElement("div", { className: "buy-preview-row" },
+            React.createElement("span", { className: "text-xs text-dim" }, "Amount"),
+            React.createElement("span", { className: "mono font-semibold" }, ccy + addAmount.toFixed(2))),
+          React.createElement("div", { className: "buy-preview-row" },
+            React.createElement("span", { className: "text-xs text-dim" }, "New position"),
+            React.createElement("span", { className: "mono font-semibold" },
+              newTotalShares, " sh \xB7 avg ", ccy, newAvg.toFixed(2)))),
+        React.createElement("div", { className: "form-actions" },
+          React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
+          React.createElement("button", {
+            className: "btn btn-primary", onClick: submit, disabled: !valid
+          }, "Add shares")))));
+}
   window.PBModals = window.PBModals || {};
   window.PBModals.SectorAllocationModal = SectorAllocationModal;
   window.PBModals.SectorDetailModal = SectorDetailModal;
@@ -3101,4 +3199,5 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   window.PBModals.SettingsModal = SettingsModal;
   window.PBModals.AlertsModal = AlertsModal;
   window.PBModals.ImportModal = ImportModal;
+  window.PBModals.BuyModal = BuyModal;
 })();
