@@ -4,10 +4,10 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-jrgahr` (off latest `origin/main`). **Jan reviews +
-lands; never push `main`, never open a PR.** Last landed on `main`: inc 15–17 (PR #26); feature PRs
-#27–#29 (rotation tab, watchlist suggestions) landed after, bumping `sw` `CACHE_NAME` to v67 and the
-bridge to 33 members without a refactor increment.
+**Branch:** `claude/refactoring-plan-fs89s3` (off latest `origin/main`). **Jan reviews +
+lands; never push `main`, never open a PR.** Last landed on `main`: inc-18 `AlertsModal` (PR #30);
+before it inc 15–17 (PR #26) and feature PRs #27–#29 (rotation tab, watchlist suggestions), which had
+bumped `sw` `CACHE_NAME` to v67 and the bridge to 33 members without a refactor increment.
 
 ## The refactor in one paragraph
 
@@ -33,10 +33,17 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
 - **inc-18** `AlertsModal` -> bucket; **safe verbatim move, 0 new bridge members / 0 new IIFE reads**
   (`Icon`, `fmt`, `timeAgo`, `useSwipeDownToClose`, `useBodyScrollLock` already bridged; `useRef`
   already IIFE-read). Display + CRUD only — alert eval + money math stay in pb-core, untouched.
+- **inc-19** `ImportModal` (~612 lines) -> bucket; **+4 bridge / +7 IIFE reads**. Display + delegate:
+  the multi-caller `TickerSearch` and the impure readers `parseImportFile`/`ocrImageFile`/
+  `searchListingsMulti` stay in app.js (bridged, per the inc-14 `parseCashFlowFile` precedent); the 7
+  pb-import.js matchers are the **first `PBImport` IIFE reads** in the bucket; `DATA` (`window.PB_DATA`)
+  is read **at render time** (data.js loads after the bucket — the `pb-views.js` pattern). No
+  cost-basis / import-matching / backup code moved — the import mutator lives in the data layer (via
+  the `onImport` prop).
 
-**Current state:** `pb-modals.js` holds **7 modals + the detail subtree + the settings subtree**;
-`window.PBApp` bridge = **33** members (33 as of feature PRs #27–#29; inc-18 added none); `sw.js`
-`CACHE_NAME` = **playbook-shell-v68**.
+**Current state:** `pb-modals.js` holds **8 modals + the detail subtree + the settings subtree**;
+`window.PBApp` bridge = **37** members (33 after feature PRs #27–#29; inc-19 added 4); `sw.js`
+`CACHE_NAME` = **playbook-shell-v69**.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
@@ -47,11 +54,14 @@ Re-verified by reading each modal body — the split is **display/delegate (safe
 0 new IIFE reads (`openChart` confirmed a local closure; all deps already bridged/IIFE-read). Mount
 gate + a dedicated render probe (active alerts + triggered history + note branch + perm box) green.
 
-**NEXT -> inc-19: `ImportModal`** (~612 lines) — safe-ish. Display + delegate:
-`parseHoldingsFromText(...)` + `onImport(...)`; the import-matching stays put (pb-import / a stays-put
-helper). Verify no matching logic is inline in the modal, then verbatim move.
+**DONE — inc-19: `ImportModal`** (~612 lines) — SAFE display + delegate move completed. +4 bridge
+(`TickerSearch` multi-caller; the impure readers `parseImportFile`/`ocrImageFile`/`searchListingsMulti`
+kept in app.js — each roots a stays-put app.js infra cluster) / +7 `PBImport` IIFE reads (the
+matchers). `DATA` read at render time. No inline matching/money logic — confirmed rows are delegated to
+`onImport` (the mutator is data-layer). Mount gate + a render probe (input stage; paste -> 2 matched
+review cards; DATA sector field; TickerSearch subtree; no import fired) green.
 
-**THEN the money tier — characterization test REQUIRED first (rule #3):**
+**NEXT -> the money tier — characterization test REQUIRED first (rule #3):**
 - **`BuyModal`** (~358) — recomputes **average cost basis** in-body
   (`(shares*costBasis + n*price)/total`). Pin the averaging + buy payload, then move.
 - **`PositionModal`** (~326) — builds the cost-basis save payload (cost mode / currency /
@@ -59,10 +69,11 @@ helper). Verify no matching logic is inline in the modal, then verbatim move.
 - **`SellModal`** (~141) — share-quantity math (`shares * pct`); realized-gain/proceeds happen in the
   `onSell` mutator (data layer), not the modal. Light characterization test, then move.
 
-**Roadmap correction (2026-07-14):** an earlier version of this file lumped `AlertsModal` into the
-rule-#3-gated tier. On re-reading, Alerts is display + CRUD only (no eval, no money) -> it is a safe
-move, promoted to next. The safe tier is **not** fully exhausted after Settings — Alerts (and likely
-Import) remain safe verbatim moves; only Buy/Position/Sell truly need tests first.
+**Roadmap correction (2026-07-14, confirmed 2026-07-18):** an earlier version of this file lumped
+`AlertsModal` into the rule-#3-gated tier. On re-reading, Alerts is display + CRUD only (no eval, no
+money) -> a safe move. Borne out by inc-18 (Alerts) and inc-19 (Import): both were safe verbatim
+moves. **The safe verbatim-move tier is now exhausted** — only the rule-#3-gated Buy/Position/Sell
+money modals remain, each needing a characterization test first.
 
 ## The mechanical recipe (turnkey — every increment 15–17 followed this)
 
