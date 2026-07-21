@@ -2,7 +2,13 @@
 // Registers window.PBViews.<View> and reads shared app.js primitives from window.PBApp
 // at render time (bridge). data.js/PBStore globals are read directly, not via the bridge.
 (function () {
-  const { useEffect, useRef, useState, useMemo, useCallback } = React; // UMD global; views use these hooks unqualified
+  const { useEffect, useRef, useState, useMemo, useCallback, useLayoutEffect } = React; // UMD global; views use these hooks unqualified
+// PBCore/PBData module globals used by the extracted Heatmap view (Phase 4 inc 23).
+const convertCcy = PBCore.convertCcy;
+const positionCostCcy = PBCore.positionCostCcy;
+const marketCurrency = PBCore.marketCurrency;
+const priceKey = PBCore.priceKey;
+const fetchQuoteBatchLight = PBData.fetchQuoteBatchLight;
 // ─── Hot Topics ──────────────────────────────────────────────────────────────
 // Earnings countdown across mega-caps + your names + JSE, a scheduled macro
 // calendar (Fed/ECB/BOJ/BoE/SARB + data/energy), and AI-surfaced market-moving
@@ -799,6 +805,295 @@ function MarketRotationView(_refMR) {
   );
 }
 
+// ─── Heatmap (sector treemap) view + fullscreen chrome ──────
+// Moved verbatim from app.js (Phase 4 inc 23). HeatmapTreemap + ZoomPanHeatmap stay in app.js
+// (ZoomPanHeatmap is also used by pb-modals SectorDetailModal) and are reached via the PBApp
+// bridge; SectorDetailModal is read from PBModals at render time (pb-modals.js loads after us).
+// Full-screen pinch-to-zoom & pan heatmap — thin chrome around ZoomPanHeatmap.
+function HeatmapFullscreen(_refFS) {
+  const { Icon, ZoomPanHeatmap } = window.PBApp;
+  let { rows, title, loading, onOpenDetail, onOpenSector, onClose } = _refFS;
+  return React.createElement("div", { className: "heatmap-fs" },
+    React.createElement("div", { className: "heatmap-fs-bar" },
+      React.createElement("div", { className: "heatmap-fs-title" }, title || 'Heatmap',
+        React.createElement("span", { className: "heatmap-fs-hint" }, "Pinch, scroll or double-tap to zoom · drag to pan · tap a sector name to dive in")),
+      React.createElement("div", { className: "heatmap-fs-actions" },
+        React.createElement("button", { className: "btn btn-ghost btn-xs", onClick: onClose, "aria-label": "Close fullscreen" },
+          React.createElement(Icon, { name: "x", size: 16 }))
+      )
+    ),
+    React.createElement(ZoomPanHeatmap, {
+      rows: rows, loading: loading, onOpenDetail: onOpenDetail, onOpenSector: onOpenSector,
+      lockScroll: true, stageClass: "heatmap-fs-stage", contentClass: "heatmap-fs-content",
+      portraitStretch: 1.5
+    })
+  );
+}
+
+function HeatmapView(_ref8b) {
+  const { Icon, resolveTickerName, usePersistedState, HeatmapTreemap } = window.PBApp;
+  const SectorDetailModal = PBModals.SectorDetailModal;
+  const DATA = window.PB_DATA;
+  let { positions, onOpenDetail, displayCurrency, fxRates } = _ref8b;
+  const prices = PBStore.usePricesMap();
+  const exchanges = DATA.HEATMAPS;
+  const [mode, setMode] = usePersistedState('pb.heatmap.mode.v1', 'market');
+  const [selectedId, setSelectedId] = usePersistedState('pb.heatmap.exchange.v1', exchanges[0].id);
+  const [portfolioFilter, setPortfolioFilter] = usePersistedState('pb.heatmap.pf.v1', 'all');
+  const exchange = exchanges.find(e => e.id === selectedId) || exchanges[0];
+  // Last-good rows are persisted per exchange so reopening the tab paints the
+  // previous heatmap instantly while a fresh fetch runs in the background.
+  const [persisted, setPersisted] = usePersistedState('pb.heatmap.lastgood.v1', {});
+  const [cache, setCache] = useState(() => ({ ...persisted }));
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [sectorDetail, setSectorDetail] = useState(null);
+  const [lastUpdate, setLastUpdate] = useState(() => persisted[exchanges[0].id]?.fetchedAt ? new Date(persisted[exchanges[0].id].fetchedAt) : null);
+  const cacheKey = exchange.id;
+  const cached = cache[cacheKey];
+  const loadRef = useRef(false);
+  const mkSkeleton = (c) => ({ ticker: c.t, market: exchange.market, sector: c.s, industry: c.i, value: c.m, price: null, changePct: null });
+  const load = useCallback(async (force) => {
+    if (loadRef.current) return;
+    const existing = cache[cacheKey];
+    if (!force && existing && existing.fetchedAt && Date.now() - existing.fetchedAt < 300_000) return;
+    loadRef.current = true;
+    setLoading(true);
+    setError(null);
+    const constituents = exchange.constituents;
+    setProgress({ done: 0, total: constituents.length });
+    // Paint the full grid immediately — its layout is driven by market cap
+    // (known up-front), so structure is stable and only colour fills in as
+    // quotes arrive. On a refresh we keep the previous (stale) colours visible
+    // and overwrite them per batch, so cells never flash back to grey.
+    const prevMap = {};
+    if (existing && existing.rows) existing.rows.forEach(r => { if (r.changePct != null) prevMap[priceKey(r.market, r.ticker)] = r; });
+    const buildRows = (quotes) => constituents.map(c => {
+      const key = priceKey(exchange.market, c.t);
+      const q = quotes[key];
+      if (q) return { ticker: c.t, market: exchange.market, sector: c.s, industry: c.i, value: c.m, price: q.price, changePct: q.changePct };
+      const prev = prevMap[key];
+      return prev || mkSkeleton(c);
+    });
+    setCache(prev => ({ ...prev, [cacheKey]: { rows: buildRows({}), fetchedAt: 0 } }));
+    try {
+      const items = constituents.map(c => ({ ticker: c.t, market: exchange.market }));
+      const quotes = await fetchQuoteBatchLight(items, (done, total, partial) => {
+        setProgress({ done, total });
+        if (partial) setCache(prev => ({ ...prev, [cacheKey]: { rows: buildRows(partial), fetchedAt: 0 } }));
+      });
+      const rows = buildRows(quotes);
+      if (rows.filter(r => r.changePct != null).length === 0) {
+        setError('No live data returned. Try again shortly.');
+        setCache(prev => { const n = { ...prev }; delete n[cacheKey]; return n; });
+      } else {
+        const entry = { rows, fetchedAt: Date.now() };
+        setCache(prev => ({ ...prev, [cacheKey]: entry }));
+        setPersisted(prev => ({ ...prev, [cacheKey]: entry }));
+        setLastUpdate(new Date());
+      }
+    } catch (e) {
+      setError('Failed to load heatmap. Check your connection.');
+    } finally {
+      loadRef.current = false;
+      setLoading(false);
+      setProgress(null);
+    }
+  }, [cacheKey, exchange, cache, setPersisted]);
+  useEffect(() => {
+    if (mode === 'market') {
+      const e = cache[cacheKey];
+      if (e && e.fetchedAt) setLastUpdate(new Date(e.fetchedAt));
+      load(false);
+    }
+  }, [cacheKey, mode]);
+  const portfolioMarkets = useMemo(() => {
+    const mkts = new Set();
+    positions.forEach(p => mkts.add(p.market));
+    return Array.from(mkts).sort();
+  }, [positions]);
+  const portfolioRows = useMemo(() => {
+    if (mode !== 'portfolio') return [];
+    const rates = fxRates?.rates || null;
+    return positions.filter(p => portfolioFilter === 'all' || p.market === portfolioFilter).map(p => {
+      const q = prices[priceKey(p.market, p.ticker)];
+      // Size every holding by its market value in the display currency, so US,
+      // JSE and TFSA positions are comparable in one treemap (the raw native
+      // price would let a rand-quoted position dwarf a dollar one). Falls back
+      // to cost basis when no live quote has arrived yet, so the holding still
+      // appears — coloured grey, exactly like a market-heatmap constituent whose
+      // quote is still streaming in — instead of vanishing from the grid.
+      const native = marketCurrency(p.market);
+      // Live value is in the market's native currency; the cost-basis fallback is
+      // in the currency the holding was booked in (crypto-in-ZAR keeps its rand).
+      const value = (q && q.price > 0)
+        ? convertCcy(p.shares * q.price, native, displayCurrency, rates)
+        : convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates);
+      if (value == null || value <= 0) return null;
+      const changePct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+      let sec = DATA.findSector(p.ticker, p.market);
+      if (sec.sector === 'Other') {
+        const nm = p.name || resolveTickerName(p.ticker, p.market, q) || '';
+        const byName = DATA.classifySectorByName(nm);
+        if (byName !== 'Other') sec = { sector: byName, industry: byName };
+      }
+      return { ticker: p.ticker, market: p.market, sector: sec.sector, industry: sec.industry, value, price: q ? q.price : null, changePct };
+    }).filter(Boolean);
+  }, [mode, positions, prices, portfolioFilter, displayCurrency, fxRates]);
+  const activeRows = mode === 'market' ? (cached ? cached.rows : []) : portfolioRows;
+  const stats = useMemo(() => {
+    if (!activeRows || activeRows.length === 0) return null;
+    const dataRows = activeRows.filter(r => r.changePct != null && isFinite(r.changePct));
+    if (dataRows.length === 0) return null;
+    const up = dataRows.filter(r => r.changePct > 0).length;
+    const down = dataRows.filter(r => r.changePct < 0).length;
+    const flat = dataRows.length - up - down;
+    const totalVal = dataRows.reduce((s, r) => s + r.value, 0);
+    const wAvg = totalVal > 0 ? dataRows.reduce((s, r) => s + r.changePct * r.value, 0) / totalVal : 0;
+    return { up, down, flat, avg: wAvg, total: dataRows.length };
+  }, [activeRows]);
+  const aspectRatio = mode === 'market' ? 0.62 : 0.82;
+  // Market mode is an at-a-glance overview, so the grid is sized to the space
+  // left in the viewport (under the toggles/stats, above the bottom safe-area)
+  // rather than a fixed canvas that ran off the bottom of the screen. We measure
+  // the grid's own top offset so it adapts to whatever chrome sits above it, then
+  // reserve room below for the "tap a sector" hint, page padding and safe-area.
+  const treemapWrapRef = useRef(null);
+  const [marketFitH, setMarketFitH] = useState(500);
+  useLayoutEffect(() => {
+    if (mode !== 'market') return;
+    const measure = () => {
+      const el = treemapWrapRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      // On phones the chrome above (mode + exchange toggles + meta) is taller and
+      // the viewport shorter, so the old fixed 400px floor pushed the grid's bottom
+      // rows (and the "tap a sector" hint) below the fold. Size the grid to the
+      // space actually left under the toggles and above the bottom hint / safe-area,
+      // with a much lower floor on narrow screens so the whole map fits the screen
+      // instead of overflowing — the desktop look, scaled down for mobile.
+      const isNarrow = window.innerWidth <= 680;
+      const BOTTOM_RESERVE = isNarrow ? 100 : 110; // sector hint + page padding + safe-area
+      const avail = Math.round(window.innerHeight - top - BOTTOM_RESERVE);
+      // Clamp keeps tiles a sensible size on very short / very tall screens; the
+      // upper bound stops the grid getting "too long" on big displays.
+      const floor = isNarrow ? 240 : 400;
+      const ceil = isNarrow ? 600 : 580;
+      const clamped = Math.max(floor, Math.min(ceil, avail));
+      setMarketFitH(prev => Math.abs(prev - clamped) > 2 ? clamped : prev);
+    };
+    measure();
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+    };
+  }, [mode, selectedId, portfolioFilter, loading, !!error, !!progress, activeRows.length, portfolioMarkets.length]);
+  // Portfolio: scale the canvas with holding count so sectors (and the bottom
+  // rows) always have room to render their tiles instead of being clipped to a
+  // header strip.
+  const minHeight = mode === 'market'
+    ? marketFitH
+    : Math.max(480, Math.min(1200, (activeRows.length || 0) * 40 + 140));
+  const progressPct = progress ? Math.round(progress.done / progress.total * 100) : 0;
+  return React.createElement("div", null,
+    React.createElement("div", { className: "heatmap-mode-toggle" },
+      React.createElement("button", {
+        className: `heatmap-mode-btn ${mode === 'portfolio' ? 'active' : ''}`,
+        onClick: () => setMode('portfolio')
+      }, "Portfolio"),
+      React.createElement("button", {
+        className: `heatmap-mode-btn ${mode === 'market' ? 'active' : ''}`,
+        onClick: () => setMode('market')
+      }, "Market")
+    ),
+    mode === 'market' ? React.createElement("div", { className: "heatmap-toggle" },
+      exchanges.map(ex => React.createElement("button", {
+        key: ex.id,
+        className: `heatmap-toggle-btn ${ex.id === selectedId ? 'active' : ''}`,
+        onClick: () => setSelectedId(ex.id)
+      }, ex.label))
+    ) : null,
+    mode === 'portfolio' && portfolioMarkets.length > 1 ? React.createElement("div", { className: "heatmap-toggle" },
+      React.createElement("button", {
+        className: `heatmap-toggle-btn ${portfolioFilter === 'all' ? 'active' : ''}`,
+        onClick: () => setPortfolioFilter('all')
+      }, "All"),
+      portfolioMarkets.map(m => React.createElement("button", {
+        key: m,
+        className: `heatmap-toggle-btn ${portfolioFilter === m ? 'active' : ''}`,
+        onClick: () => setPortfolioFilter(m)
+      }, m))
+    ) : null,
+    React.createElement("div", { className: "heatmap-meta" },
+      React.createElement("div", { className: "heatmap-meta-left" },
+        stats ? React.createElement(React.Fragment, null,
+          React.createElement("span", { className: "stat-up" }, "▲ ", stats.up),
+          React.createElement("span", { className: "stat-down" }, "▼ ", stats.down),
+          stats.flat > 0 ? React.createElement("span", { className: "stat-flat" }, "● ", stats.flat) : null,
+          React.createElement("span", { className: `stat-avg ${stats.avg >= 0 ? 'up' : 'down'}` },
+            "weighted ", stats.avg >= 0 ? '+' : '', stats.avg.toFixed(2), '%'
+          )
+        ) : React.createElement("span", { className: "text-dim text-sm" }, loading ? "Fetching live quotes…" : (mode === 'portfolio' && positions.length === 0 ? "Add positions to see your portfolio heatmap." : ""))
+      ),
+      React.createElement("div", { className: "heatmap-meta-right" },
+        mode === 'market' && lastUpdate ? React.createElement("span", { className: "text-dim text-sm" },
+          "Updated ", lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        ) : null,
+        activeRows.length > 0 ? React.createElement("button", {
+          className: "btn btn-ghost btn-xs",
+          onClick: () => setFullscreen(true),
+          "aria-label": "Open heatmap fullscreen"
+        }, React.createElement(Icon, { name: "maximize", size: 13 }), " Expand") : null,
+        mode === 'market' ? React.createElement("button", {
+          className: `btn btn-ghost btn-xs ${loading ? 'spin' : ''}`,
+          onClick: () => load(true),
+          disabled: loading,
+          "aria-label": "Refresh heatmap"
+        }, React.createElement(Icon, { name: "refresh", size: 13 }), " ", loading ? "Loading" : "Refresh") : null
+      )
+    ),
+    error && mode === 'market' ? React.createElement("div", { className: "verify-error" }, error) : null,
+    mode === 'market' && loading ? React.createElement("div", { className: "heatmap-progress" },
+      React.createElement("div", { className: "heatmap-progress-bar" },
+        React.createElement("div", { className: "heatmap-progress-fill", style: { width: progressPct + '%' } })),
+      React.createElement("span", { className: "heatmap-progress-text" },
+        progress ? progress.done + " / " + progress.total + " quotes" : "Loading " + exchange.label + "…")
+    ) : null,
+    activeRows.length > 0 ? React.createElement("div", { ref: treemapWrapRef }, React.createElement(HeatmapTreemap, {
+      rows: activeRows,
+      height: mode === 'market' ? marketFitH : undefined,
+      aspectRatio: aspectRatio,
+      minHeight: minHeight,
+      onOpenDetail: onOpenDetail,
+      onOpenSector: (name) => setSectorDetail(name),
+      loading: loading
+    })) : (mode === 'portfolio' && !loading ? React.createElement("div", { className: "heatmap-loading" }, positions.length === 0 ? "You don't have any positions yet." : (portfolioRows.length === 0 && portfolioFilter !== 'all' ? "No " + portfolioFilter + " positions with live data." : "Waiting for live quotes…")) : null),
+    activeRows.length > 0 ? React.createElement("div", { className: "heatmap-sector-hint" },
+      React.createElement(Icon, { name: "maximize", size: 11 }), " Tap a sector name to zoom in") : null,
+    fullscreen ? React.createElement(HeatmapFullscreen, {
+      rows: activeRows,
+      loading: loading,
+      title: mode === 'market' ? exchange.label : 'Your portfolio',
+      onOpenDetail: (tk, mk) => { setFullscreen(false); onOpenDetail && onOpenDetail(tk, mk); },
+      onOpenSector: (name) => setSectorDetail(name),
+      onClose: () => setFullscreen(false)
+    }) : null,
+    sectorDetail ? React.createElement(SectorDetailModal, {
+      sectorName: sectorDetail,
+      rows: activeRows,
+      exchangeLabel: mode === 'market' ? exchange.label : 'Your portfolio',
+      onOpenDetail: onOpenDetail,
+      onClose: () => setSectorDetail(null)
+    }) : null
+  );
+}
+
   window.PBViews = window.PBViews || {};
   window.PBViews.HotTopicsView = HotTopicsView;
   window.PBViews.PicksView = PicksView;
@@ -806,4 +1101,5 @@ function MarketRotationView(_refMR) {
   window.PBViews.RulesView = RulesView;
   window.PBViews.OverviewView = OverviewView;
   window.PBViews.MarketRotationView = MarketRotationView;
+  window.PBViews.HeatmapView = HeatmapView;
 })();
