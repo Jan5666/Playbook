@@ -4,9 +4,9 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-yywg24` (off latest `origin/main` @ inc-24/PR #34). **Jan
-reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc 23–24
-`HeatmapView`/`DashboardView` (PR #34); before them inc-22 `PositionModal` (PR #33), inc 20–21
+**Branch:** `claude/refactor-plan-continuation-0si1yg` (off latest `origin/main` @ inc-25/PR #35). **Jan
+reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-25 `CurrentView`
+(PR #35); before it inc 23–24 `HeatmapView`/`DashboardView` (PR #34), inc-22 `PositionModal` (PR #33), inc 20–21
 Buy/`SellModal` (PR #32), inc-19 `ImportModal` (PR #31), inc-18 `AlertsModal` (PR #30), inc 15–17 (PR #26)
 and feature PRs #27–#29 (rotation tab, watchlist suggestions), which had bumped `sw` `CACHE_NAME` to v67
 and the bridge to 33 members without a refactor increment.
@@ -89,10 +89,19 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   CRYPTO). `content.test.mjs` untouched — `MARKETS` stays a bind in app.js (not the inline array). Lays the
   two row bridges the later `TFSAView` move reuses.
 
+- **inc-26** `WatchlistView` (~860 lines) -> `pb-views.js`; **+3 bridge / +1 IIFE read (`parseDecimal`)**. Fourth
+  non-modal view move; display + delegate (CRUD + the alert-add popup go out through props — the popup only
+  validates with `parseDecimal` then calls `onAddAlert`; alert eval + money math stay in pb-core). The +3 bridge
+  members are all **stays-put** app.js code: `SessionBadge` (a multi-caller shared with `PriceBlock`) and the
+  single-caller `useHotStocks`/`buildSuggestions`, which root app.js infra clusters (`PBData.fetchHotStocks`/
+  `poolMap`/`fetchQuoteLight`; `DATA` read at render time + `readSearchHist`/`cachedName`) — bridged, not moved
+  (the inc-19 impure-reader precedent). Byte-identical (verbatim), pinned by a source-identity proof + a render
+  probe (Watchlist tab with a seeded watchlist + position + alert: cards, add-form/`TickerSearch`, alert popup).
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree**;
-`window.PBApp` bridge = **43** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2);
-`sw.js` `CACHE_NAME` = **playbook-shell-v75**. **Phase 4 modal extraction is COMPLETE** — every modal
-(and all three money modals) lives in the bucket. `pb-views.js` now holds **9 views + the Heatmap fullscreen chrome + the growth-chart cluster** — inc-23 (`HeatmapView`) + inc-24 (`DashboardView`) + inc-25 (`CurrentView`) opened and advanced the **non-modal view tier**.
+`window.PBApp` bridge = **46** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3);
+`sw.js` `CACHE_NAME` = **playbook-shell-v76**. **Phase 4 modal extraction is COMPLETE** — every modal
+(and all three money modals) lives in the bucket. `pb-views.js` now holds **10 views + the Heatmap fullscreen chrome + the growth-chart cluster** — inc-23 (`HeatmapView`) + inc-24 (`DashboardView`) + inc-25 (`CurrentView`) + inc-26 (`WatchlistView`) opened and advanced the **non-modal view tier**.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
@@ -125,7 +134,7 @@ before/after render probe (identical digest) and moved verbatim. **+1 bridge (`M
 multi-caller with `WatchlistView`) / +0 IIFE reads**; `DATA` read at render time; `SectorWeightRows`
 already bridged. **Phase 4 modal extraction is now COMPLETE.**
 
-**NEXT -> the non-modal view tier is underway.** inc-23 extracted `HeatmapView`; inc-24 extracted `DashboardView` (+ its `PortfolioLineChart` growth-chart cluster); inc-25 extracted `CurrentView` (the Holdings tab — `HoldingRow`/`HoldingsListHead` bridged, shared with TFSA). **Remaining tab views: `WatchlistView`, `TFSAView`** (WatchlistView ~1035 lines, delegate-only with `MarketPicker`/`TickerSearch` already bridged; TFSA carries R46k/R500k limit math -> characterization test first, and once it moves the two shared rows lose their last app.js caller and relocate into the bucket — a bridge shrink). Every modal (and all three money modals) is already in the
+**NEXT -> the non-modal view tier is underway.** inc-23 extracted `HeatmapView`; inc-24 extracted `DashboardView` (+ its `PortfolioLineChart` growth-chart cluster); inc-25 extracted `CurrentView` (the Holdings tab — `HoldingRow`/`HoldingsListHead` bridged, shared with TFSA); inc-26 extracted `WatchlistView` (delegate-only; `SessionBadge`/`useHotStocks`/`buildSuggestions` bridged as stays-put app.js code). **Sole remaining tab view: `TFSAView`** (carries R46k/R500k limit + contribution-room math -> characterization test first, and once it moves the two shared rows `HoldingRow`/`HoldingsListHead` lose their last app.js caller and relocate into the bucket — a bridge shrink). Every modal (and all three money modals) is already in the
 bucket. Remaining Phase-4 candidates, if the refactor continues, are non-modal: the large remaining
 app.js view/section components (and the vestigial `FxSummary` dead-code cleanup below). Otherwise the
 post-refactor plan is `SECURITY_ROADMAP.md` (do not start before the refactor phases are called done).

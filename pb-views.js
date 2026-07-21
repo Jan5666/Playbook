@@ -18,6 +18,8 @@ const fetchHistory = PBData.fetchHistory;
 // PBContent/PBCore module globals for the extracted Current (Holdings) view (Phase 4 inc 25).
 const MARKETS = PBContent.MARKETS;
 const valuePositionInCostCcy = PBCore.valuePositionInCostCcy;
+// PBCore module global for the extracted Watchlist view (Phase 4 inc 26).
+const parseDecimal = PBCore.parseDecimal;
 // ─── Hot Topics ──────────────────────────────────────────────────────────────
 // Earnings countdown across mega-caps + your names + JSE, a scheduled macro
 // calendar (Fed/ECB/BOJ/BoE/SARB + data/energy), and AI-surfaced market-moving
@@ -2026,6 +2028,868 @@ function CurrentView(_ref7) {
     renderMarket(activeMarket));
 }
 
+function WatchlistView(_ref8) {
+  let {
+    watchlist,
+    positions,
+    watchlistGroups,
+    alerts,
+    onAdd,
+    onRemove,
+    onReorder,
+    onMoveWatch,
+    onAddWatchGroup,
+    onRenameWatchGroup,
+    onRemoveWatchGroup,
+    onOpenDetail,
+    onAddAlert,
+    onRemoveAlert,
+    childSwipeLockRef
+  } = _ref8;
+  const { SessionBadge, MarketPicker, TickerSearch, PriceBlock, Icon, fmt, fmtNum, sanitizeDecimalInput, usePersistedState, watchListIds, prettyName, resolveTickerName, useHotStocks, buildSuggestions } = window.PBApp;
+  const prices = PBStore.usePricesMap();
+  const [newTicker, setNewTicker] = useState('');
+  const [newMarket, setNewMarket] = useState('US');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [showSuggestions, setShowSuggestions] = usePersistedState('pb.watchlist.showSuggestions.v1', true);
+  // Multiple named watchlists + per-list filtering. activeList 'all' shows every
+  // tracked stock; 'default' is the built-in list; anything else is a custom list
+  // id. The full-list, unsorted, unfiltered "All" view is the only one where the
+  // long-press drag-reorder runs (it reorders the whole array by index, so it
+  // can't operate on a filtered subset).
+  const groups = watchlistGroups || [];
+  const [activeList, setActiveList] = usePersistedState('pb.watchlist.activeList.v1', 'all');
+  const [search, setSearch] = useState('');
+  const [filterMarket, setFilterMarket] = useState('all');
+  // Smart filter tag — an extra axis beyond market: movers, near-high, alerts.
+  // Combines with the market filter (AND) so you can narrow on both at once.
+  const [filterTag, setFilterTag] = useState('all');
+  const [sortMode, setSortMode] = useState('manual');
+  // Search/sort live as collapsed icon buttons in the action row; these drive
+  // the iOS-style expand of the search field and the sort popover respectively.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const searchInputRef = useRef(null);
+  const [creatingList, setCreatingList] = useState(false);
+  const [newListName, setNewListName] = useState('');
+  const [managingList, setManagingList] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  // If a stored active list was deleted elsewhere, fall back to All.
+  useEffect(() => {
+    if (activeList !== 'all' && activeList !== 'default' && !groups.some(g => g.id === activeList)) setActiveList('all');
+  }, [activeList, groups]);
+  // A stock can sit in several lists at once, so membership is a set test rather
+  // than a single id compare. customListsOf drives the per-card list badges.
+  const inList = (w, id) => watchListIds(w).includes(id);
+  const customListsOf = (w) => watchListIds(w).filter(id => id !== 'default');
+  const reorderEnabled = activeList === 'all' && !search.trim() && filterMarket === 'all' && filterTag === 'all' && sortMode === 'manual';
+  const targetListId = activeList === 'all' ? 'default' : activeList;
+  // Suggestion chips leave the list the instant they're added (the list is
+  // derived from the watchlist), which left users unsure their tap registered.
+  // We keep a short-lived "added" snapshot so the tapped chip morphs into a
+  // green ✓ confirmation before fading, instead of silently vanishing.
+  const [justAdded, setJustAdded] = useState([]);
+
+  // Alert popup state
+  const [alertPopup, setAlertPopup] = useState(null);
+  const [alertDir, setAlertDir] = useState('above');
+  const [alertTarget, setAlertTarget] = useState('');
+  const [alertNote, setAlertNote] = useState('');
+  const openAlertPopup = (ticker, market) => {
+    const q = prices[priceKey(market, ticker)];
+    setAlertPopup({ ticker, market });
+    setAlertDir('above');
+    setAlertTarget(q ? q.price.toFixed(2) : '');
+    setAlertNote('');
+  };
+  const submitAlertPopup = () => {
+    if (!alertPopup) return;
+    const t = parseDecimal(alertTarget);
+    if (!isFinite(t) || t <= 0) return;
+    onAddAlert(alertPopup.ticker, alertPopup.market, alertDir, t, alertNote);
+    setAlertNote('');
+  };
+  const popupAlerts = alertPopup ? alerts.filter(a => a.ticker === alertPopup.ticker && a.market === alertPopup.market) : [];
+  const popupCcy = alertPopup ? (alertPopup.market === 'JSE' ? 'ZAR' : 'USD') : 'USD';
+
+  // Swipe-to-delete state
+  const [swipedId, setSwipedId] = useState(null);
+  const swipeRefs = useRef(new Map());
+
+  // Freeform long-press drag-to-reorder. Document-level pointer tracking keeps
+  // vertical scroll native while horizontal swipe / drag stay responsive.
+  const [draggingId, setDraggingId] = useState(null);
+  const cardRefsRef = useRef(new Map());
+  const setCardRef = useCallback((id) => (el) => {
+    if (el) cardRefsRef.current.set(id, el);
+    else cardRefsRef.current.delete(id);
+  }, []);
+  const longPressTimerRef = useRef(null);
+  const pressOriginRef = useRef(null);
+  const dragRef = useRef(null);
+  const suppressClickRef = useRef(false);
+  const hapticCtxRef = useRef(null);
+  const activeGestureRef = useRef(null);
+  const pointerTrackRef = useRef(null);
+  const dragTouchBlockRef = useRef(null);
+
+  const triggerHaptic = () => {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try { navigator.vibrate(20); } catch (_) {}
+    }
+    // Audio tick for iOS (vibrate API unsupported). Barely-audible 12ms pop
+    // produced through the speaker — gives tactile-ish feedback on-device.
+    const ctx = hapticCtxRef.current;
+    if (ctx && ctx.state === 'running') {
+      try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        gain.gain.value = 0.08;
+        osc.frequency.value = 180;
+        osc.start();
+        osc.stop(ctx.currentTime + 0.012);
+      } catch (_) {}
+    }
+  };
+
+  const blockPageScroll = () => {
+    if (dragTouchBlockRef.current) return;
+    const prevent = (e) => { if (e.cancelable) e.preventDefault(); };
+    document.addEventListener('touchmove', prevent, { passive: false });
+    dragTouchBlockRef.current = prevent;
+  };
+
+  const unblockPageScroll = () => {
+    if (!dragTouchBlockRef.current) return;
+    document.removeEventListener('touchmove', dragTouchBlockRef.current, { passive: false });
+    dragTouchBlockRef.current = null;
+  };
+
+  const detachPointerTracking = () => {
+    const track = pointerTrackRef.current;
+    if (!track) return;
+    document.removeEventListener('pointermove', track.onMove);
+    document.removeEventListener('pointerup', track.onUp);
+    document.removeEventListener('pointercancel', track.onUp);
+    pointerTrackRef.current = null;
+    activeGestureRef.current = null;
+    if (childSwipeLockRef) childSwipeLockRef.current = false;
+  };
+
+  // Clean up haptic AudioContext on unmount
+  useEffect(() => {
+    return () => {
+      detachPointerTracking();
+      unblockPageScroll();
+      if (hapticCtxRef.current) try { hapticCtxRef.current.close(); } catch (_) {}
+    };
+  }, []);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const naturalRectsRef = useRef(new Map());
+
+  const displaceNeighbours = (originIdx, targetIdx) => {
+    const rects = naturalRectsRef.current;
+    const originRect = rects.get(watchlist[originIdx].id);
+    if (!originRect) return;
+    watchlist.forEach((w, i) => {
+      if (i === originIdx) return;
+      const el = cardRefsRef.current.get(w.id);
+      if (!el) return;
+      const naturalPos = rects.get(w.id);
+      if (!naturalPos) { el.style.transform = ''; return; }
+      const reordered = [...watchlist];
+      const [moved] = reordered.splice(originIdx, 1);
+      reordered.splice(targetIdx, 0, moved);
+      const newLogicalIdx = reordered.findIndex(x => x.id === w.id);
+      const origLogicalIdx = watchlist.findIndex(x => x.id === w.id);
+      if (newLogicalIdx === origLogicalIdx) {
+        el.style.transform = '';
+      } else {
+        const targetRect = rects.get(reordered[origLogicalIdx]?.id);
+        if (targetRect) {
+          const dy = targetRect.top - naturalPos.top;
+          el.style.transform = dy ? `translateY(${dy}px)` : '';
+        } else {
+          el.style.transform = '';
+        }
+      }
+    });
+  };
+
+  const startDrag = (id, pointerId, startY) => {
+    const card = cardRefsRef.current.get(id);
+    if (!card) return;
+    triggerHaptic();
+    const originIdx = watchlist.findIndex(w => w.id === id);
+    if (originIdx < 0) return;
+    naturalRectsRef.current.clear();
+    watchlist.forEach(w => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el) {
+        el.style.transition = 'none';
+        el.style.transform = '';
+      }
+    });
+    watchlist.forEach(w => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el) naturalRectsRef.current.set(w.id, el.getBoundingClientRect());
+    });
+    watchlist.forEach((w, i) => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el && i !== originIdx) {
+        el.style.transition = 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1)';
+      }
+    });
+    dragRef.current = {
+      id, pointerId,
+      pointerStartY: startY,
+      originIdx, targetIdx: originIdx,
+      moved: false,
+    };
+    blockPageScroll();
+    card.style.transition = 'none';
+    card.style.transform = 'scale(1.04)';
+    card.style.zIndex = '50';
+    try { card.setPointerCapture(pointerId); } catch (_) {}
+    setDraggingId(id);
+  };
+
+  const onCardPointerDown = (e, id) => {
+    if (e.target.closest('button,a,input,[data-no-drag]')) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (dragRef.current) return;
+    clearLongPress();
+    if (!hapticCtxRef.current) {
+      try { hapticCtxRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+    }
+    if (hapticCtxRef.current && hapticCtxRef.current.state === 'suspended') {
+      try { hapticCtxRef.current.resume(); } catch (_) {}
+    }
+    if (swipedId && swipedId !== id) closeSwipe(swipedId);
+    pressOriginRef.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+    // Drag-reorder only in the plain "All" view — a filtered/sorted/specific-list
+    // view renders a subset, which the index-based reorder can't handle. Swipe and
+    // tap stay active regardless.
+    if (reorderEnabled) {
+      longPressTimerRef.current = setTimeout(() => {
+        longPressTimerRef.current = null;
+        const po = pressOriginRef.current;
+        if (!po || po.id !== id) return;
+        startDrag(id, po.pointerId, po.y);
+      }, 450);
+    }
+    attachPointerTracking(id, e.pointerId, e.clientX, e.clientY);
+  };
+
+  const handleDocumentPointerMove = (e) => {
+    const drag = dragRef.current;
+    if (drag) {
+      if (e.pointerId !== drag.pointerId) return;
+      if (e.cancelable) e.preventDefault();
+      const dy = e.clientY - drag.pointerStartY;
+      const card = cardRefsRef.current.get(drag.id);
+      if (card) card.style.transform = `translateY(${dy}px) scale(1.04)`;
+      drag.moved = true;
+      const pointerY = e.clientY;
+      let targetIdx = drag.originIdx;
+      const rects = naturalRectsRef.current;
+      for (let i = 0; i < watchlist.length; i++) {
+        if (i === drag.originIdx) continue;
+        const r = rects.get(watchlist[i].id);
+        if (!r) continue;
+        const center = r.top + r.height / 2;
+        if (i < drag.originIdx && pointerY < center) { targetIdx = i; break; }
+        if (i > drag.originIdx && pointerY > center) { targetIdx = i; }
+      }
+      if (targetIdx !== drag.targetIdx) {
+        drag.targetIdx = targetIdx;
+        displaceNeighbours(drag.originIdx, targetIdx);
+      }
+      return;
+    }
+
+    const g = activeGestureRef.current;
+    if (!g || e.pointerId !== g.pointerId) return;
+
+    const dx = e.clientX - g.startX;
+    const dy = e.clientY - g.startY;
+
+    if (longPressTimerRef.current) {
+      if (dx * dx + dy * dy > 100) clearLongPress();
+    }
+
+    if (!g.mode) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      g.mode = Math.abs(dx) > Math.abs(dy) ? 'swipe-h' : 'scroll-v';
+    }
+
+    if (g.mode === 'scroll-v') {
+      // Stop tracking so native scroll stays on the compositor thread.
+      const track = pointerTrackRef.current;
+      if (track) document.removeEventListener('pointermove', track.onMove);
+      return;
+    }
+
+    if (e.cancelable) e.preventDefault();
+    if (childSwipeLockRef) childSwipeLockRef.current = true;
+    clearLongPress();
+    g.swipeLocked = true;
+    g.dx = dx;
+    const inner = swipeRefs.current.get(g.id);
+    if (inner) {
+      inner.classList.add('is-swiping');
+      const clamped = Math.max(-80, Math.min(dx > 0 ? 0 : dx, 0));
+      inner.style.transition = 'none';
+      inner.style.transform = `translateX(${clamped}px)`;
+    }
+  };
+
+  const handleDocumentPointerUp = (e) => {
+    const drag = dragRef.current;
+    if (drag && e.pointerId === drag.pointerId) {
+      clearLongPress();
+      pressOriginRef.current = null;
+      finishDrag(e.type !== 'pointercancel');
+      detachPointerTracking();
+      return;
+    }
+
+    const g = activeGestureRef.current;
+    if (g && e.pointerId === g.pointerId && g.swipeLocked) {
+      const inner = swipeRefs.current.get(g.id);
+      if (inner) {
+        inner.classList.remove('is-swiping');
+        if (g.dx < -50) {
+          inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+          inner.style.transform = 'translateX(-80px)';
+          setSwipedId(g.id);
+        } else {
+          inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+          inner.style.transform = '';
+          setSwipedId(prev => prev === g.id ? null : prev);
+        }
+      }
+    }
+    clearLongPress();
+    pressOriginRef.current = null;
+    detachPointerTracking();
+  };
+
+  const attachPointerTracking = (id, pointerId, startX, startY) => {
+    detachPointerTracking();
+    activeGestureRef.current = { id, pointerId, startX, startY, mode: null, dx: 0, swipeLocked: false };
+    const onMove = (ev) => handleDocumentPointerMove(ev);
+    const onUp = (ev) => handleDocumentPointerUp(ev);
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+    pointerTrackRef.current = { onMove, onUp };
+  };
+
+  const finishDrag = (commit) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    watchlist.forEach(w => {
+      const el = cardRefsRef.current.get(w.id);
+      if (el) {
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.zIndex = '';
+      }
+    });
+    try {
+      const card = cardRefsRef.current.get(drag.id);
+      if (card) card.releasePointerCapture(drag.pointerId);
+    } catch (_) {}
+    if (commit && drag.moved && drag.targetIdx !== drag.originIdx) {
+      const arr = [...watchlist];
+      const [m] = arr.splice(drag.originIdx, 1);
+      arr.splice(drag.targetIdx, 0, m);
+      onReorder(arr);
+    }
+    if (drag.moved) suppressClickRef.current = true;
+    dragRef.current = null;
+    unblockPageScroll();
+    setDraggingId(null);
+  };
+
+  const closeSwipe = useCallback((id) => {
+    const inner = swipeRefs.current.get(id);
+    if (inner) {
+      inner.classList.remove('is-swiping');
+      inner.style.transition = 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)';
+      inner.style.transform = '';
+    }
+    setSwipedId(prev => prev === id ? null : prev);
+  }, []);
+
+  const confirmDelete = (id) => {
+    const inner = swipeRefs.current.get(id);
+    if (inner) {
+      inner.style.transition = 'transform 200ms ease-out';
+      inner.style.transform = 'translateX(-100vw)';
+    }
+    setTimeout(() => onRemove(id), 220);
+  };
+
+  const hotStocks = useHotStocks();
+  const suggestions = useMemo(() => buildSuggestions(watchlist, positions, hotStocks), [watchlist, positions, hotStocks]);
+  const addSuggestion = (s) => {
+    const key = priceKey(s.market, s.ticker);
+    if (watchlist.some(w => priceKey(w.market, w.ticker) === key)) return;
+    onAdd(s.ticker, s.market, s.name, targetListId);
+    triggerHaptic();
+    setJustAdded(prev => prev.some(x => priceKey(x.market, x.ticker) === key) ? prev : [...prev, s]);
+    setTimeout(() => setJustAdded(prev => prev.filter(x => priceKey(x.market, x.ticker) !== key)), 1700);
+  };
+  const tabLists = [{ id: 'all', name: 'All' }, { id: 'default', name: 'Watchlist' }, ...groups];
+  const isCustomActive = activeList !== 'all' && activeList !== 'default';
+  const listNameById = (id) => (id === 'default' ? 'Watchlist' : ((groups.find(g => g.id === id) || {}).name || 'Watchlist'));
+  const countFor = (id) => id === 'all' ? watchlist.length : watchlist.filter(w => inList(w, id)).length;
+  const activeCount = activeList === 'all' ? watchlist.length : countFor(activeList);
+  const marketsPresent = useMemo(() => {
+    const set = new Set();
+    watchlist.forEach(w => { if (activeList === 'all' || inList(w, activeList)) set.add(w.market); });
+    return Array.from(set).sort();
+  }, [watchlist, activeList]);
+  const visible = useMemo(() => {
+    let arr = watchlist.filter(w => activeList === 'all' ? true : inList(w, activeList));
+    const s = search.trim().toLowerCase();
+    if (s) {
+      // Smarter search: every space-separated term must hit somewhere in the
+      // ticker or name, so "app tech" narrows instead of needing one substring.
+      const terms = s.split(/\s+/).filter(Boolean);
+      arr = arr.filter(w => {
+        const hay = (w.ticker + ' ' + (w.name || '')).toLowerCase();
+        return terms.every(t => hay.includes(t));
+      });
+    }
+    if (filterMarket !== 'all') arr = arr.filter(w => w.market === filterMarket);
+    if (filterTag !== 'all') arr = arr.filter(w => {
+      const q = prices[priceKey(w.market, w.ticker)];
+      const ch = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+      if (filterTag === 'up') return ch != null && ch > 0;
+      if (filterTag === 'down') return ch != null && ch < 0;
+      if (filterTag === 'nearhigh') return !!q && q.yearHigh > 0 && q.price >= q.yearHigh * 0.95;
+      if (filterTag === 'alerts') return alerts.some(a => a.ticker === w.ticker && a.market === w.market);
+      return true;
+    });
+    if (sortMode === 'name') arr = [...arr].sort((a, b) => (prettyName(a.name) || a.ticker).localeCompare(prettyName(b.name) || b.ticker));
+    else if (sortMode === 'recent') arr = [...arr].sort((a, b) => (b.addedAt || '').localeCompare(a.addedAt || ''));
+    else if (sortMode === 'today') arr = [...arr].sort((a, b) => {
+      const qa = prices[priceKey(a.market, a.ticker)], qb = prices[priceKey(b.market, b.ticker)];
+      const ca = qa && typeof qa.changePct === 'number' && isFinite(qa.changePct) ? qa.changePct : -Infinity;
+      const cb = qb && typeof qb.changePct === 'number' && isFinite(qb.changePct) ? qb.changePct : -Infinity;
+      return cb - ca;
+    });
+    // Pre/post move: rank by whatever extended-hours reading a symbol carries —
+    // the live pre-market % before the open, the live after-hours % in the
+    // evening, or the FINAL overnight "after close" move once the session ends.
+    // Symbols with no ext reading (regular hours / no data / no ext trading)
+    // sink to the bottom, so the option degrades gracefully around the clock.
+    else if (sortMode === 'premarket') arr = [...arr].sort((a, b) => {
+      const qa = prices[priceKey(a.market, a.ticker)], qb = prices[priceKey(b.market, b.ticker)];
+      const pa = qa && qa.extKind && typeof qa.extChangePct === 'number' && isFinite(qa.extChangePct) ? qa.extChangePct : -Infinity;
+      const pb = qb && qb.extKind && typeof qb.extChangePct === 'number' && isFinite(qb.extChangePct) ? qb.extChangePct : -Infinity;
+      return pb - pa;
+    });
+    return arr;
+  }, [watchlist, activeList, search, filterMarket, filterTag, sortMode, prices, alerts]);
+  // Switching lists clears the in-list filters so you never land on a list that
+  // looks empty because of a stale search / market filter.
+  useEffect(() => { setSearch(''); setFilterMarket('all'); setFilterTag('all'); setManagingList(false); setSearchOpen(false); setSortOpen(false); setManageOpen(false); setFilterOpen(false); }, [activeList]);
+  const sortOptions = [
+    { id: 'manual', label: reorderEnabled ? 'Manual order' : 'Default order' },
+    { id: 'today', label: "Today's move" },
+    { id: 'premarket', label: 'Pre/post move' },
+    { id: 'name', label: 'Name A–Z' },
+    { id: 'recent', label: 'Recently added' }
+  ];
+  const filterTagOptions = [
+    { id: 'all', label: 'All stocks' },
+    { id: 'up', label: 'Gainers today' },
+    { id: 'down', label: 'Losers today' },
+    { id: 'nearhigh', label: 'Near 52W high' },
+    { id: 'alerts', label: 'Has alerts' }
+  ];
+  const createList = () => {
+    const _r = onAddWatchGroup && onAddWatchGroup(newListName);
+    const id = _r && _r.id;
+    if (id) setActiveList(id);
+    setNewListName(''); setCreatingList(false);
+  };
+  const saveRename = () => {
+    if (onRenameWatchGroup && renameValue.trim()) onRenameWatchGroup(activeList, renameValue);
+    setManagingList(false); setManageOpen(false);
+  };
+  const deleteList = () => {
+    if (onRemoveWatchGroup) onRemoveWatchGroup(activeList);
+    setManagingList(false); setManageOpen(false); setActiveList('all');
+  };
+  return React.createElement("div", null,
+    // Topline — the watchlists only. Search, sort and Add live on the row below.
+    React.createElement("div", { className: "wl-tabbar" },
+      React.createElement("div", { className: "wl-tabs" },
+        tabLists.map(l => React.createElement("button", {
+          key: l.id,
+          className: "wl-tab" + (activeList === l.id ? " active" : ""),
+          onClick: () => setActiveList(l.id)
+        }, l.name, React.createElement("span", { className: "wl-tab-count" }, countFor(l.id)))),
+        onAddWatchGroup ? React.createElement("button", {
+          key: '__new', className: "wl-tab wl-tab-new",
+          onClick: () => { setCreatingList(true); setManagingList(false); }, "aria-label": "New list", title: "New list"
+        }, React.createElement(Icon, { name: "plus", size: 13 })) : null
+      )
+    ),
+    // Action row — interactive search/sort icons (iOS-style expand) + Add. Search
+    // and sort only appear when there's something to act on; Add is always here.
+    React.createElement("div", { className: "wl-toolbar" + (searchOpen ? " searching" : "") },
+      activeCount > 0 ? React.createElement("div", { className: "wl-search2" + (searchOpen ? " open" : "") },
+        React.createElement("button", {
+          className: "wl-iconbtn wl-search2-btn" + (searchOpen ? " active" : ""),
+          "aria-label": searchOpen ? "Close search" : "Search",
+          onClick: () => {
+            if (searchOpen) { setSearch(''); setSearchOpen(false); }
+            else { setSortOpen(false); setManageOpen(false); setFilterOpen(false); setSearchOpen(true); requestAnimationFrame(() => { try { searchInputRef.current && searchInputRef.current.focus(); } catch (_) {} }); }
+          }
+        }, React.createElement(Icon, { name: searchOpen ? "x" : "search", size: 14 })),
+        React.createElement("input", {
+          ref: searchInputRef,
+          className: "wl-search2-input", type: "text", placeholder: "Filter by ticker or name",
+          value: search, onChange: e => setSearch(e.target.value), tabIndex: searchOpen ? 0 : -1,
+          autoComplete: "off", autoCorrect: "off", spellCheck: false,
+          onKeyDown: e => { if (e.key === 'Escape') { setSearch(''); setSearchOpen(false); } }
+        })
+      ) : null,
+      activeCount > 0 ? React.createElement("div", { className: "wl-sortwrap" },
+        React.createElement("button", {
+          className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
+          "aria-label": "Sort", "aria-expanded": sortOpen,
+          onClick: () => { setSearchOpen(false); setManageOpen(false); setFilterOpen(false); setSortOpen(o => !o); }
+        }, React.createElement(Icon, { name: "sort", size: 14 }),
+           sortMode !== 'manual' ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null),
+        sortOpen ? React.createElement(React.Fragment, null,
+          React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setSortOpen(false) }),
+          React.createElement("div", { className: "wl-sortmenu" },
+            React.createElement("div", { className: "wl-sortmenu-head" }, "Sort by"),
+            sortOptions.map(o => React.createElement("button", {
+              key: o.id, className: "wl-sortmenu-row" + (sortMode === o.id ? " active" : ""),
+              onClick: () => { setSortMode(o.id); setSortOpen(false); }
+            }, React.createElement("span", { className: "wl-sortmenu-label" }, o.label),
+               sortMode === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)))
+        ) : null
+      ) : null,
+      // Filter popover — a smart filter holding the market picker plus quick
+      // tags (movers, near-high, alerts). Replaces the always-on market chip row.
+      activeCount > 0 ? React.createElement("div", { className: "wl-sortwrap" },
+        React.createElement("button", {
+          className: "wl-iconbtn" + (filterOpen ? " active" : "") + ((filterMarket !== 'all' || filterTag !== 'all') ? " on" : ""),
+          "aria-label": "Filter", "aria-expanded": filterOpen,
+          onClick: () => { setSearchOpen(false); setSortOpen(false); setManageOpen(false); setFilterOpen(o => !o); }
+        }, React.createElement(Icon, { name: "filter", size: 14 }),
+           (filterMarket !== 'all' || filterTag !== 'all') ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null),
+        filterOpen ? React.createElement(React.Fragment, null,
+          React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => setFilterOpen(false) }),
+          React.createElement("div", { className: "wl-sortmenu wl-filtermenu" },
+            marketsPresent.length > 1 ? React.createElement(React.Fragment, null,
+              React.createElement("div", { className: "wl-sortmenu-head" }, "Market"),
+              React.createElement("div", { className: "wl-fchips" },
+                ['all', ...marketsPresent].map(m => React.createElement("button", {
+                  key: m, className: "wl-fchip" + (filterMarket === m ? " active" : ""),
+                  onClick: () => setFilterMarket(m)
+                }, m === 'all' ? 'All' : m)))
+            ) : null,
+            React.createElement("div", { className: "wl-sortmenu-head" }, "Show"),
+            filterTagOptions.map(o => React.createElement("button", {
+              key: o.id, className: "wl-sortmenu-row" + (filterTag === o.id ? " active" : ""),
+              onClick: () => setFilterTag(o.id)
+            }, React.createElement("span", { className: "wl-sortmenu-label" }, o.label),
+               filterTag === o.id ? React.createElement(Icon, { name: "check", size: 14 }) : null)),
+            (filterMarket !== 'all' || filterTag !== 'all') ? React.createElement("button", {
+              className: "wl-sortmenu-row wl-filter-clear",
+              onClick: () => { setFilterMarket('all'); setFilterTag('all'); }
+            }, React.createElement(Icon, { name: "x", size: 14 }), React.createElement("span", { className: "wl-sortmenu-label" }, "Clear filters")) : null)
+        ) : null
+      ) : null,
+      // Manage the active custom list — an edit icon that opens the same animated
+      // popover as sort, holding the rename/delete actions for this list.
+      isCustomActive ? React.createElement("div", { className: "wl-sortwrap" },
+        React.createElement("button", {
+          className: "wl-iconbtn" + (manageOpen ? " active" : ""),
+          "aria-label": "Edit list", "aria-expanded": manageOpen,
+          onClick: () => { setSearchOpen(false); setSortOpen(false); setFilterOpen(false); setManagingList(false); setManageOpen(o => !o); }
+        }, React.createElement(Icon, { name: "edit", size: 13 })),
+        manageOpen ? React.createElement(React.Fragment, null,
+          React.createElement("button", { className: "wl-pop-backdrop", "aria-label": "Close", onClick: () => { setManageOpen(false); setManagingList(false); } }),
+          React.createElement("div", { className: "wl-sortmenu" },
+            React.createElement("div", { className: "wl-sortmenu-head" }, listNameById(activeList), " \xB7 ", activeCount, activeCount === 1 ? " stock" : " stocks"),
+            managingList
+              ? React.createElement("div", { className: "wl-rename-row" },
+                  React.createElement("input", {
+                    className: "wl-inline-input", type: "text", value: renameValue, maxLength: 28, autoFocus: true, placeholder: "List name",
+                    onChange: e => setRenameValue(e.target.value),
+                    onKeyDown: e => { if (e.key === 'Enter') saveRename(); if (e.key === 'Escape') setManagingList(false); }
+                  }),
+                  React.createElement("div", { className: "wl-rename-actions" },
+                    React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => setManagingList(false), style: { flex: '1 1 auto' } }, "Cancel"),
+                    React.createElement("button", { className: "btn btn-primary btn-sm", onClick: saveRename, disabled: !renameValue.trim(), style: { flex: '1 1 auto' } }, "Save")))
+              : React.createElement(React.Fragment, null,
+                  React.createElement("button", {
+                    className: "wl-sortmenu-row",
+                    onClick: () => { setRenameValue(listNameById(activeList)); setManagingList(true); }
+                  }, React.createElement(Icon, { name: "edit", size: 14 }), React.createElement("span", { className: "wl-sortmenu-label" }, "Rename list")),
+                  React.createElement("button", {
+                    className: "wl-sortmenu-row wl-danger", onClick: deleteList
+                  }, React.createElement(Icon, { name: "trash", size: 14 }), React.createElement("span", { className: "wl-sortmenu-label" }, "Delete list"))))
+        ) : null
+      ) : null,
+      React.createElement("button", { className: "btn btn-primary btn-sm wl-add-btn", onClick: () => setShowAddForm(true) },
+        React.createElement(Icon, { name: "plus", size: 12 }), " Add")
+    ),
+    creatingList ? React.createElement("div", { className: "wl-inline-form mb-4" },
+      React.createElement("input", {
+        className: "wl-inline-input", type: "text", placeholder: "New list name (e.g. Tech, To buy)",
+        value: newListName, maxLength: 28, autoFocus: true,
+        onChange: e => setNewListName(e.target.value),
+        onKeyDown: e => { if (e.key === 'Enter') createList(); if (e.key === 'Escape') { setCreatingList(false); setNewListName(''); } }
+      }),
+      React.createElement("button", { className: "btn btn-primary btn-sm", onClick: createList, disabled: !newListName.trim(), style: { flex: '0 0 auto' } }, "Create"),
+      React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => { setCreatingList(false); setNewListName(''); }, style: { flex: '0 0 auto' } }, "Cancel")
+    ) : null,
+    showAddForm && React.createElement("div", { className: "card mb-4 watchlist-add" },
+      React.createElement("div", { className: "wl-add-hint" },
+        React.createElement(Icon, { name: "search", size: 13 }),
+        React.createElement("span", null, " Search a stock and tap a result to open its card — add it to a watchlist from there.")),
+      React.createElement("div", { className: "form-label" }, "Market"),
+      React.createElement(MarketPicker, {
+        value: newMarket,
+        onChange: v => setNewMarket(v),
+        style: { width: '100%', marginBottom: 10 }
+      }),
+      React.createElement("div", { className: "form-label" }, "Search"),
+      React.createElement(TickerSearch, {
+        value: newTicker,
+        onChange: v => setNewTicker(v),
+        market: newMarket,
+        onMarketChange: v => setNewMarket(v),
+        onSelect: (s) => { setShowAddForm(false); setNewTicker(''); onOpenDetail(s.ticker, s.market); },
+        onEnter: () => { const t = newTicker.trim(); if (!t) return; setShowAddForm(false); setNewTicker(''); onOpenDetail(t.toUpperCase(), newMarket); }
+      }),
+      React.createElement("button", {
+        className: "btn btn-ghost btn-sm",
+        style: { marginTop: 12, width: '100%' },
+        onClick: () => { setShowAddForm(false); setNewTicker(''); }
+      }, "Close")
+    ),
+    watchlist.length === 0 ? React.createElement("div", { className: "empty" },
+      React.createElement(Icon, { name: "eye", size: 40 }),
+      React.createElement("h3", null, "Empty watchlist"),
+      React.createElement("p", null, "Tap Add to track your first ticker, or open any stock and tap “Add to watchlist”."))
+    : visible.length === 0 ? React.createElement("div", { className: "empty wl-empty-sm" },
+      React.createElement(Icon, { name: "eye", size: 32 }),
+      React.createElement("p", null,
+        (search.trim() || filterMarket !== 'all' || filterTag !== 'all')
+          ? "No stocks match this filter."
+          : (activeList === 'all' ? "Your watchlist is empty." : "This list is empty. Add a stock here, or open a stock and move it into this list.")))
+    : React.createElement("div", { className: "watchlist-list mb-6" },
+      visible.map((w) => {
+        const q = prices[priceKey(w.market, w.ticker)];
+        // No bare-ticker fallback: the ticker is already the card heading, so a
+        // missing name should leave the subheading empty rather than repeat it.
+        const displayName = w.name ? prettyName(w.name) : resolveTickerName(w.ticker, w.market, q);
+        const isDragging = draggingId === w.id;
+        let athBadge = null;
+        if (q && q.yearHigh && q.yearHigh > 0) {
+          const pct = (q.price - q.yearHigh) / q.yearHigh * 100;
+          const atAth = q.price >= q.yearHigh * 0.995;
+          athBadge = React.createElement("div", {
+            className: `ath-badge ${atAth ? 'at-high' : 'below-high'}`
+          }, React.createElement("span", { className: "ath-badge-label" }, "52W Hi"),
+             React.createElement("span", { className: "ath-badge-val" }, atAth ? 'ATH' : pct.toFixed(1) + '%'));
+        }
+        const ac = alerts.filter(a => a.ticker === w.ticker && a.market === w.market).length;
+        const hasDay = q && typeof q.changePct === 'number' && isFinite(q.changePct);
+        const dayUp = hasDay && q.changePct >= 0;
+        // Extended-hours chip lives in the card body (bottom-middle), lifted out
+        // of the header price block so the price stays pinned to the right edge.
+        const hasExt = q && q.extPrice != null && q.extChangePct != null;
+        const extUp = hasExt && q.extChangePct >= 0;
+        // Final (session-over) readings label as "After close" — the overnight
+        // move stays on the card, but never masquerades as a live tape.
+        const extFinal = hasExt && q.extLive === false;
+        const extLabel = q && q.extKind === 'pre' ? 'Pre-market' : q && q.extKind === 'post' ? (extFinal ? 'After close' : 'After-hours') : '';
+        const extSym = (MARKET_CURRENCY[w.market] || MARKET_CURRENCY.US).sym;
+        const extChgAbs = hasExt && typeof q.extChange === 'number' && isFinite(q.extChange) ? q.extChange : null;
+        return React.createElement("div", {
+          key: w.id,
+          ref: setCardRef(w.id),
+          className: "swipe-card-outer" + (isDragging ? " dragging" : ""),
+          onPointerDown: (e) => onCardPointerDown(e, w.id),
+          onContextMenu: e => e.preventDefault()
+        },
+          React.createElement("div", { className: "swipe-delete-bg", onClick: () => confirmDelete(w.id) }, "Delete"),
+          React.createElement("div", {
+            className: "swipe-card-inner pos-card",
+            ref: el => { if (el) swipeRefs.current.set(w.id, el); else swipeRefs.current.delete(w.id); },
+            onClick: () => {
+              if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+              if (dragRef.current) return;
+              if (swipedId === w.id) { closeSwipe(w.id); return; }
+              onOpenDetail(w.ticker, w.market);
+            }
+          },
+            React.createElement("div", { className: "pos-head" },
+              React.createElement("div", { className: "flex-1" },
+                React.createElement("div", { className: "flex items-center gap-2" },
+                  React.createElement("span", { className: "tkr" }, w.ticker),
+                  React.createElement("span", { className: "market-badge" }, w.market),
+                  activeList === 'all'
+                    ? customListsOf(w).map(id => React.createElement("span", { key: id, className: "wl-card-list" }, listNameById(id))) : null),
+                displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null),
+              // Stock price now sits top-right (swapped with the 52W high below).
+              // The ext-hours chip is lifted out (hideExt) and shown in the body.
+              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, hideExt: true, market: w.market })),
+            React.createElement("div", { className: "watch-body" },
+              // 52W high now sits bottom-left (swapped with the price), with the
+              // alert bell directly beside it.
+              athBadge,
+              React.createElement("button", {
+                className: "card-alert-bell",
+                "data-no-drag": true,
+                onClick: e => { e.stopPropagation(); openAlertPopup(w.ticker, w.market); },
+                "aria-label": "Alerts"
+              }, React.createElement(Icon, { name: "bell", size: 13 }),
+                ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)),
+              // Day's move (% only) anchored to the right of the card.
+              hasDay
+                ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
+                    React.createElement("div", { className: "watch-today-pct mono" },
+                      (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
+                : React.createElement("div", { className: "watch-today" })),
+            // Session badge (Open/Closed/Pre/After) so a quiet card reads as
+            // market state, not blank. Shown only when the ext-price chip isn't.
+            !hasExt && React.createElement("div", { className: "watch-ext" },
+              React.createElement(SessionBadge, { market: w.market, quote: q })),
+            // Pre/after-hours readout on its own centered line at the foot of the
+            // card so it reads as a secondary detail without crowding the name.
+            hasExt && React.createElement("div", { className: "watch-ext ext-hours" + (extFinal ? " ext-closed" : "") },
+              React.createElement("span", { className: "ext-label" }, extLabel),
+              React.createElement("span", { className: "ext-price mono" }, extSym, fmtNum(q.extPrice)),
+              React.createElement("span", { className: `ext-chg mono ${extUp ? 'up' : 'down'}` },
+                (extUp ? '+' : '') + q.extChangePct.toFixed(2) + '%' +
+                (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + extSym + fmtNum(Math.abs(extChgAbs)) : '')))));
+      })),
+
+    alertPopup && React.createElement("div", { className: "alert-popup-overlay" },
+      React.createElement("div", { className: "alert-popup-backdrop", onClick: () => setAlertPopup(null) }),
+      React.createElement("div", { className: "alert-popup-panel" },
+        React.createElement("div", { className: "alert-popup-header" },
+          React.createElement("div", null,
+            React.createElement("div", { className: "modal-title" }, alertPopup.ticker),
+            React.createElement("div", { className: "modal-subtitle" }, "Price alerts \xB7 ", React.createElement("span", { className: "market-badge" }, alertPopup.market))),
+          React.createElement("button", { className: "modal-close", onClick: () => setAlertPopup(null), "aria-label": "Close" },
+            React.createElement(Icon, { name: "x" }))),
+        popupAlerts.length > 0 && React.createElement("div", {
+          style: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }
+        }, popupAlerts.map(a => React.createElement("div", {
+          key: a.id, className: "alert-item"
+        }, React.createElement("div", null,
+          React.createElement("div", { className: "mono text-sm" },
+            a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, alertPopup.market)),
+          a.note && React.createElement("div", { className: "text-xs text-dim mt-1" }, a.note)),
+          React.createElement("button", {
+            className: "btn btn-ghost btn-xs",
+            onClick: () => onRemoveAlert(a.id), "aria-label": "Remove"
+          }, React.createElement(Icon, { name: "x", size: 12 }))))),
+        React.createElement("div", { className: "alert-form" },
+          React.createElement("div", { className: "alert-dir-group", role: "radiogroup", "aria-label": "Trigger direction" },
+            React.createElement("button", {
+              type: "button", role: "radio", "aria-checked": alertDir === 'above',
+              className: `alert-dir-btn up ${alertDir === 'above' ? 'active' : ''}`,
+              onClick: () => setAlertDir('above')
+            }, React.createElement("span", { className: "alert-dir-arrow" }, "↑"),
+              React.createElement("span", { className: "alert-dir-label" }, "Above")),
+            React.createElement("button", {
+              type: "button", role: "radio", "aria-checked": alertDir === 'below',
+              className: `alert-dir-btn down ${alertDir === 'below' ? 'active' : ''}`,
+              onClick: () => setAlertDir('below')
+            }, React.createElement("span", { className: "alert-dir-arrow" }, "↓"),
+              React.createElement("span", { className: "alert-dir-label" }, "Below"))
+          ),
+          React.createElement("div", { className: "alert-target-row" },
+            React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
+              React.createElement("span", { className: "prefix" }, popupCcy === 'ZAR' ? 'R' : '$'),
+              React.createElement("input", {
+                type: "text", inputMode: "decimal",
+                autoComplete: "off", autoCorrect: "off", spellCheck: false,
+                placeholder: "Target price", value: alertTarget,
+                onChange: e => setAlertTarget(sanitizeDecimalInput(e.target.value)),
+                className: "alert-target-input"
+              }))),
+          React.createElement("input", {
+            type: "text", placeholder: "Note (optional)",
+            value: alertNote, onChange: e => setAlertNote(e.target.value),
+            maxLength: "80", className: "alert-note-input"
+          }),
+          React.createElement("button", {
+            className: `btn btn-block mt-3 alert-submit ${alertDir === 'above' ? 'up' : 'down'}`,
+            onClick: submitAlertPopup
+          }, React.createElement(Icon, { name: "plus" }),
+            " Alert when ", alertDir === 'above' ? 'above ' : 'below ',
+            alertTarget && isFinite(parseDecimal(alertTarget)) ? (popupCcy === 'ZAR' ? 'R' : '$') + fmtNum(parseDecimal(alertTarget)) : 'target')))),
+
+    React.createElement("div", { className: "eyebrow suggestions-head" },
+      React.createElement("span", null, "Suggested for you"),
+      React.createElement("button", {
+        className: "btn btn-ghost btn-xs",
+        onClick: () => setShowSuggestions(v => !v),
+        'aria-label': showSuggestions ? "Hide suggestions" : "Show suggestions"
+      }, showSuggestions ? "Hide" : "Show")),
+    showSuggestions && (suggestions.hot.length === 0 && suggestions.more.length === 0 && justAdded.length === 0
+      ? React.createElement("div", { className: "text-sm text-dim" }, "No more suggestions — you're tracking the popular names already.")
+      : React.createElement(React.Fragment, null,
+          justAdded.length > 0 && React.createElement("div", { className: "chip-row" },
+            justAdded.map(s => React.createElement("div", {
+              key: 'added:' + priceKey(s.market, s.ticker),
+              className: "chip added"
+            }, React.createElement(Icon, { name: "checkCircle", size: 13 }),
+               " ", s.ticker, React.createElement("span", { className: "chip-sub" }, "Added to watchlist")))),
+          // Live movers the user doesn't hold/track yet — flame header, and each
+          // chip carries the day's % so "hot" is visible at a glance.
+          suggestions.hot.length > 0 && React.createElement("div", { className: "sug-sub" },
+            React.createElement(Icon, { name: "flame", size: 12, className: "sug-sub-flame" }), "Hot right now"),
+          suggestions.hot.length > 0 && React.createElement("div", { className: "chip-row" },
+            suggestions.hot.map(s => React.createElement("button", {
+              key: priceKey(s.market, s.ticker),
+              className: "chip chip-hot",
+              onClick: () => addSuggestion(s)
+            }, React.createElement(Icon, { name: "plus", size: 12, className: "chip-plus" }),
+               " ", s.ticker,
+               s.changePct != null && React.createElement("span", { className: "chip-pct " + (s.changePct >= 0 ? "up" : "down") },
+                 (s.changePct >= 0 ? "+" : "") + s.changePct.toFixed(1) + "%"),
+               React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market)))),
+          suggestions.more.length > 0 && suggestions.hot.length > 0 && React.createElement("div", { className: "sug-sub" }, "For you"),
+          suggestions.more.length > 0 && React.createElement("div", { className: "chip-row" },
+            suggestions.more.map(s => React.createElement("button", {
+              key: priceKey(s.market, s.ticker),
+              className: "chip",
+              onClick: () => addSuggestion(s)
+            }, React.createElement(Icon, { name: "plus", size: 12, className: "chip-plus" }),
+               " ", s.ticker, React.createElement("span", { className: "chip-sub" }, s.name, " \xB7 ", s.market))))))
+  );
+}
+
   window.PBViews = window.PBViews || {};
   window.PBViews.HotTopicsView = HotTopicsView;
   window.PBViews.PicksView = PicksView;
@@ -2036,4 +2900,5 @@ function CurrentView(_ref7) {
   window.PBViews.HeatmapView = HeatmapView;
   window.PBViews.DashboardView = DashboardView;
   window.PBViews.CurrentView = CurrentView;
+  window.PBViews.WatchlistView = WatchlistView;
 })();
