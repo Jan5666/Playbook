@@ -4,10 +4,11 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactoring-plan-fs89s3` (off latest `origin/main`). **Jan reviews +
-lands; never push `main`, never open a PR.** Last landed on `main`: inc-18 `AlertsModal` (PR #30);
-before it inc 15–17 (PR #26) and feature PRs #27–#29 (rotation tab, watchlist suggestions), which had
-bumped `sw` `CACHE_NAME` to v67 and the bridge to 33 members without a refactor increment.
+**Branch:** `claude/refactor-plan-continuation-szkz3n` (off latest `origin/main`). **Jan reviews +
+lands; never push `main`, never open a PR.** Last landed on `main`: inc 20–21 Buy/`SellModal` (PR #32);
+before them inc-19 `ImportModal` (PR #31), inc-18 `AlertsModal` (PR #30), inc 15–17 (PR #26) and feature
+PRs #27–#29 (rotation tab, watchlist suggestions), which had bumped `sw` `CACHE_NAME` to v67 and the
+bridge to 33 members without a refactor increment.
 
 ## The refactor in one paragraph
 
@@ -51,9 +52,18 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   (verbatim), pinned by a before/after render probe (sell + loss + over-holding). Realized
   gain/proceeds stay in the `onSell` mutator (data layer).
 
-**Current state:** `pb-modals.js` holds **10 modals + the detail subtree + the settings subtree**;
-`window.PBApp` bridge = **37** members (33 after feature PRs #27–#29; inc-19 added 4); `sw.js`
-`CACHE_NAME` = **playbook-shell-v71**.
+- **inc-22** `PositionModal` (~326 lines) -> bucket; **+1 bridge (`MarketPicker`) / +0 IIFE reads**. Third
+  and final money-tier move; **completes Phase 4 modal extraction**. `perUnitCost` (crypto total/shares),
+  the save payload (incl. the `costCurrency`-persist-only-when-differs rule), and `diffChanges` are
+  byte-identical (verbatim), pinned by a before/after render probe (Add/US + Add/crypto-ZAR + Edit-diff +
+  no-op) with an **identical result digest**. `MarketPicker` is a multi-caller shared with `WatchlistView`
+  (stays in app.js, bridged); `DATA` read at render time; every module dep was already IIFE-read. The
+  add/update persistence stays in the `addPosition`/`updatePosition` mutators (data layer).
+
+**Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree**;
+`window.PBApp` bridge = **38** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1);
+`sw.js` `CACHE_NAME` = **playbook-shell-v72**. **Phase 4 modal extraction is COMPLETE** — every modal
+(and all three money modals) lives in the bucket.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
@@ -80,17 +90,22 @@ review cards; DATA sector field; TickerSearch subtree; no import fired) green.
 costCcy) were pinned by a before/after render probe (sell + loss + over-holding), green both sides.
 **0 new bridge / 0 new IIFE reads** — verbatim. Realized gain/proceeds stay in the `onSell` mutator.
 
-**NEXT -> the money tier (last one) — characterization test REQUIRED first (rule #3):**
-- **`PositionModal`** (~326) — builds the cost-basis save payload (cost mode / currency /
-  crypto total-vs-per-unit) + `diffChanges`. New bridge member `MarketPicker` (multi-caller with
-  `WatchlistView`); `DATA` read at render time. Pin the payload + diff, then move. Uses already-bridged
-  `SectorWeightRows`. **Deferred (per the Buy+Sell scope for this session).**
+**DONE — inc-22: `PositionModal`** (~326 lines) — the last money modal. Built the cost-basis save payload
+(cost mode / currency / crypto total-vs-per-unit -> `perUnitCost`) + `diffChanges`; pinned by a
+before/after render probe (identical digest) and moved verbatim. **+1 bridge (`MarketPicker`, the shared
+multi-caller with `WatchlistView`) / +0 IIFE reads**; `DATA` read at render time; `SectorWeightRows`
+already bridged. **Phase 4 modal extraction is now COMPLETE.**
+
+**NEXT -> Phase 4 modal extraction is finished.** Every modal (and all three money modals) is in the
+bucket. Remaining Phase-4 candidates, if the refactor continues, are non-modal: the large remaining
+app.js view/section components (and the vestigial `FxSummary` dead-code cleanup below). Otherwise the
+post-refactor plan is `SECURITY_ROADMAP.md` (do not start before the refactor phases are called done).
 
 **Roadmap correction (2026-07-14, confirmed 2026-07-18):** an earlier version of this file lumped
 `AlertsModal` into the rule-#3-gated tier. On re-reading, Alerts is display + CRUD only (no eval, no
 money) -> a safe move. Borne out by inc-18 (Alerts) and inc-19 (Import): both were safe verbatim
-moves. **The safe verbatim-move tier is now exhausted** — Buy (inc-20) + Sell (inc-21) are landed; only
-the rule-#3-gated `PositionModal` remains, needing a characterization test first.
+moves. The safe verbatim-move tier was exhausted after Import; the money tier — Buy (inc-20), Sell
+(inc-21), Position (inc-22) — is now **also complete**, each pinned by a characterization test first.
 
 ## The mechanical recipe (turnkey — every increment 15–17 followed this)
 
