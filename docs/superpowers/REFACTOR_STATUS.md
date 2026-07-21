@@ -129,7 +129,7 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
 
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree**;
 `window.PBApp` bridge = **44** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v78**. `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+`sw.js` `CACHE_NAME` = **playbook-shell-v79** (inc-29 removed dead `FxSummary`). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
 `DashboardView`, inc-25 `CurrentView`, inc-26 `WatchlistView`, inc-27 `TFSAView`); **every tab view now lives in
@@ -218,5 +218,5 @@ moves. The safe verbatim-move tier was exhausted after Import; the money tier �
 
 ## Observations / cleanup candidates (out of scope for the moves)
 
-- **`FxSummary`** (`app.js`, ~9736 pre-inc-17) has **no callers** — vestigial dead code. Flag for a
+- **`FxSummary`** (`app.js`) — REMOVED in **inc-29** (had no callers; `computeFxSnapshot` it used stays live via pb-modals). Historic note: was vestigial dead code, flagged for a
   separate cleanup; left untouched by inc-17.

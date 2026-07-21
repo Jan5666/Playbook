@@ -6021,69 +6021,6 @@ function computeFxSnapshot({ positions, contributions, prices, fxRates, displayC
   };
 }
 
-function FxSummary({ positions, contributions, fxRates, displayCurrency, onSetDisplayCurrency }) {
-  const prices = PBStore.usePricesMap();
-  const hasRates = !!fxRates?.rates;
-  const snap = useMemo(
-    () => computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency }),
-    [positions, contributions, prices, fxRates, displayCurrency]
-  );
-  const trackedContribs = contributions.filter(c => c.fxRateAtContrib).length;
-  const isZAR = displayCurrency === 'ZAR';
-  return React.createElement("div", { className: "card mb-4" },
-    React.createElement("div", { className: "flex justify-between items-center mb-3" },
-      React.createElement("div", { className: "eyebrow", style: { marginBottom: 0 } },
-        "Combined · ", displayCurrency),
-      React.createElement("div", { className: "ccy-toggle", onClick: () => onSetDisplayCurrency(isZAR ? 'USD' : 'ZAR') },
-        React.createElement("span", { className: `ccy-toggle-label ${!isZAR ? 'active' : ''}` }, "$"),
-        React.createElement("div", { className: `ccy-toggle-track ${isZAR ? 'on' : ''}` },
-          React.createElement("div", { className: "ccy-toggle-thumb" })),
-        React.createElement("span", { className: `ccy-toggle-label ${isZAR ? 'active' : ''}` }, "R"))
-    ),
-    !hasRates ? React.createElement("div", { className: "text-sm text-dim" },
-      "Loading live FX rates\u2026 open Settings to retry."
-    ) : React.createElement(React.Fragment, null,
-      React.createElement("div", { className: "fx-combined mb-3" },
-        React.createElement("div", { className: "fx-combined-label" }, "Portfolio value (" + displayCurrency + ")"),
-        React.createElement("div", { className: "fx-combined-value" },
-          fmtCcy(snap.combinedValue, displayCurrency)),
-        snap.combinedCostAtPurchase > 0 && React.createElement("div", {
-          className: "mt-2 flex gap-2 items-baseline", style: { flexWrap: 'wrap' }
-        },
-          React.createElement("span", { className: `mono text-sm ${snap.totalGain >= 0 ? 'text-up' : 'text-down'}` },
-            fmtCcySigned(snap.totalGain, displayCurrency)),
-          React.createElement("span", { className: "text-xs text-dim" },
-            "total return vs. cost at purchase FX")
-        )
-      ),
-      React.createElement("div", { className: "fx-breakdown-row" },
-        React.createElement("span", { className: "lbl" }, "Price P/L (native moves)"),
-        React.createElement("span", { className: `val ${snap.priceGain >= 0 ? 'text-up' : 'text-down'}` },
-          fmtCcySigned(snap.priceGain, displayCurrency))
-      ),
-      React.createElement("div", { className: "fx-breakdown-row" },
-        React.createElement("span", { className: "lbl" }, "FX impact on cost basis"),
-        React.createElement("span", { className: `val ${snap.fxGainOnCost >= 0 ? 'text-up' : 'text-down'}` },
-          fmtCcySigned(snap.fxGainOnCost, displayCurrency))
-      ),
-      contributions.length > 0 && React.createElement("div", { className: "fx-breakdown-row" },
-        React.createElement("span", { className: "lbl" },
-          "FX impact on contributions",
-          trackedContribs < contributions.length ? React.createElement("span", {
-            className: "text-xs text-dim", style: { marginLeft: 6 }
-          }, "(" + trackedContribs + "/" + contributions.length + " tracked)") : null
-        ),
-        React.createElement("span", { className: `val ${snap.fxGainOnContrib >= 0 ? 'text-up' : 'text-down'}` },
-          fmtCcySigned(snap.fxGainOnContrib, displayCurrency))
-      ),
-      React.createElement("div", { className: "text-xs text-dim mt-2" },
-        "Rates: " + fxRates.source + " \u00B7 updated ",
-        new Date(fxRates.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      )
-    )
-  );
-}
-
 // Premium drag-to-reorder list for Settings → Tabs. Pointer-driven (works with
 // mouse + touch via setPointerCapture). The dragged row lifts and tracks the
 // finger 1:1; the others glide to their new slots with a FLIP animation. The
