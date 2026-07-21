@@ -94,11 +94,13 @@ Severity: 🔴 fix in Phase 1 · 🟠 fix in its phase · 🟡 tracked/accepted.
   currently has free rein: exfiltrate localStorage (portfolio, Perplexity key),
   call the push backend. CSP is the single highest-leverage XSS mitigation
   available to this app.
-- **F6 🟠 sw.js re-implements pb-core logic.** `swYahooSymbol`, `swCentDivisor`,
-  `swEvaluate`, and a copy of the proxy ladder live inline in sw.js. This is the
-  same class of drift bug as A4 (client/worker drift — already bitten once: the old
-  worker mis-fetched ^SPX and mis-divided JSE ZAR). sw.js *can* `importScripts('./pb-core.js')`
-  since pb-core is a dual-mode global script.
+- **F6 ✅ sw.js re-implements pb-core logic — FIXED 2026-07-21** (branch
+  `claude/refactor-plan-continuation-645imf`). sw.js now `importScripts('./pb-core.js')` and
+  delegates to `PBCore.yahooSymbol` / `PBCore.centDivisor` / `PBCore.evaluateAlerts`; the drifted
+  `swYahooSymbol` / `swCentDivisor` / `swEvaluate` copies were deleted, closing the ^SPX / JSE-ZAR
+  drift in the background alert path. The proxy ladder (`SW_PROXIES`) stays inline — pb-data.js is
+  browser-only (rule #6); its consolidation remains under F-series/Phase-1 (gap #4). Guard:
+  `backend/test/sw-core-delegation.test.mjs`.
 - **F7 🟡 localStorage is unencrypted at rest on device.** Acceptable for a
   personal device app (OS-level protection applies), but worth revisiting when
   cloud sync makes the data multi-device (Phase 2 keeps E2EE for the cloud copy).
@@ -227,9 +229,10 @@ nothing else in the roadmap depends on which.
 
 ### 1.5 Consolidation & closing known gaps
 
-- **sw.js drift (F6):** `importScripts('./pb-core.js')` and delegate
-  `swYahooSymbol`/`swCentDivisor`/`swEvaluate` to PBCore (same anti-drift-guard
-  test pattern as worker.js). When 1.1 lands, its proxy list becomes the edge URL.
+- **sw.js drift (F6): ✅ DONE 2026-07-21.** sw.js `importScripts('./pb-core.js')` and delegates
+  `swYahooSymbol`/`swCentDivisor`/`swEvaluate` to PBCore, with the anti-drift guard
+  (`backend/test/sw-core-delegation.test.mjs`) in the worker.js pattern. When 1.1 lands, the inline
+  `SW_PROXIES` list becomes the edge URL.
 - **F9:** add `demo-data.js` to `static.yml` (or drop it from precache — Jan's call).
 - **F8:** `cd backend && npx wrangler deploy --dry-run` then `deploy` (Jan runs;
   needs his Cloudflare login).

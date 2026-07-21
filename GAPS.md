@@ -38,6 +38,18 @@ plan (several items below are officially "owned" by that roadmap).*
 
 ## 2. `sw.js` is a third, drifted implementation of fetch + alert evaluation
 
+> **FIXED 2026-07-21** (branch `claude/refactor-plan-continuation-645imf`): `sw.js` now
+> `importScripts('./pb-core.js')` and delegates symbol-building, the cent/pence divisor,
+> and alert evaluation to `PBCore.yahooSymbol` / `PBCore.centDivisor` / `PBCore.evaluateAlerts`;
+> the drifted `swYahooSymbol` / `swCentDivisor` / `swEvaluate` copies were deleted. This
+> corrects the `^SPX`→`%5EGSPC` instrument and the missing-`ZAX` 100× mis-scaling in the
+> background alert path. `swRunAlertCheck` now feeds `evaluateAlerts` a bare-number price map
+> (its documented contract) with the 5-min SW cooldown passed explicitly. The inline
+> `SW_PROXIES` fetch chain stays (pb-data.js is browser-only — rule #6). `CACHE_NAME`→v80.
+> Anti-drift guard + a behavior pin live in `backend/test/sw-core-delegation.test.mjs`
+> (asserts sw.js delegates and defines none of the three copies). Entry kept for history
+> until merged to main.
+
 - **What**: `sw.js:204–292` contains its own `SW_PROXIES` (5 proxies vs pb-data's 6,
   different order/unwrap handling), `swYahooSymbol`, `swCentDivisor`, and
   `swEvaluate` — hand-ported copies of logic whose client/server drift was already
