@@ -484,6 +484,8 @@ const fetchQuoteBatchLight = PBData.fetchQuoteBatchLight;
 const fetchQuoteLight = PBData.fetchQuoteLight;
 const fetchHistory = PBData.fetchHistory;
 const searchUnitTrusts = PBData.searchUnitTrusts;
+// Bound here to keep the PBData delegation guard green even though the only former
+// caller (HoldingRow) now lives in pb-views.js (Phase 4 inc 28).
 const isUnitTrustId = PBData.isUnitTrustId;
 const cacheName = PBData.cacheName;
 const cachedName = PBData.cachedName;
@@ -4501,84 +4503,7 @@ const DashboardView = PBViews.DashboardView;
 //  • Middle — total gain/loss for the holding: the amount on top, the % below.
 //  • Right — current holding value on top, the day's movement underneath.
 // Subtle column header sitting above a holdings list, labelling the three
-// row zones: Holding (stock name) · P/L · Current value. Shared by the
-// Holdings (per-market) and TFSA lists so both read identically.
-function HoldingsListHead() {
-  return React.createElement("div", { className: "holding-list-head" },
-    React.createElement("span", { className: "hlh-name" }, "Holding"),
-    React.createElement("span", { className: "hlh-gl" }, "P/L"),
-    React.createElement("span", { className: "hlh-val" }, "Current value"));
-}
-const HoldingRow = React.memo(function HoldingRow(_refHR) {
-  let { position: p, market, quote: q, rates, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
-  // Heading is the company/instrument name. Resolve it from every source — the
-  // name saved on the holding, the live quote's company name, the curated lists,
-  // then the learned name cache — and only fall back to the bare ticker when
-  // nothing else knows it.
-  const name = positionDisplayName(p, market, q);
-  const hasName = name !== p.ticker;
-  // A unit trust has no ticker symbol, so its name takes the primary slot (where
-  // a ticker normally sits) and the sub-line is dropped — the opaque Morningstar
-  // id is never shown.
-  const isUT = isUnitTrustId(p.ticker);
-  const mainLabel = isUT && hasName ? name : p.ticker;
-  // Value the position in the currency the cost basis is in. For ordinary
-  // holdings that's the market's native currency (a no-op); for crypto bought in
-  // ZAR it converts the live USD price into ZAR so cost and value line up and the
-  // rand they paid is preserved instead of being silently re-based to dollars.
-  const val = valuePositionInCostCcy(p, q, rates);
-  const rowCcy = val.ccy;
-  const marketValue = val.value;
-  const cost = val.cost;
-  const gain = val.gain;
-  const gainUp = gain != null && gain >= 0;
-  const growthPct = val.gainPct;
-  const dayPct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
-  const dayUp = dayPct != null && dayPct >= 0;
-  return React.createElement("button", {
-    key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
-  },
-    // LEFT — ticker + market badge (main), company name (sub). Avg cost lives on
-    // the bottom action strip beside Edit (see ACTIONS below).
-    React.createElement("div", { className: "row-main" },
-      React.createElement("div", { className: "hold-id" },
-        React.createElement("span", { className: "hold-tkr-main" }, mainLabel),
-        React.createElement("span", { className: "mkt-badge" }, isUT ? "fund" : market)),
-      React.createElement("div", { className: "row-meta" },
-        (hasName && !isUT) ? React.createElement("span", { className: "hold-co-name" }, name) : null)),
-    // MIDDLE — total gain/loss: amount on top, % below
-    React.createElement("div", { className: "holding-gl" },
-      gain != null
-        ? React.createElement(React.Fragment, null,
-            React.createElement("div", { className: `holding-gl-amt mono ${gainUp ? 'text-up' : 'text-down'}` },
-              (gainUp ? '+' : '−') + fmtCcy(gain, rowCcy)),
-            growthPct != null ? React.createElement("div", { className: `holding-gl-pct mono ${gainUp ? 'text-up' : 'text-down'}` },
-              (gainUp ? '+' : '') + growthPct.toFixed(2) + '%') : null)
-        : React.createElement("div", { className: "holding-gl-amt mono text-dim" }, "—")),
-    // RIGHT — current value, with the day's movement underneath
-    React.createElement("div", { className: "row-right" },
-      React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmtCcy(marketValue, rowCcy) : "—"),
-      dayPct != null ? React.createElement("div", {
-        className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
-      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
-    // ACTIONS — full-width strip beneath the three zones: the Buy/Sell/Edit cluster
-    // on the left (identically sized on every card), with Avg cost on the right.
-    React.createElement("div", { className: "row-actions" },
-      React.createElement("div", { className: "row-actions-btns" },
-        onBuyPosition ? React.createElement("button", {
-          className: "btn-buy-inline",
-          onClick: e => { e.stopPropagation(); onBuyPosition(p); }
-        }, "Buy") : null,
-        onSellPosition ? React.createElement("button", {
-          className: "btn-sell-inline",
-          onClick: e => { e.stopPropagation(); onSellPosition(p); }
-        }, "Sell") : null,
-        onEditPosition ? React.createElement("button", {
-          className: "btn-edit-inline",
-          onClick: e => { e.stopPropagation(); onEditPosition(p); }
-        }, "Edit") : null),
-      React.createElement("span", { className: "hold-avg" }, "Avg cost ", fmtCcy(p.costBasis, rowCcy))));
-});
+// HoldingsListHead + HoldingRow moved to pb-views.js (Phase 4 inc 28); the view bucket is their only consumer, so they are not bound back here.
 // CurrentView is defined in pb-views.js (Phase 4 inc 25); bind it here.
 const CurrentView = PBViews.CurrentView;
 // Shorthand / index names brokers and people actually use for instruments whose
@@ -6224,7 +6149,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, useContainerWidth, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, HeatmapTreemap, PortfolioPieChart, fmtNum, HoldingRow, HoldingsListHead, SessionBadge, useHotStocks, buildSuggestions };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, useContainerWidth, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, HeatmapTreemap, PortfolioPieChart, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
