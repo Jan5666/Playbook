@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v76';
+const CACHE_NAME   = 'playbook-shell-v77';
 const CDN_CACHE    = 'playbook-cdn-v1';
 
 const SHELL_ASSETS = [

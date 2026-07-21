@@ -4,9 +4,10 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-0si1yg` (off latest `origin/main` @ inc-25/PR #35). **Jan
-reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-25 `CurrentView`
-(PR #35); before it inc 23–24 `HeatmapView`/`DashboardView` (PR #34), inc-22 `PositionModal` (PR #33), inc 20–21
+**Branch:** `claude/refactor-plan-continuation-j980on` (off latest `origin/main` @ inc-26/PR #36). **Jan
+reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-26 `WatchlistView`
+(PR #36); before it inc-25 `CurrentView`
+(PR #35), inc 23–24 `HeatmapView`/`DashboardView` (PR #34), inc-22 `PositionModal` (PR #33), inc 20–21
 Buy/`SellModal` (PR #32), inc-19 `ImportModal` (PR #31), inc-18 `AlertsModal` (PR #30), inc 15–17 (PR #26)
 and feature PRs #27–#29 (rotation tab, watchlist suggestions), which had bumped `sw` `CACHE_NAME` to v67
 and the bridge to 33 members without a refactor increment.
@@ -98,10 +99,29 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   (the inc-19 impure-reader precedent). Byte-identical (verbatim), pinned by a source-identity proof + a render
   probe (Watchlist tab with a seeded watchlist + position + alert: cards, add-form/`TickerSearch`, alert popup).
 
+- **inc-27** `TFSAView` (~114 lines) + its **TFSA-private cluster** (`fmtShares`, `Collapsible`,
+  `TFSAContributions`, `TFSABalancer`, `fmtRand`, the `TFSA_ANNUAL_LIMIT`/`TFSA_LIFETIME_LIMIT` constants and
+  the `tfsaTaxYearStart`/`currentTfsaTaxYearStart`/`tfsaTaxYearLabel`/`tfsaTodayStr` SA tax-year helpers, a
+  single 521-line contiguous slice `app.js` 5992–6512) -> `pb-views.js`; **+0 bridge / +0 IIFE reads**. The
+  last tab view and the last money-tier view (R46k annual / R500k lifetime contribution-room math). Display +
+  delegate: `Icon`/`PortfolioPieChart`/`HoldingRow`/`HoldingsListHead`/`usePersistedState`/`fmt`/`prettyName`
+  were **all already bridged** (a **4-component lead read** — one per moved component — resolves them);
+  `useState` already IIFE-read; `PBStore` a free global; the whole private cluster travels with the view
+  (single-caller `fmtShares` included). Byte-identical (verbatim), pinned by a **before/after render probe with
+  an identical digest** (2 TFSA positions incl. a cost-fallback, deposits crossing the SA tax-year boundary and
+  summing over R46k: `Value R2,200 / Cost R2,000 / P/L +R200 +10.0%`; annual `R55,000/R46,000` **over** →
+  "R9,000 over the annual limit (40% penalty applies)"; lifetime `R75,000/R500,000` → "R425,000 left · ≈ 10
+  years"; 0 mutators fired). Deposit CRUD + buy stay props (data layer). `HoldingRow`/`HoldingsListHead` **stay
+  bridged this increment** — TFSAView was their last app.js caller, so they relocate into the bucket next
+  (inc-28, a bridge shrink 46 -> 44).
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree**;
-`window.PBApp` bridge = **46** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3);
-`sw.js` `CACHE_NAME` = **playbook-shell-v76**. **Phase 4 modal extraction is COMPLETE** — every modal
-(and all three money modals) lives in the bucket. `pb-views.js` now holds **10 views + the Heatmap fullscreen chrome + the growth-chart cluster** — inc-23 (`HeatmapView`) + inc-24 (`DashboardView`) + inc-25 (`CurrentView`) + inc-26 (`WatchlistView`) opened and advanced the **non-modal view tier**.
+`window.PBApp` bridge = **46** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; **inc-27 added 0**);
+`sw.js` `CACHE_NAME` = **playbook-shell-v77**. **Phase 4 modal extraction is COMPLETE** — every modal
+(and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
+now holds **11 views + the Heatmap fullscreen chrome + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
+`DashboardView`, inc-25 `CurrentView`, inc-26 `WatchlistView`, inc-27 `TFSAView`); **every tab view now lives in
+the bucket.**
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
@@ -134,9 +154,8 @@ before/after render probe (identical digest) and moved verbatim. **+1 bridge (`M
 multi-caller with `WatchlistView`) / +0 IIFE reads**; `DATA` read at render time; `SectorWeightRows`
 already bridged. **Phase 4 modal extraction is now COMPLETE.**
 
-**NEXT -> the non-modal view tier is underway.** inc-23 extracted `HeatmapView`; inc-24 extracted `DashboardView` (+ its `PortfolioLineChart` growth-chart cluster); inc-25 extracted `CurrentView` (the Holdings tab — `HoldingRow`/`HoldingsListHead` bridged, shared with TFSA); inc-26 extracted `WatchlistView` (delegate-only; `SessionBadge`/`useHotStocks`/`buildSuggestions` bridged as stays-put app.js code). **Sole remaining tab view: `TFSAView`** (carries R46k/R500k limit + contribution-room math -> characterization test first, and once it moves the two shared rows `HoldingRow`/`HoldingsListHead` lose their last app.js caller and relocate into the bucket — a bridge shrink). Every modal (and all three money modals) is already in the
-bucket. Remaining Phase-4 candidates, if the refactor continues, are non-modal: the large remaining
-app.js view/section components (and the vestigial `FxSummary` dead-code cleanup below). Otherwise the
+**NEXT -> the non-modal view tier is COMPLETE.** inc-23 extracted `HeatmapView`; inc-24 extracted `DashboardView` (+ its `PortfolioLineChart` growth-chart cluster); inc-25 extracted `CurrentView` (the Holdings tab — `HoldingRow`/`HoldingsListHead` bridged, shared with TFSA); inc-26 extracted `WatchlistView` (delegate-only; `SessionBadge`/`useHotStocks`/`buildSuggestions` bridged as stays-put app.js code); **inc-27 extracted `TFSAView`** (the last tab view — R46k/R500k + contribution-room math, pinned by a before/after render probe with an identical digest; its TFSA-private cluster moved with it; +0 bridge / +0 IIFE). **Every tab view now lives in `pb-views.js`.** The two shared rows `HoldingRow`/`HoldingsListHead` are now bridged with **no app.js caller left** (TFSAView was the last), so **inc-28** is a clean **bridge shrink**: relocate both into `pb-views.js` (rewriting the `CurrentView`/`TFSAView` lead reads to read them bucket-local) and drop them from the bridge (**46 -> 44**). After that, remaining Phase-4 candidates are non-view: the large remaining
+app.js section components (and the vestigial `FxSummary` dead-code cleanup below). Otherwise the
 post-refactor plan is `SECURITY_ROADMAP.md` (do not start before the refactor phases are called done).
 
 **Roadmap correction (2026-07-14, confirmed 2026-07-18):** an earlier version of this file lumped
