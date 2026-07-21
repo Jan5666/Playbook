@@ -1,6 +1,13 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v77';
+const CACHE_NAME   = 'playbook-shell-v80';
 const CDN_CACHE    = 'playbook-cdn-v1';
+
+// pb-core.js is the single source of truth for Yahoo symbols, the cent/pence
+// divisor, and alert evaluation (CLAUDE.md rule #6). importScripts populates
+// self.PBCore so the background alert check uses the SAME logic as the app +
+// the Worker — never a hand-ported copy that can drift. (pb-data.js is
+// browser-only and must NOT be imported here.)
+importScripts('./pb-core.js');
 
 const SHELL_ASSETS = [
   './',
@@ -232,66 +239,25 @@ async function swFetchVia(url) {
   }
   return null;
 }
-function swYahooSymbol(ticker, market) {
-  if (market === 'JSE' || market === 'TFSA') return ticker + '.JO';
-  if (market === 'LSE') return ticker + '.L';
-  if (market === 'ASX') return ticker + '.AX';
-  if (market === 'FRA') return ticker + '.F';
-  if (market === 'PAR') return ticker + '.PA';
-  if (market === 'AMS') return ticker + '.AS';
-  // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
-  // Without this the background check fetches the wrong instrument (e.g. an
-  // equity also tickered "BTC") and fires triggers off a price that isn't the
-  // live crypto market — mirror app.js's yahooSymbol exactly.
-  if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
-  return encodeURIComponent(ticker);
-}
-// JSE reports in cents and LSE in pence for many instruments — divide to natural units.
-function swCentDivisor(market, currency) {
-  const c = (currency || '').toUpperCase();
-  if ((market === 'JSE' || market === 'TFSA') && (c === 'ZAC' || (c === 'ZAR' && /c$/i.test(currency)))) return 100;
-  if (market === 'LSE' && (c === 'GBX' || (c === 'GBP' && /p$/i.test(currency)) || c === 'GBP')) return 100;
-  return 1;
-}
+// Symbol building + the cent/pence divisor come from PBCore (via importScripts
+// above) — the same canonical logic the app and the Worker use. The old
+// hand-ported swYahooSymbol/swCentDivisor drifted (wrong ^SPX instrument, missing
+// ZAX code) and were removed here (GAPS.md #2).
 async function swFetchPrice(ticker, market) {
-  const sym = swYahooSymbol(ticker, market);
+  const sym = PBCore.yahooSymbol(ticker, market);
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d&includePrePost=true`;
   const text = await swFetchVia(url);
   if (!text) return null;
   try {
     const meta = JSON.parse(text)?.chart?.result?.[0]?.meta;
     if (!meta || typeof meta.regularMarketPrice !== 'number') return null;
-    return meta.regularMarketPrice / swCentDivisor(market, meta.currency);
+    return meta.regularMarketPrice / PBCore.centDivisor(market, meta.currency);
   } catch (_e) { return null; }
 }
 
-// Port of evaluateTriggers (app.js) over a {market:ticker → {price, fetchedAt}} map.
-function swEvaluate(alerts, prices, seen) {
-  const now = Date.now();
-  const nextSeen = {};
-  const newTriggers = [];
-  for (const a of (alerts || [])) {
-    if (!a.active) { if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id]; continue; }
-    const p = prices[a.market + ':' + a.ticker];
-    if (!p || typeof p.price !== 'number' || !isFinite(p.price) || typeof a.targetPrice !== 'number') {
-      if (seen[a.id] !== undefined) nextSeen[a.id] = seen[a.id]; continue;
-    }
-    const hit = a.direction === 'above' ? p.price >= a.targetPrice : p.price <= a.targetPrice;
-    const prior = seen[a.id] !== undefined ? seen[a.id] : 'waiting';
-    if (hit) {
-      if (prior === 'waiting') {
-        nextSeen[a.id] = { status: 'hit', at: now };
-        newTriggers.push({ ...a, triggeredAt: new Date().toISOString(), triggerPrice: p.price });
-      } else if (typeof prior === 'object' && prior !== null) {
-        nextSeen[a.id] = prior;
-      }
-    } else {
-      if (typeof prior === 'object' && prior !== null && (now - prior.at) < SW_TRIGGER_COOLDOWN_MS) nextSeen[a.id] = prior;
-      else nextSeen[a.id] = 'waiting';
-    }
-  }
-  return { nextSeen, newTriggers };
-}
+// Alert evaluation now delegates to PBCore.evaluateAlerts (called in
+// swRunAlertCheck) — the drifted swEvaluate copy was removed (GAPS.md #2). The
+// SW cooldown is passed explicitly so behavior stays pinned to 5 minutes.
 
 async function swRunAlertCheck() {
   const st = await swIdbGet(BG_KEY).catch(() => null);
@@ -308,9 +274,11 @@ async function swRunAlertCheck() {
   const prices = {};
   await Promise.all(symbols.map(async s => {
     const price = await swFetchPrice(s.ticker, s.market).catch(() => null);
-    if (price != null) prices[s.key] = { price, fetchedAt: Date.now() };
+    // PBCore.evaluateAlerts reads each price as a bare NUMBER (fetchedAt was
+    // never used by the evaluator), so store the number directly.
+    if (price != null) prices[s.key] = price;
   }));
-  const { nextSeen, newTriggers } = swEvaluate(active, prices, st.seen || {});
+  const { nextSeen, newTriggers } = PBCore.evaluateAlerts(active, prices, st.seen || {}, { cooldownMs: SW_TRIGGER_COOLDOWN_MS });
   // Persist updated seen + appended fired history regardless, so the app reconciles.
   const bgTriggered = [...newTriggers, ...(st.bgTriggered || [])].slice(0, SW_MAX_TRIGGER_HISTORY);
   await swIdbSet(BG_KEY, { ...st, seen: { ...(st.seen || {}), ...nextSeen }, bgTriggered, lastCheck: Date.now() }).catch(() => {});

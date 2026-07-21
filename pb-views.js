@@ -20,6 +20,8 @@ const MARKETS = PBContent.MARKETS;
 const valuePositionInCostCcy = PBCore.valuePositionInCostCcy;
 // PBCore module global for the extracted Watchlist view (Phase 4 inc 26).
 const parseDecimal = PBCore.parseDecimal;
+// PBData module global for the relocated shared holding rows (Phase 4 inc 28).
+const isUnitTrustId = PBData.isUnitTrustId;
 // ─── Hot Topics ──────────────────────────────────────────────────────────────
 // Earnings countdown across mega-caps + your names + JSE, a scheduled macro
 // calendar (Fed/ECB/BOJ/BoE/SARB + data/energy), and AI-surfaced market-moving
@@ -1819,6 +1821,87 @@ function DashboardView(_ref6) {
       ));
 }
 
+// --- Shared holding rows (relocated from app.js, Phase 4 inc 28) ---
+// row zones: Holding (stock name) · P/L · Current value. Shared by the
+// Holdings (per-market) and TFSA lists so both read identically.
+function HoldingsListHead() {
+  return React.createElement("div", { className: "holding-list-head" },
+    React.createElement("span", { className: "hlh-name" }, "Holding"),
+    React.createElement("span", { className: "hlh-gl" }, "P/L"),
+    React.createElement("span", { className: "hlh-val" }, "Current value"));
+}
+const HoldingRow = React.memo(function HoldingRow(_refHR) {
+  const { positionDisplayName, fmtCcy } = window.PBApp;
+  let { position: p, market, quote: q, rates, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
+  // Heading is the company/instrument name. Resolve it from every source — the
+  // name saved on the holding, the live quote's company name, the curated lists,
+  // then the learned name cache — and only fall back to the bare ticker when
+  // nothing else knows it.
+  const name = positionDisplayName(p, market, q);
+  const hasName = name !== p.ticker;
+  // A unit trust has no ticker symbol, so its name takes the primary slot (where
+  // a ticker normally sits) and the sub-line is dropped — the opaque Morningstar
+  // id is never shown.
+  const isUT = isUnitTrustId(p.ticker);
+  const mainLabel = isUT && hasName ? name : p.ticker;
+  // Value the position in the currency the cost basis is in. For ordinary
+  // holdings that's the market's native currency (a no-op); for crypto bought in
+  // ZAR it converts the live USD price into ZAR so cost and value line up and the
+  // rand they paid is preserved instead of being silently re-based to dollars.
+  const val = valuePositionInCostCcy(p, q, rates);
+  const rowCcy = val.ccy;
+  const marketValue = val.value;
+  const cost = val.cost;
+  const gain = val.gain;
+  const gainUp = gain != null && gain >= 0;
+  const growthPct = val.gainPct;
+  const dayPct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+  const dayUp = dayPct != null && dayPct >= 0;
+  return React.createElement("button", {
+    key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
+  },
+    // LEFT — ticker + market badge (main), company name (sub). Avg cost lives on
+    // the bottom action strip beside Edit (see ACTIONS below).
+    React.createElement("div", { className: "row-main" },
+      React.createElement("div", { className: "hold-id" },
+        React.createElement("span", { className: "hold-tkr-main" }, mainLabel),
+        React.createElement("span", { className: "mkt-badge" }, isUT ? "fund" : market)),
+      React.createElement("div", { className: "row-meta" },
+        (hasName && !isUT) ? React.createElement("span", { className: "hold-co-name" }, name) : null)),
+    // MIDDLE — total gain/loss: amount on top, % below
+    React.createElement("div", { className: "holding-gl" },
+      gain != null
+        ? React.createElement(React.Fragment, null,
+            React.createElement("div", { className: `holding-gl-amt mono ${gainUp ? 'text-up' : 'text-down'}` },
+              (gainUp ? '+' : '−') + fmtCcy(gain, rowCcy)),
+            growthPct != null ? React.createElement("div", { className: `holding-gl-pct mono ${gainUp ? 'text-up' : 'text-down'}` },
+              (gainUp ? '+' : '') + growthPct.toFixed(2) + '%') : null)
+        : React.createElement("div", { className: "holding-gl-amt mono text-dim" }, "—")),
+    // RIGHT — current value, with the day's movement underneath
+    React.createElement("div", { className: "row-right" },
+      React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmtCcy(marketValue, rowCcy) : "—"),
+      dayPct != null ? React.createElement("div", {
+        className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
+      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
+    // ACTIONS — full-width strip beneath the three zones: the Buy/Sell/Edit cluster
+    // on the left (identically sized on every card), with Avg cost on the right.
+    React.createElement("div", { className: "row-actions" },
+      React.createElement("div", { className: "row-actions-btns" },
+        onBuyPosition ? React.createElement("button", {
+          className: "btn-buy-inline",
+          onClick: e => { e.stopPropagation(); onBuyPosition(p); }
+        }, "Buy") : null,
+        onSellPosition ? React.createElement("button", {
+          className: "btn-sell-inline",
+          onClick: e => { e.stopPropagation(); onSellPosition(p); }
+        }, "Sell") : null,
+        onEditPosition ? React.createElement("button", {
+          className: "btn-edit-inline",
+          onClick: e => { e.stopPropagation(); onEditPosition(p); }
+        }, "Edit") : null),
+      React.createElement("span", { className: "hold-avg" }, "Avg cost ", fmtCcy(p.costBasis, rowCcy))));
+});
+
 function CurrentView(_ref7) {
   let {
     positions,
@@ -1832,7 +1915,7 @@ function CurrentView(_ref7) {
     onBuyPosition,
     onSellPosition
   } = _ref7;
-  const { HoldingRow, HoldingsListHead, Icon, fmtCcy, fmtCcySigned, MARKET_LABELS, positionDisplayName } = window.PBApp;
+  const { Icon, fmtCcy, fmtCcySigned, MARKET_LABELS, positionDisplayName } = window.PBApp;
   const prices = PBStore.usePricesMap();
   const valueHidden = PBStore.useSetting('valueHidden');
   // Always offer the three primary US/SA tabs, then surface any other market
@@ -3303,7 +3386,7 @@ function TFSABalancer({ positions, onBuyPosition }) {
 function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBuyPosition, onSellPosition,
                    tfsaDeposits, onAddTfsaDeposit, onUpdateTfsaDeposit, onRemoveTfsaDeposit, onRemoveTfsaDeposits,
                    fxRates, sectorCache, fundamentals, sectorWeights, onSetSectorWeights }) {
-  const { Icon, PortfolioPieChart, HoldingRow, HoldingsListHead } = window.PBApp;
+  const { Icon, PortfolioPieChart } = window.PBApp;
   const prices = PBStore.usePricesMap();
   const valueHidden = PBStore.useSetting('valueHidden');
   const totalValue = positions.reduce((s, p) => {
@@ -3426,6 +3509,8 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
   window.PBViews.HeatmapView = HeatmapView;
   window.PBViews.DashboardView = DashboardView;
   window.PBViews.CurrentView = CurrentView;
+  window.PBViews.HoldingRow = HoldingRow;
+  window.PBViews.HoldingsListHead = HoldingsListHead;
   window.PBViews.WatchlistView = WatchlistView;
   window.PBViews.TFSAView = TFSAView;
 })();
