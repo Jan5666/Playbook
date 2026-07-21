@@ -73,9 +73,10 @@ ok('empty/malformed input → []',
 // ── Source guards: wiring (anti-drift) ──────────────────────────────────────
 const here = dirname(fileURLToPath(import.meta.url));
 const appSrc = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
+const viewsSrc = readFileSync(join(here, '..', '..', 'pb-views.js'), 'utf8');
 const dataSrc = readFileSync(join(here, '..', '..', 'pb-data.js'), 'utf8');
-ok('app.js chart delegates the date-merge to PBCore.forwardFillPortfolio', appSrc.includes('PBCore.forwardFillPortfolio('));
-ok('the naive per-date += sum is gone from the chart', !appSrc.includes("if (d < entryDate) return;\r\n        if (!dateMap[d])"));
+ok('the growth chart delegates the date-merge to PBCore.forwardFillPortfolio', (appSrc + viewsSrc).includes('PBCore.forwardFillPortfolio('));
+ok('the naive per-date += sum is gone from the chart', !(appSrc + viewsSrc).includes("if (d < entryDate) return;\r\n        if (!dateMap[d])"));
 ok('pb-data history parsers reject non-positive closes', /!isFinite\(c\) \|\| c <= 0/.test(dataSrc));
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

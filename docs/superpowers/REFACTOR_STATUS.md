@@ -68,10 +68,20 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   probe with an **identical digest**. `HeatmapTreemap`/`ZoomPanHeatmap` + the sector-trend infra stay in
   app.js (bridged); `SectorDetailModal` is read from `PBModals` at render time (pb-modals loads after us).
 
+- **inc-24** `DashboardView` (~299 lines) + its single-caller growth-chart cluster (`CHART_MONTHS`/
+  `chartDayLabel`/`buildTimeAxisTicks`/`PortfolioLineChart`, ~406 lines) -> `pb-views.js`; **+2 bridge
+  (`PortfolioPieChart` — shared with `TFSAView` — and `fmtNum` — 14 callers) / +5 IIFE reads**
+  (`CURRENCY_SYMBOLS` from PBContent, `MARKET_CURRENCY`/`contribInDisplay`/`quoteTradedToday` from PBCore,
+  `fetchHistory` from PBData). Display + delegate: the overall-profit/growth aggregation formats pb-core
+  helpers (unmoved), pinned by a before/after render probe with an **identical digest**. The two contribution
+  modals read from `PBModals` at render time; the cluster is bucket-private (no lead read). The
+  `portfolio-fill.test.mjs` delegation guard followed `PBCore.forwardFillPortfolio(` into the bucket
+  (now spans app.js + pb-views.js).
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree**;
-`window.PBApp` bridge = **39** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1);
-`sw.js` `CACHE_NAME` = **playbook-shell-v73**. **Phase 4 modal extraction is COMPLETE** — every modal
-(and all three money modals) lives in the bucket. `pb-views.js` now holds **7 views + the Heatmap fullscreen chrome** — inc-23 (`HeatmapView`) opened the **non-modal view tier**.
+`window.PBApp` bridge = **41** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2);
+`sw.js` `CACHE_NAME` = **playbook-shell-v74**. **Phase 4 modal extraction is COMPLETE** — every modal
+(and all three money modals) lives in the bucket. `pb-views.js` now holds **8 views + the Heatmap fullscreen chrome + the growth-chart cluster** — inc-23 (`HeatmapView`) + inc-24 (`DashboardView`) opened the **non-modal view tier**.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
@@ -104,7 +114,7 @@ before/after render probe (identical digest) and moved verbatim. **+1 bridge (`M
 multi-caller with `WatchlistView`) / +0 IIFE reads**; `DATA` read at render time; `SectorWeightRows`
 already bridged. **Phase 4 modal extraction is now COMPLETE.**
 
-**NEXT -> the non-modal view tier is underway.** inc-23 extracted `HeatmapView`; **inc-24 `DashboardView`** (+ its single-caller `PortfolioLineChart` chart subtree, +1 bridge `PortfolioPieChart`) is next. Every modal (and all three money modals) is already in the
+**NEXT -> the non-modal view tier is underway.** inc-23 extracted `HeatmapView`; inc-24 extracted `DashboardView` (+ its `PortfolioLineChart` growth-chart cluster). **Remaining tab views: `CurrentView`, `WatchlistView`, `TFSAView`** (Current/TFSA share `HoldingRow`/`HoldingsListHead`; TFSA carries R46k/R500k limit math -> characterization test first). Every modal (and all three money modals) is already in the
 bucket. Remaining Phase-4 candidates, if the refactor continues, are non-modal: the large remaining
 app.js view/section components (and the vestigial `FxSummary` dead-code cleanup below). Otherwise the
 post-refactor plan is `SECURITY_ROADMAP.md` (do not start before the refactor phases are called done).
