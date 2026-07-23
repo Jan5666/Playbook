@@ -127,9 +127,25 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   (`verify-refresh-behavior`: 2 `.holding-row`s render on the Holdings tab, none with a session badge),
   which doubles as the `CurrentView` -> `HoldingRow` render probe. Both rows registered on `window.PBViews`.
 
+- **inc-29** removed the vestigial dead `FxSummary` (no callers). **inc-30** `PortfolioPieChart` (~303 lines)
+  + its single-caller child `SectorHoldingsPopup` (~79 lines) + the private donut-palette helper cluster
+  (`_donutHexToRgb`/`_donutRgbToHex`/`_donutHslToHex`/`donutIndigoPalette`/`donutSpectrumPalette`/
+  `donutPaletteColors` + `DONUT_INDIGO_ANCHORS`/`DONUT_SPECTRUM_BASE`/`DONUT_OTHER_COLOR`) -> `pb-views.js`;
+  **bridge net 0 (44 -> 44) / 0 new IIFE reads**. A **lateral swap, not a shrink**: `PortfolioPieChart` left
+  the bridge (its only callers, `DashboardView`/`TFSAView`, already live in the bucket and now read it
+  bucket-local) while `resolvePositionSector` **joined** it — the sector resolver reads `DATA`
+  (`normalizeSector`/`findSector`/`classifySectorByName`), and the bucket only has `DATA` at render time
+  inside components, so a verbatim move was impossible; it stays in app.js and is bridged. The donut helpers
+  are pure (Math only) so they travel as bucket-private code; `MARKET_LABELS` stays bridged (used in both
+  buckets). `SectorAllocationModal` is read from `PBModals` at render time (the inc-23 precedent). `Icon`/
+  `positionDisplayName`/`useBodyScrollLock`/`CURRENCY_SYMBOLS`/`convertCcy`/`marketCurrency`/`priceKey` were
+  all already bridged or IIFE-read; `useCallback` was already IIFE-read. Verbatim move (BOM-safe slice
+  script), pinned by `node --check` + the full node suite (money gate green) + the mount gate. ~440 lines
+  leave app.js. **Completes the shared-infra frontier for the allocation-donut cluster.**
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree**;
 `window.PBApp` bridge = **44** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v79** (inc-29 removed dead `FxSummary`). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+`sw.js` `CACHE_NAME` = **playbook-shell-v81** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
 `DashboardView`, inc-25 `CurrentView`, inc-26 `WatchlistView`, inc-27 `TFSAView`); **every tab view now lives in
