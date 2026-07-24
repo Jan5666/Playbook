@@ -4,8 +4,9 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-xfs6i3` (inc-32, off latest `origin/main` @ inc-31/PR #40). **Jan
-reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-31 `SectorWeightRows`
+**Branch:** `claude/refactor-plan-continuation-w32yim` (inc-33, off latest `origin/main` @ inc-32/PR #41).
+**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-32 Heatmap
+cluster (PR #41); before it inc-31 `SectorWeightRows`
 (PR #40); before it inc-30 `PortfolioPieChart`
 (PR #39); before it inc-29 dead-`FxSummary` cleanup + inc-28 `HoldingRow`/`HoldingsListHead` (PR #38),
 inc-27 `TFSAView` (PR #37), inc-26 `WatchlistView` (PR #36), inc-25 `CurrentView`
@@ -175,10 +176,27 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   now all legitimately shared with root-`App` and/or both buckets (`Icon`, `PriceBlock`, `SessionBadge`,
   `TickerSearch`, `MarketPicker`, `useContainerWidth`, plus impure readers).
 
+- **inc-33** `useContainerWidth` (~18 lines, the `ResizeObserver` container-sizing hook) -> `pb-views.js`;
+  **-1 bridge (41 -> 40) / +0 IIFE reads / +0 registrations**. **Corrects the inc-32 call** that
+  `useContainerWidth` "stays bridged — shared": it is **pb-views-only** (`RotationFlowDiagram`,
+  `RotationIntradayChart`, `HeatmapTreemap`), with **zero root-`App`** and **zero pb-modals** callers —
+  "shared across two views *within one bucket*" never required the bridge (the inc-30 growth-chart /
+  donut-helper bucket-private precedent). It worked pre-move only because `app.js` runs at global scope,
+  so the top-level `function useContainerWidth()` was a global the rotation components called bare while
+  `HeatmapTreemap` redundantly re-read it from `PBApp`. Verbatim move (BOM-safe slice script, captured
+  block reused byte-for-byte): a hoisted bucket-private function (no lead read); the two rotation
+  components' bare calls now resolve bucket-local, and `HeatmapTreemap`'s lead read shrinks
+  (`{ Icon, useContainerWidth }` -> `{ Icon }`). **Not** registered on `window.PBViews` (no cross-bucket
+  consumer — the inc-31 `SectorWeightRows` precedent). No money/alert code (pure layout — rules #3/#4
+  unaffected). Pinned by `node --check` + the full node suite (**28/28**, money gate green) + anti-drift
+  greps + a standalone render probe (the committed mount gate does not mount in this container — it fails
+  identically on pristine `HEAD`; the probe opens the Heatmap + Rotation tabs and asserts all three
+  consumers render with zero page exceptions).
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree + the shared
 `SectorWeightRows` sector-split editor**;
-`window.PBApp` bridge = **41** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v83** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+`window.PBApp` bridge = **40** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**; **inc-33 removed 1**);
+`sw.js` `CACHE_NAME` = **playbook-shell-v84** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the Heatmap cluster (`HeatmapTreemap`/`ZoomPanHeatmap` +
 treemap math) + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
@@ -225,9 +243,11 @@ root-`App` caller** (`HeatmapTreemap`'s only app.js reference lived inside `Zoom
 it), and pb-modals `SectorDetailModal` now reads `ZoomPanHeatmap` from `window.PBViews` at render time.
 **The structural extraction is now effectively complete** — the "large remaining app.js section components"
 the earlier roadmap gestured at are all either the root `App`, genuinely shared across **both** buckets
-(`PriceBlock`, `TickerSearch`, `MarketPicker`), shared with app.js + a bucket (`useContainerWidth`,
-`SessionBadge`), or impure readers that must stay in app.js — so they correctly stay bridged. The Heatmap
-infra frontier is now cleared (inc-32). The post-refactor plan is `SECURITY_ROADMAP.md` (do not start before
+(`PriceBlock`, `TickerSearch`, `MarketPicker`), shared with app.js + a bucket (`SessionBadge`), or impure
+readers that must stay in app.js — so they correctly stay bridged. **inc-33** then corrected the one
+remaining mis-classification: `useContainerWidth` was pb-views-only (not shared across buckets) and moved
+into `pb-views.js` (bridge 41 -> 40). The Heatmap infra frontier is cleared (inc-32) and the bridge now
+holds only genuinely-shared members. The post-refactor plan is `SECURITY_ROADMAP.md` (do not start before
 the refactor phases are called done).
 
 **Roadmap correction (2026-07-14, confirmed 2026-07-18):** an earlier version of this file lumped

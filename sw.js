@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v83';
+const CACHE_NAME   = 'playbook-shell-v84';
 const CDN_CACHE    = 'playbook-cdn-v1';
 
 // pb-core.js is the single source of truth for Yahoo symbols, the cent/pence
