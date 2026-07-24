@@ -459,6 +459,29 @@ function rotFlowDisplay(classified, flows) {
   return { outBlocks: outF.blocks, inBlocks: inF.blocks, ribbons };
 }
 
+// Measures a container element via ResizeObserver, returning [ref, width].
+// Bucket-private (Phase 4 inc 33): consumed only by pb-views.js components
+// (RotationFlowDiagram, RotationIntradayChart, HeatmapTreemap) — moved off the
+// window.PBApp bridge since it has no root-App and no pb-modals caller.
+function useContainerWidth() {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    if (!ref.current || typeof ResizeObserver === 'undefined') return;
+    const el = ref.current;
+    // clientWidth and contentRect.width are both the inner content box (exclude
+    // the border), so the treemap layout matches where absolutely-positioned
+    // cells actually live — no off-by-border clipping at the right edge.
+    setWidth(el.clientWidth);
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) setWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
+
 // The rotation ribbons: outflow sectors stacked left (losing cap), inflow right
 // (gaining), curved bands between them sized by estimated matched flow.
 function RotationFlowDiagram(_p) {
@@ -977,7 +1000,7 @@ function layoutTreemap(sectors, w, h) {
 }
 function HeatmapTreemap(_ref8c) {
   let { rows, aspectRatio, minHeight, onOpenDetail, onOpenSector, loading, height: fixedHeight, width: fixedWidth } = _ref8c;
-  const { Icon, useContainerWidth } = window.PBApp;
+  const { Icon } = window.PBApp;
   const [containerRef, measuredWidth] = useContainerWidth();
   const width = fixedWidth || measuredWidth;
   const sectors = useMemo(() => buildSectorHierarchy(rows), [rows]);

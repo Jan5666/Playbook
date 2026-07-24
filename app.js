@@ -4984,24 +4984,6 @@ const WatchlistView = PBViews.WatchlistView;
 // Treemap layout math (heatColor / squarify / layoutSquarify / computeWorst /
 // buildSectorHierarchy / layoutTreemap) moved to pb-views.js with HeatmapTreemap
 // (Phase 4 inc 32) — Heatmap-private, consumed only by the bucket Heatmap views.
-function useContainerWidth() {
-  const ref = useRef(null);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    if (!ref.current || typeof ResizeObserver === 'undefined') return;
-    const el = ref.current;
-    // clientWidth and contentRect.width are both the inner content box (exclude
-    // the border), so the treemap layout matches where absolutely-positioned
-    // cells actually live — no off-by-border clipping at the right edge.
-    setWidth(el.clientWidth);
-    const ro = new ResizeObserver(entries => {
-      for (const entry of entries) setWidth(entry.contentRect.width);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, width];
-}
 // Each GICS-style sector maps to the SPDR sector ETF that tracks it. We treat
 // the ETF's own price history as a proxy for "the size / health of the sector"
 // over time — it's a clean, liquid, well-known instrument per sector and lets us
@@ -5046,8 +5028,9 @@ async function fetchSectorTrend(sectorName) {
 // HeatmapTreemap + ZoomPanHeatmap moved to pb-views.js (Phase 4 inc 32) —
 // window.PBViews.{HeatmapTreemap,ZoomPanHeatmap}. They have no root-App caller
 // (entered only from the bucket Heatmap views + pb-modals SectorDetailModal, which
-// now reads ZoomPanHeatmap from window.PBViews at render time). useContainerWidth +
-// fetchSectorTrend stay above (still shared / bridged).
+// now reads ZoomPanHeatmap from window.PBViews at render time). fetchSectorTrend
+// stays above (impure Yahoo reader, bridged for pb-modals SectorDetailModal);
+// useContainerWidth moved to pb-views.js (Phase 4 inc 33).
 const HeatmapView = PBViews.HeatmapView;
 // PicksView is defined in pb-views.js (Phase 4 inc 8); bind it here.
 const PicksView = PBViews.PicksView;
@@ -5227,7 +5210,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, fetchSectorTrend, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, useContainerWidth, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, fetchSectorTrend, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
