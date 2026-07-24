@@ -107,7 +107,8 @@ function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, 
 // Sector detail popup (moved from app.js, Phase 4 inc 12) — heatmap sector card:
 // stats strip, relative-size bar, multi-window trend, contained zoom heatmap.
 function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDetail }) {
-  const { Icon, useBodyScrollLock, fetchSectorTrend, ZoomPanHeatmap } = window.PBApp;
+  const { Icon, useBodyScrollLock, fetchSectorTrend } = window.PBApp;
+  const { ZoomPanHeatmap } = window.PBViews;
   const [trend, setTrend] = useState(null);
   const [trendLoading, setTrendLoading] = useState(true);
   const [closing, setClosing] = useState(false);
