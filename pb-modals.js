@@ -24,11 +24,56 @@
   const normaliseCompanyName = PBImport.normaliseCompanyName; // PBImport global
   const parseEasyEquitiesScreenshot = PBImport.parseEasyEquitiesScreenshot; // PBImport global
   const dedupeEeHoldings = PBImport.dedupeEeHoldings; // PBImport global
+// SectorWeightRows — ETF/fund sector-split editor. Moved verbatim from app.js (Phase 4 inc 31);
+// its only callers (SectorAllocationModal + PositionModal) live in this bucket. Icon via the
+// PBApp bridge; DATA read at render time.
+function SectorWeightRows({ rows, setRows }) {
+  const { Icon } = window.PBApp;
+  const DATA = window.PB_DATA; // data.js loads after this bucket - read at render time
+  const addRow = () => setRows(rs => [...rs, { sector: '', weight: '' }]);
+  const updateRow = (i, patch) => setRows(rs => rs.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  const removeRow = (i) => setRows(rs => rs.filter((_, idx) => idx !== i));
+  const clean = rows.map(r => ({ sector: r.sector, weight: parseFloat(r.weight) })).filter(r => r.sector && isFinite(r.weight) && r.weight > 0);
+  const sum = clean.reduce((s, r) => s + r.weight, 0);
+  return React.createElement(React.Fragment, null,
+    rows.length === 0
+      ? React.createElement("div", { className: "form-help", style: { marginTop: 0, marginBottom: 8 } },
+          "Optional. Split a fund or ETF across the sectors it actually holds, so your allocation chart looks through to its real sector mix instead of a single bucket.")
+      : React.createElement("div", { className: "sector-split-list" },
+          rows.map((r, i) => React.createElement("div", { className: "sector-split-row", key: i },
+            React.createElement("select", {
+              className: "import-field-select sector-split-sector",
+              value: r.sector,
+              onChange: e => updateRow(i, { sector: e.target.value })
+            }, React.createElement("option", { value: "" }, "Select sector…"),
+               (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s))),
+            React.createElement("div", { className: "input-suffix-wrap sector-split-weight" },
+              React.createElement("input", {
+                type: "number", inputMode: "decimal", min: "0", max: "100", step: "1",
+                placeholder: "0", value: r.weight,
+                onChange: e => updateRow(i, { weight: e.target.value })
+              }),
+              React.createElement("span", { className: "suffix" }, "%")),
+            React.createElement("button", {
+              className: "icon-btn sector-split-del", type: "button", "aria-label": "Remove sector",
+              onClick: () => removeRow(i)
+            }, React.createElement(Icon, { name: "x", size: 14 }))))),
+    React.createElement("div", { className: "sector-split-foot" },
+      React.createElement("button", { className: "btn btn-secondary btn-sm", type: "button", onClick: addRow },
+        React.createElement(Icon, { name: "plus", size: 13 }), " Add sector"),
+      clean.length ? React.createElement("span", {
+        className: "sector-split-sum" + (Math.abs(sum - 100) < 0.1 ? " ok" : "")
+      }, "Total ", sum.toFixed(sum % 1 === 0 ? 0 : 1), "%") : null),
+    clean.length && Math.abs(sum - 100) >= 0.1 ? React.createElement("div", { className: "form-help" },
+      "Weights are applied relative to one another, so they needn't add up to exactly 100%.") : null
+  );
+}
+
 // Dedicated "edit just the sector allocation" modal for one instrument, opened
 // from the sector-breakdown popup. Edits the shared pb.sectorWeights map (keyed
 // by MARKET:TICKER) so the change applies to that fund everywhere it's held.
 function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, onSave }) {
-  const { Icon, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows } = window.PBApp;
+  const { Icon, useSwipeDownToClose, useBodyScrollLock } = window.PBApp;
   const [rows, setRows] = useState(() =>
     Array.isArray(initialWeights) && initialWeights.length
       ? initialWeights.map(w => ({ sector: w.sector || '', weight: w.weight != null ? String(w.weight) : '' }))
@@ -3330,7 +3375,7 @@ function SellModal({ position, onClose, onSell }) {
           }, "Record sale")))));
 }
 function PositionModal(_ref12) {
-  const { Icon, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, TickerSearch, sanitizeDecimalInput, MarketPicker } = window.PBApp;
+  const { Icon, useSwipeDownToClose, useBodyScrollLock, TickerSearch, sanitizeDecimalInput, MarketPicker } = window.PBApp;
   const DATA = window.PB_DATA; // data.js loads after this bucket - read at render time
   let {
     editId,

@@ -4,9 +4,10 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-j980on` (off latest `origin/main` @ inc-26/PR #36). **Jan
-reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-26 `WatchlistView`
-(PR #36); before it inc-25 `CurrentView`
+**Branch:** `claude/refactor-plan-xv8lkg` (inc-31, off latest `origin/main` @ inc-30/PR #39). **Jan
+reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-30 `PortfolioPieChart`
+(PR #39); before it inc-29 dead-`FxSummary` cleanup + inc-28 `HoldingRow`/`HoldingsListHead` (PR #38),
+inc-27 `TFSAView` (PR #37), inc-26 `WatchlistView` (PR #36), inc-25 `CurrentView`
 (PR #35), inc 23–24 `HeatmapView`/`DashboardView` (PR #34), inc-22 `PositionModal` (PR #33), inc 20–21
 Buy/`SellModal` (PR #32), inc-19 `ImportModal` (PR #31), inc-18 `AlertsModal` (PR #30), inc 15–17 (PR #26)
 and feature PRs #27–#29 (rotation tab, watchlist suggestions), which had bumped `sw` `CACHE_NAME` to v67
@@ -143,9 +144,23 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   script), pinned by `node --check` + the full node suite (money gate green) + the mount gate. ~440 lines
   leave app.js. **Completes the shared-infra frontier for the allocation-donut cluster.**
 
-**Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree**;
-`window.PBApp` bridge = **44** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v81** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+- **inc-31** `SectorWeightRows` (~41 lines, the ETF/fund sector-split editor) -> `pb-modals.js`; **-1 bridge
+  (44 -> 43) / +1 IIFE-style render read (`DATA`)**. A clean **bridge shrink**: the two consumers
+  (`SectorAllocationModal` + `PositionModal`) already lived in the bucket and `SectorWeightRows` had **zero
+  app.js / zero pb-views callers** — it was on the bridge only because it predated its modals' move. Verbatim
+  move (BOM-safe slice script): `Icon` stays bridged (lead read), `DATA` (`window.PB_DATA`, for
+  `SECTOR_CANON`) is read **at render time** (the bucket's established pattern — data.js loads after it), and
+  the component dropped from both consumers' `window.PBApp` lead-read destructures. No money/alert code
+  (rules #3/#4 unaffected — pure form UI). Pinned by `node --check` + the full node suite (money gate green) +
+  the mount gate + a render probe (open `SectorAllocationModal`: `.sector-split-*` rows, "Add sector" button,
+  `DATA.SECTOR_CANON` options populate). Nothing outside the bucket consumes it, so it is **not** registered
+  on `window.PBModals`. This is the last clean structural extraction — the remaining bridge members are all
+  legitimately shared across both buckets or with app.js.
+
+**Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree + the shared
+`SectorWeightRows` sector-split editor**;
+`window.PBApp` bridge = **43** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**);
+`sw.js` `CACHE_NAME` = **playbook-shell-v82** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
 `DashboardView`, inc-25 `CurrentView`, inc-26 `WatchlistView`, inc-27 `TFSAView`); **every tab view now lives in
@@ -182,9 +197,14 @@ before/after render probe (identical digest) and moved verbatim. **+1 bridge (`M
 multi-caller with `WatchlistView`) / +0 IIFE reads**; `DATA` read at render time; `SectorWeightRows`
 already bridged. **Phase 4 modal extraction is now COMPLETE.**
 
-**NEXT -> the non-modal view tier is COMPLETE.** inc-23 extracted `HeatmapView`; inc-24 extracted `DashboardView` (+ its `PortfolioLineChart` growth-chart cluster); inc-25 extracted `CurrentView` (the Holdings tab — `HoldingRow`/`HoldingsListHead` bridged, shared with TFSA); inc-26 extracted `WatchlistView` (delegate-only; `SessionBadge`/`useHotStocks`/`buildSuggestions` bridged as stays-put app.js code); **inc-27 extracted `TFSAView`** (the last tab view — R46k/R500k + contribution-room math, pinned by a before/after render probe with an identical digest; its TFSA-private cluster moved with it; +0 bridge / +0 IIFE). **Every tab view now lives in `pb-views.js`.** The two shared rows `HoldingRow`/`HoldingsListHead` are now bridged with **no app.js caller left** (TFSAView was the last), so **inc-28** (DONE) was a clean **bridge shrink**: both rows moved into `pb-views.js` (the `CurrentView`/`TFSAView` lead reads now read them bucket-local) and dropped from the bridge (**46 -> 44**, +1 IIFE read `isUnitTrustId`). After that, remaining Phase-4 candidates are non-view: the large remaining
-app.js section components (and the vestigial `FxSummary` dead-code cleanup below). Otherwise the
-post-refactor plan is `SECURITY_ROADMAP.md` (do not start before the refactor phases are called done).
+**NEXT -> the non-modal view tier is COMPLETE.** inc-23 extracted `HeatmapView`; inc-24 extracted `DashboardView` (+ its `PortfolioLineChart` growth-chart cluster); inc-25 extracted `CurrentView` (the Holdings tab — `HoldingRow`/`HoldingsListHead` bridged, shared with TFSA); inc-26 extracted `WatchlistView` (delegate-only; `SessionBadge`/`useHotStocks`/`buildSuggestions` bridged as stays-put app.js code); **inc-27 extracted `TFSAView`** (the last tab view — R46k/R500k + contribution-room math, pinned by a before/after render probe with an identical digest; its TFSA-private cluster moved with it; +0 bridge / +0 IIFE). **Every tab view now lives in `pb-views.js`.** The two shared rows `HoldingRow`/`HoldingsListHead` are now bridged with **no app.js caller left** (TFSAView was the last), so **inc-28** (DONE) was a clean **bridge shrink**: both rows moved into `pb-views.js` (the `CurrentView`/`TFSAView` lead reads now read them bucket-local) and dropped from the bridge (**46 -> 44**, +1 IIFE read `isUnitTrustId`). inc-29 removed the dead `FxSummary`; inc-30 moved
+`PortfolioPieChart` into `pb-views.js` (lateral swap, bridge net 0); **inc-31 (DONE)** relocated
+`SectorWeightRows` into `pb-modals.js` (the last clean **bridge shrink**, **44 -> 43**). **The structural
+extraction is now effectively complete** — the "large remaining app.js section components" the earlier
+roadmap gestured at are all either the root `App`, genuinely shared across **both** buckets (`PriceBlock`,
+`TickerSearch`, `MarketPicker`, `ZoomPanHeatmap`), impure readers that must stay in app.js, or the Heatmap
+infra (`HeatmapTreemap` still has an app.js caller via `ZoomPanHeatmap`), so they correctly stay bridged.
+The post-refactor plan is `SECURITY_ROADMAP.md` (do not start before the refactor phases are called done).
 
 **Roadmap correction (2026-07-14, confirmed 2026-07-18):** an earlier version of this file lumped
 `AlertsModal` into the rule-#3-gated tier. On re-reading, Alerts is display + CRUD only (no eval, no

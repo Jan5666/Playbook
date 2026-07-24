@@ -4001,51 +4001,9 @@ function resolvePositionSector(ticker, market, sectorCache, fundamentals, name) 
   }
   return found;
 }
-// Shared editor for an instrument's sector breakdown — a controlled list of
-// { sector, weight } rows with an add button and a running total. Reused by the
-// position modal and the dedicated allocation modal so both entry points behave
-// identically. `rows`/`setRows` hold weights as strings (raw input).
-function SectorWeightRows({ rows, setRows }) {
-  const addRow = () => setRows(rs => [...rs, { sector: '', weight: '' }]);
-  const updateRow = (i, patch) => setRows(rs => rs.map((r, idx) => idx === i ? { ...r, ...patch } : r));
-  const removeRow = (i) => setRows(rs => rs.filter((_, idx) => idx !== i));
-  const clean = rows.map(r => ({ sector: r.sector, weight: parseFloat(r.weight) })).filter(r => r.sector && isFinite(r.weight) && r.weight > 0);
-  const sum = clean.reduce((s, r) => s + r.weight, 0);
-  return React.createElement(React.Fragment, null,
-    rows.length === 0
-      ? React.createElement("div", { className: "form-help", style: { marginTop: 0, marginBottom: 8 } },
-          "Optional. Split a fund or ETF across the sectors it actually holds, so your allocation chart looks through to its real sector mix instead of a single bucket.")
-      : React.createElement("div", { className: "sector-split-list" },
-          rows.map((r, i) => React.createElement("div", { className: "sector-split-row", key: i },
-            React.createElement("select", {
-              className: "import-field-select sector-split-sector",
-              value: r.sector,
-              onChange: e => updateRow(i, { sector: e.target.value })
-            }, React.createElement("option", { value: "" }, "Select sector…"),
-               (DATA.SECTOR_CANON || []).map(s => React.createElement("option", { key: s, value: s }, s))),
-            React.createElement("div", { className: "input-suffix-wrap sector-split-weight" },
-              React.createElement("input", {
-                type: "number", inputMode: "decimal", min: "0", max: "100", step: "1",
-                placeholder: "0", value: r.weight,
-                onChange: e => updateRow(i, { weight: e.target.value })
-              }),
-              React.createElement("span", { className: "suffix" }, "%")),
-            React.createElement("button", {
-              className: "icon-btn sector-split-del", type: "button", "aria-label": "Remove sector",
-              onClick: () => removeRow(i)
-            }, React.createElement(Icon, { name: "x", size: 14 }))))),
-    React.createElement("div", { className: "sector-split-foot" },
-      React.createElement("button", { className: "btn btn-secondary btn-sm", type: "button", onClick: addRow },
-        React.createElement(Icon, { name: "plus", size: 13 }), " Add sector"),
-      clean.length ? React.createElement("span", {
-        className: "sector-split-sum" + (Math.abs(sum - 100) < 0.1 ? " ok" : "")
-      }, "Total ", sum.toFixed(sum % 1 === 0 ? 0 : 1), "%") : null),
-    clean.length && Math.abs(sum - 100) >= 0.1 ? React.createElement("div", { className: "form-help" },
-      "Weights are applied relative to one another, so they needn't add up to exactly 100%.") : null
-  );
-}
-// SectorAllocationModal moved to pb-modals.js (Phase 4 inc 11). SectorWeightRows stays in
-// app.js (also used by the position editor) and is reached via the PBApp bridge.
+// SectorAllocationModal moved to pb-modals.js (Phase 4 inc 11).
+// SectorWeightRows moved to pb-modals.js (Phase 4 inc 31) — it now lives beside its only callers
+// (SectorAllocationModal + PositionModal, both in the bucket) and is off the PBApp bridge.
 const SectorAllocationModal = PBModals.SectorAllocationModal;
 // Donut palettes moved to pb-views.js (Phase 4 inc 30) — private colour scales for PortfolioPieChart.
 // SVG donut/pie chart — supports grouping by ticker, sector, or market
@@ -5648,7 +5606,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, SectorWeightRows, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, useContainerWidth, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, HeatmapTreemap, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, fetchSectorTrend, ZoomPanHeatmap, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, useContainerWidth, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, HeatmapTreemap, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
