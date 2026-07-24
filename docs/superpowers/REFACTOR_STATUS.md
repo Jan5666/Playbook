@@ -4,8 +4,9 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-w32yim` (inc-33, off latest `origin/main` @ inc-32/PR #41).
-**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-32 Heatmap
+**Branch:** `claude/refactor-plan-continuation-2x65br` (inc-34, off latest `origin/main` @ inc-33/PR #42).
+**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-33
+`useContainerWidth` (PR #42); before it inc-32 Heatmap
 cluster (PR #41); before it inc-31 `SectorWeightRows`
 (PR #40); before it inc-30 `PortfolioPieChart`
 (PR #39); before it inc-29 dead-`FxSummary` cleanup + inc-28 `HoldingRow`/`HoldingsListHead` (PR #38),
@@ -193,10 +194,29 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   identically on pristine `HEAD`; the probe opens the Heatmap + Rotation tabs and asserts all three
   consumers render with zero page exceptions).
 
+- **inc-34** `useSwipeDownToClose` (~138 lines, the iOS-sheet swipe-to-dismiss touch-drag hook) ->
+  `pb-modals.js`; **-1 bridge (40 -> 39) / +0 IIFE reads / +0 registrations**. **Corrects the inc-33 call**
+  that the bridge "now holds only genuinely-shared members": `useSwipeDownToClose` was **pb-modals-only**
+  (consumed by 9 modals — `ContributionModal`/`ContributionImportModal`/`SettingsModal`/`DetailModal`/
+  `AlertsModal`/`ImportModal`/`BuyModal`/`SellModal`/`PositionModal`), with **zero root-`App`** and **zero
+  pb-views** callers — it rode the bridge only because it was authored in `app.js` before the modal bucket
+  existed and bridged wholesale at inc-15/16, never re-examined when its modals moved out. It worked pre-move
+  only because `app.js` runs at global scope, so the top-level `function useSwipeDownToClose()` was a global
+  the modals also redundantly re-read from `PBApp`. Verbatim move (BOM-safe slice script, captured block
+  reused byte-for-byte): a hoisted bucket-private function (no lead read); native `useRef`/`useEffect` were
+  **already IIFE-read** at `pb-modals.js:5`, so **0 new IIFE reads**; the 9 lead reads each drop
+  `useSwipeDownToClose` and their bare calls now resolve bucket-local. **Not** registered on `window.PBModals`
+  (no cross-bucket consumer — the inc-31 `SectorWeightRows` / inc-33 `useContainerWidth` precedent). No
+  money/alert code (pure gesture UI — rules #3/#4 unaffected). Pinned by `node --check` + the full node suite
+  (**28/28**, money gate green) + anti-drift greps + a standalone render probe (the committed mount gate does
+  not mount in this container — it fails identically on pristine `HEAD`; the probe renders `ContributionModal`
+  + `SellModal` into detached roots and asserts both produce their `.modal-panel` with zero page exceptions,
+  and `'useSwipeDownToClose' in window.PBApp` is `false`).
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree + the shared
-`SectorWeightRows` sector-split editor**;
-`window.PBApp` bridge = **40** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**; **inc-33 removed 1**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v84** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+`SectorWeightRows` sector-split editor + the `useSwipeDownToClose` gesture hook**;
+`window.PBApp` bridge = **39** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**; **inc-33 removed 1**; **inc-34 removed 1**);
+`sw.js` `CACHE_NAME` = **playbook-shell-v85** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40; inc-34 moved `useSwipeDownToClose` into `pb-modals.js`, bridge 40 -> 39). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the Heatmap cluster (`HeatmapTreemap`/`ZoomPanHeatmap` +
 treemap math) + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
