@@ -4,9 +4,9 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-2x65br` (inc-34, off latest `origin/main` @ inc-33/PR #42).
-**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-33
-`useContainerWidth` (PR #42); before it inc-32 Heatmap
+**Branch:** `claude/refactor-plan-continuation-7tf0bb` (inc-35, off latest `origin/main` @ inc-34/PR #43).
+**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-34
+`useSwipeDownToClose` (PR #43); before it inc-33 `useContainerWidth` (PR #42); before it inc-32 Heatmap
 cluster (PR #41); before it inc-31 `SectorWeightRows`
 (PR #40); before it inc-30 `PortfolioPieChart`
 (PR #39); before it inc-29 dead-`FxSummary` cleanup + inc-28 `HoldingRow`/`HoldingsListHead` (PR #38),
@@ -213,15 +213,54 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   + `SellModal` into detached roots and asserts both produce their `.modal-panel` with zero page exceptions,
   and `'useSwipeDownToClose' in window.PBApp` is `false`).
 
+- **inc-35** `fetchSectorTrend` (~34 lines, the sector-ETF multi-horizon trend reader) + its module-private
+  `SECTOR_TREND_CACHE` -> `pb-modals.js`; **-1 bridge (39 -> 38) / +3 IIFE reads / +0 registrations**.
+  **Corrects the inc-34 call** that the bridge "now holds only genuinely-shared members" — and **reaches the
+  bridge floor**. `fetchSectorTrend` carried a deliberate author annotation ("impure Yahoo reader, bridged for
+  pb-modals SectorDetailModal"), but the "impure readers must stay" rule exists for readers coupled to root-`App`
+  state or `DATA` infra (`parseImportFile`/`ocrImageFile`/`searchListingsMulti`/`useHotStocks`/`buildSuggestions`/
+  `resolvePositionSector`) — `fetchSectorTrend` reads **neither**: its only free identifiers are `PBContent`/
+  `PBData` module globals the bucket already reads directly, plus its own cache. Impure in the I/O sense but
+  **app-state-uncoupled** -> a clean verbatim move (**pb-modals-only**: sole consumer `SectorDetailModal`, zero
+  root-`App` / zero pb-views callers). Verbatim move (BOM-safe slice script): the two `PBContent` aliases
+  (`SECTOR_ETF`/`SECTOR_TREND_WINDOWS`, which had **zero** other app.js consumer) + `PBData.fetchViaProxies`
+  (app.js alias stays — used app-wide) become the bucket's **new IIFE reads**; `SECTOR_TREND_CACHE` travels with
+  the hoisted function (no lead read). `SectorDetailModal`'s lead read drops `fetchSectorTrend`; its bare call
+  resolves bucket-local. **Content guard** followed the two `PBContent` binds into the bucket
+  (`content.test.mjs` now checks `appSrc + modSrc` for `SECTOR_ETF`/`SECTOR_TREND_WINDOWS` — the inc-16
+  `SECTOR_FWD_PE` precedent). No money/alert code (pure display-tier network read — rules #3/#4 unaffected).
+  **Not** registered on `window.PBModals` (no cross-bucket consumer — inc-31/33/34 precedent). Pinned by
+  `node --check` + the full node suite (**28/28**, money gate + content guard green) + anti-drift greps + two
+  standalone probes (the committed mount gate does not mount in this container — fails identically on pristine
+  `HEAD`): a **load-time smoke** (the `pb-modals.js` IIFE runs under `React`/`PB*` stubs → all 11 modals register,
+  proving the new IIFE-top reads don't throw) and a **function probe** (invoke `fetchSectorTrend` with a stubbed
+  `fetchViaProxies` → unsupported branch, `+10.0%` 1m trend, 6-hour cache-hit reference identity — all four
+  in-scope deps resolve bucket-local).
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree + the shared
-`SectorWeightRows` sector-split editor + the `useSwipeDownToClose` gesture hook**;
-`window.PBApp` bridge = **39** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**; **inc-33 removed 1**; **inc-34 removed 1**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v85** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40; inc-34 moved `useSwipeDownToClose` into `pb-modals.js`, bridge 40 -> 39). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+`SectorWeightRows` sector-split editor + the `useSwipeDownToClose` gesture hook + the `fetchSectorTrend`
+sector-ETF trend reader**;
+`window.PBApp` bridge = **38** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**; **inc-33 removed 1**; **inc-34 removed 1**; **inc-35 removed 1**);
+`sw.js` `CACHE_NAME` = **playbook-shell-v86** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40; inc-34 moved `useSwipeDownToClose` into `pb-modals.js`, bridge 40 -> 39; inc-35 moved `fetchSectorTrend` + `SECTOR_TREND_CACHE` into `pb-modals.js`, bridge 39 -> 38). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the Heatmap cluster (`HeatmapTreemap`/`ZoomPanHeatmap` +
 treemap math) + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
 `DashboardView`, inc-25 `CurrentView`, inc-26 `WatchlistView`, inc-27 `TFSAView`, inc-32 Heatmap cluster);
 **every tab view now lives in the bucket.**
+
+**Phase 4 structural extraction is COMPLETE — the bridge has reached its floor (38).** After inc-35 there is
+no remaining verbatim-move candidate: every one of the 38 `window.PBApp` members is either (a) genuinely shared
+across **both** buckets (`Icon`, `PriceBlock`, `fmt`, `timeAgo`, `prettyName`, `useBodyScrollLock`,
+`sanitizeDecimalInput`, `fmtCcy`/`fmtCcySigned`, `resolveTickerName`, `watchListIds`, `computeFxSnapshot`,
+`positionDisplayName`, `MARKET_LABELS`, `TickerSearch`, `MarketPicker`), (b) consumed by the root `App`
+(`hotToDate`/`hotDayDiff`, `THESIS_SNAPSHOT`, `usePersistedState`, `fmtNum`, `SessionBadge`, `uid`,
+`fmtIndicator`, `indicatorFor`, `formatCode`/`normalizeCode`, `DEFAULT_TAB_ORDER`/`TAB_ALWAYS_VISIBLE`/
+`TAB_LABELS`), or (c) an impure/anchored reader coupled to `DATA` or root infra (`parseImportFile`,
+`ocrImageFile`, `searchListingsMulti`, `useHotStocks`, `buildSuggestions`, `resolvePositionSector`, and the
+`parseCashFlowsFromText`/`parseCashFlowFile` cash-flow parsers blocked by the shared `loadScriptOnce` CDN
+loader). **The next phase is [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md)** (the post-refactor
+security/platform plan) — start it only when Jan calls the refactor phase done. The section below is retained
+as the historical record of how the modal tier was prioritized and cleared.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
