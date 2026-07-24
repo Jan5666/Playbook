@@ -299,144 +299,7 @@ function useTtlCache(ttlMs) {
   }, [ttlMs]);
   return [cache, load];
 }
-function useSwipeDownToClose(panelRef, onClose, enabled = true) {
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    // When disabled (e.g. the import review stage), attach nothing at all so a
-    // normal content scroll can never be mistaken for a swipe-to-dismiss.
-    if (enabled === false) return undefined;
-    const panel = panelRef.current;
-    if (!panel) return;
-    const isMobileLayout = () => window.matchMedia('(max-width: 639px)').matches;
-    const getBackdrop = () => panel.parentElement && panel.parentElement.querySelector('.modal-backdrop');
-    // iOS-sheet easing — quick, decelerating, no overshoot.
-    const EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
-    let startY = 0;       // y where the actual drag began (transform anchor)
-    let originY = 0;      // y where the finger first touched
-    let prevY = 0;
-    let dragging = false;
-    let velocity = 0;
-    let lastT = 0;
-    let panelH = 0;
-    // A close-drag may only begin from the fixed top chrome — the grab handle or
-    // the header. The scrolling body never dismisses the sheet, so scrolling its
-    // content up/down can no longer close the card (the previous guard checked
-    // `panel.scrollTop`, but the panel itself is `overflow:hidden` and never
-    // scrolls — the `.modal-body` does — so that guard was always 0 and ANY
-    // downward finger anywhere started a close: the "scrolling closes it" bug).
-    let grabZone = false;
-    const DRAG_THRESHOLD = 6;
-    const onTouchStart = (e) => {
-      if (!isMobileLayout() || e.touches.length !== 1) return;
-      const t = e.target;
-      grabZone = !!(t && t.closest && t.closest('.modal-handle, .modal-header'));
-      originY = prevY = e.touches[0].clientY;
-      dragging = false;
-      velocity = 0;
-      lastT = Date.now();
-      panelH = panel.offsetHeight || window.innerHeight;
-    };
-    const onTouchMove = (e) => {
-      if (!isMobileLayout()) return;
-      const y = e.touches[0].clientY;
-      if (!dragging) {
-        // Only the handle/header grab zone can start a close-drag, pulling down.
-        if (!grabZone || y - originY <= 0) { originY = y; prevY = y; return; }
-        if (y - originY < DRAG_THRESHOLD) return;
-        dragging = true;
-        // Anchor the drag here so the panel tracks the finger 1:1 with no jump.
-        startY = y;
-        // Kill the entrance animation permanently. Otherwise, when we later
-        // remove `.swiping` (which set `animation:none`), the base panel's
-        // `slide-up` keyframes re-run and the sheet jumps back up before
-        // closing — the glitch the user reported.
-        panel.style.animation = 'none';
-        panel.classList.add('swiping');
-      }
-      const now = Date.now();
-      const dt = now - lastT;
-      if (dt > 0) velocity = (y - prevY) / dt;
-      prevY = y;
-      lastT = now;
-      const drag = Math.max(0, y - startY);
-      panel.style.transform = `translateY(${drag}px)`;
-      const bd = getBackdrop();
-      if (bd) bd.style.opacity = String(1 - Math.min(1, drag / panelH) * 0.7);
-      if (e.cancelable) e.preventDefault();
-    };
-    const finish = () => {
-      if (!dragging) return;
-      dragging = false;
-      const drag = Math.max(0, prevY - startY);
-      panel.classList.remove('swiping');
-      const bd = getBackdrop();
-      const shouldClose = drag > panelH * 0.28 || (drag > 48 && velocity > 0.45);
-      if (shouldClose) {
-        panel.style.transition = `transform 0.26s ${EASE}`;
-        panel.style.transform = 'translateY(100%)';
-        if (bd) { bd.style.transition = 'opacity 0.26s ease'; bd.style.opacity = '0'; }
-        let done = false;
-        const cb = () => {
-          if (done) return;
-          done = true;
-          // Trigger the close (which unmounts the modal) while the panel is
-          // still translated off-screen. We must NOT reset the transform until
-          // we KNOW the close failed to unmount the panel. The old code did this
-          // on a fixed 80ms timer, which races React's commit: when the stock
-          // card is heavy (charts/fundamentals) or the scroll-restore stalls the
-          // frame, the unmount lands later than 80ms, so the panel first slides
-          // back into view and only then disappears — the "closes, flickers on,
-          // closes again" glitch. Instead, watch the DOM: the instant React
-          // removes the panel we stand down and leave it off-screen (no flicker).
-          // Only a genuinely guarded onClose (e.g. import review ignores swipe)
-          // leaves the node attached, and a long fallback glides it home.
-          closeRef.current();
-          let settled = false;
-          let guard = 0;
-          const standDown = () => {
-            if (settled) return; settled = true;
-            try { obs.disconnect(); } catch (_e) {}
-            clearTimeout(guard);
-          };
-          const obs = typeof MutationObserver !== 'undefined'
-            ? new MutationObserver(() => { if (!panel.isConnected) standDown(); })
-            : null;
-          if (obs) { try { obs.observe(document.documentElement, { childList: true, subtree: true }); } catch (_e) {} }
-          // Fallback: if the panel is still mounted well after the close (guarded
-          // onClose, or no MutationObserver support), glide it back into place.
-          guard = setTimeout(() => {
-            if (settled) return; settled = true;
-            try { obs && obs.disconnect(); } catch (_e) {}
-            if (!panel.isConnected) return;
-            panel.style.transition = `transform 0.3s ${EASE}`;
-            panel.style.transform = '';
-            if (bd && bd.isConnected) { bd.style.transition = 'opacity 0.3s ease'; bd.style.opacity = ''; }
-          }, 600);
-        };
-        panel.addEventListener('transitionend', cb, { once: true });
-        setTimeout(cb, 320);
-      } else {
-        panel.style.transition = `transform 0.4s ${EASE}`;
-        panel.style.transform = '';
-        if (bd) { bd.style.transition = 'opacity 0.3s ease'; bd.style.opacity = ''; }
-        const clear = () => { panel.style.transition = ''; if (bd) bd.style.transition = ''; };
-        panel.addEventListener('transitionend', clear, { once: true });
-        setTimeout(clear, 440);
-      }
-    };
-    panel.addEventListener('touchstart', onTouchStart, { passive: true });
-    panel.addEventListener('touchmove', onTouchMove, { passive: false });
-    panel.addEventListener('touchend', finish);
-    panel.addEventListener('touchcancel', finish);
-    return () => {
-      panel.removeEventListener('touchstart', onTouchStart);
-      panel.removeEventListener('touchmove', onTouchMove);
-      panel.removeEventListener('touchend', finish);
-      panel.removeEventListener('touchcancel', finish);
-    };
-  }, [panelRef, enabled]);
-}
+// useSwipeDownToClose moved to pb-modals.js (Phase 4 inc 34).
 // MARKET_CURRENCY (native currency + display symbol per market) and the money
 // helpers below it now live in pb-core.js so they can be unit-tested outside the
 // 14k-line app.js. Bound to local names; canonical source is pb-core.js.
@@ -5210,7 +5073,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useSwipeDownToClose, useBodyScrollLock, fetchSectorTrend, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useBodyScrollLock, fetchSectorTrend, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic
