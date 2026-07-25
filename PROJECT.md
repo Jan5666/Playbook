@@ -51,7 +51,7 @@ accounts and no server-side plaintext.
 | UI | React 18.3.1 **UMD from unpkg CDN**, hand-written `React.createElement` — **no JSX, no build step** | The app must deploy by dragging a folder onto Netlify/GitHub Pages. No toolchain to install, no compile step to break. This constraint is deliberate and has been re-affirmed repeatedly during the refactor (the Vite decision is consciously deferred — see §5). |
 | Shared logic | Plain "classic scripts" with a **dual-mode footer** (`globalThis.X` for the browser + `module.exports` for Node/Worker) | Lets pure logic be unit-tested in Node and imported by the Cloudflare Worker while still loading via `<script src>` with zero tooling. |
 | State | Hand-rolled ~50-line store (`pb-store.js`) wired via `useSyncExternalStore` | A store was needed to stop whole-tree re-renders on every price batch; Zustand would have meant another CDN dependency. |
-| Persistence | `localStorage` under `pb.*` keys, one key per slice | Simple, synchronous, survives PWA restarts. Known scaling limits (see GAPS.md #9); IndexedDB is planned as refactor Phase 5. |
+| Persistence | `localStorage` under `pb.*` keys, one key per slice | Simple, synchronous, survives PWA restarts. 44 keys, measured at ~261 KB — **5.1% of the 5 MB budget**, so the long-assumed scaling limit is not near (GAPS.md #9 corrected 2026-07-25). IndexedDB (refactor Phase 5) is spec'd but gated on Jan's decision. |
 | Prices | Yahoo v8 chart API (unofficial) via 6 rotating public CORS proxies; Stooq fallback; FRED/Morningstar/RSS2JSON/Perplexity for indicators/funds/news | Free. No API keys for core function. The fragility and privacy cost of the public proxies is the top item on SECURITY_ROADMAP.md. |
 | Backend (optional) | Cloudflare Worker + KV + 1-min cron + dependency-free Web Push (RFC 8291/8292 implemented by hand in `backend/webpush.js`) | Free tier covers everything; iOS app-closed push is impossible from a static site. Deployed manually with `wrangler`, never by CI. |
 | Deploy | GitHub Pages via `.github/workflows/static.yml`, staging an **explicit allowlist** of runtime files into `_site/` | The workflow used to upload the whole repo, which once published a real secret. The allowlist + two guards (missing-asset, secret-leak) are the fix. |
@@ -223,7 +223,12 @@ without knowing the plan:
   `pb-import.js` is **complete** (increments 1–6, all merged). **Next**: the first
   real view/modal component split, which will force the deferred
   Vite-vs-no-build decision.
-- **Phase 5** (not started): IndexedDB behind a cache interface for churny blobs.
+- **Phase 5** (spec'd 2026-07-25, **awaiting Jan's decision**): IndexedDB behind a
+  cache interface for churny blobs. The premise was measured before any code was
+  written and **the size-ceiling justification did not hold** (261 KB today = 5.1%
+  of budget; 812 KB on a 5-year model), nor does IndexedDB fix the Safari-eviction
+  justification. Four options, with a recommendation, are in
+  `docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`.
 
 Every increment follows the same ritual: brainstorm → spec → plan (both committed
 under `docs/superpowers/{specs,plans}/`) → implementation with tests → review. The

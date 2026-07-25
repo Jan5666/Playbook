@@ -60,7 +60,8 @@ async function testWorkerRoutes() {
 
 // ── Client logic mirrored from app.js (kept identical on purpose) ────────────
 const BACKUP_PREFIX = 'pb.';
-const BACKUP_SKIP = new Set(['pb.prices.v1', 'pb.nameCache.v1', 'pb.fxRates.v1', 'pb.sectorCache.v1', 'pb.heatmap.lastgood.v1', 'pb.installDismissed.v2', 'pb.backup.lastSync.v1']);
+// Kept in lockstep with app.js by a guard in backup-roundtrip.test.mjs.
+const BACKUP_SKIP = new Set(['pb.prices.v1', 'pb.nameCache.v1', 'pb.fxRates.v1', 'pb.sectorCache.v1', 'pb.heatmap.lastgood.v1', 'pb.rotation.lastgood.v1', 'pb.installDismissed.v2', 'pb.hotStocks.v1', 'pb.backup.lastSync.v1']);
 const store = new Map(); // fake localStorage
 const localStorage = {
   get length() { return store.size; },
