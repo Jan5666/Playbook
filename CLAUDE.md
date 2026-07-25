@@ -65,7 +65,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v50`), or installed PWAs serve stale assets offline.
+`playbook-shell-v86`), or installed PWAs serve stale assets offline.
 
 Adding a **new runtime file** additionally requires ALL of:
 1. `<script>` tag in `index.html` (order: pb-core → pb-data → pb-store →
@@ -124,14 +124,15 @@ Adding a **new runtime file** additionally requires ALL of:
   (`GBp`/`GBX`, and bare `GBP` on LSE is treated as pence too) — `centDivisor`
   in pb-core handles it; never hand-divide by 100 elsewhere.
 
-## Current state (2026-07-18)
+## Current state (2026-07-24)
 
-Refactor Phases 0-3 complete. **Phase 4 modal/view extraction is in progress** on branch
-`claude/refactor-plan-continuation-jrgahr`; the living roadmap a fresh chat should read to resume is
-**[docs/superpowers/REFACTOR_STATUS.md](docs/superpowers/REFACTOR_STATUS.md)**. Done through
-**inc-18**: views (7-10) + modals (11-18) moved into pb-views.js / pb-modals.js — pb-modals.js now
-holds 7 modals + the detail subtree + the settings subtree. The `window.PBApp` bridge = 33 members
-(feature PRs #27-#29 grew it from 31; inc-18 added none); sw `CACHE_NAME` = `playbook-shell-v68`.
-Next: **inc-19 `ImportModal`** (safe-ish verbatim), then the rule-#3-gated money modals
-(Buy/Position/Sell) — write a characterization test first. Highest-value quick fixes still live at
-the top of [GAPS.md](GAPS.md).
+Refactor Phases 0-3 complete. **Phase 4 view/modal extraction is COMPLETE — the `window.PBApp` bridge has
+reached its floor (38 members)** as of **inc-35**. The living roadmap a fresh chat should read is
+**[docs/superpowers/REFACTOR_STATUS.md](docs/superpowers/REFACTOR_STATUS.md)**. `pb-views.js` holds all 11
+tab views + the Heatmap cluster + the growth-chart cluster; `pb-modals.js` holds all 11 modals (incl. the
+three rule-#3 money modals) + the detail/settings subtrees + `SectorWeightRows` + `useSwipeDownToClose` +
+`fetchSectorTrend`. After inc-35 no verbatim-move candidate remains: every bridge member is genuinely shared
+across both buckets, consumed by the root `App`, or an impure/anchored reader coupled to `DATA`/root infra.
+`sw` `CACHE_NAME` = `playbook-shell-v86`. **The next phase is [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** —
+start it only when Jan calls the refactor phase done. Highest-value quick fixes still live at the top of
+[GAPS.md](GAPS.md).

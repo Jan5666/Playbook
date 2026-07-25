@@ -4847,53 +4847,12 @@ const WatchlistView = PBViews.WatchlistView;
 // Treemap layout math (heatColor / squarify / layoutSquarify / computeWorst /
 // buildSectorHierarchy / layoutTreemap) moved to pb-views.js with HeatmapTreemap
 // (Phase 4 inc 32) — Heatmap-private, consumed only by the bucket Heatmap views.
-// Each GICS-style sector maps to the SPDR sector ETF that tracks it. We treat
-// the ETF's own price history as a proxy for "the size / health of the sector"
-// over time — it's a clean, liquid, well-known instrument per sector and lets us
-// show multi-horizon trend without needing a sector-market-cap time series.
-const SECTOR_ETF = PBContent.SECTOR_ETF;
-const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS;
-const SECTOR_TREND_CACHE = {};
-async function fetchSectorTrend(sectorName) {
-  const map = SECTOR_ETF[sectorName];
-  if (!map) return { unsupported: true };
-  const cached = SECTOR_TREND_CACHE[map.etf];
-  if (cached && Date.now() - cached.fetchedAt < 6 * 3600 * 1000) return cached;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${map.etf}?interval=1d&range=5y`;
-  const text = await fetchViaProxies(url, { timeoutMs: 9000 });
-  if (!text) return null;
-  let result;
-  try { result = JSON.parse(text)?.chart?.result?.[0]; } catch (_e) { return null; }
-  const ts = result?.timestamp;
-  const closes = result?.indicators?.quote?.[0]?.close;
-  if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
-  const bars = [];
-  for (let i = 0; i < ts.length; i++) {
-    const c = closes[i];
-    if (typeof c === 'number' && isFinite(c) && c > 0) bars.push({ t: ts[i] * 1000, p: c });
-  }
-  if (bars.length < 2) return null;
-  const latest = bars[bars.length - 1].p;
-  const now = bars[bars.length - 1].t;
-  const closeAtOrBefore = (targetMs) => {
-    for (let i = bars.length - 1; i >= 0; i--) { if (bars[i].t <= targetMs) return bars[i].p; }
-    return null;
-  };
-  const trends = SECTOR_TREND_WINDOWS.map(w => {
-    const past = closeAtOrBefore(now - w.days * 86400000);
-    const pct = past && past > 0 ? (latest - past) / past * 100 : null;
-    return { key: w.key, pct };
-  });
-  const entry = { etf: map.etf, name: map.name, trends, fetchedAt: Date.now() };
-  SECTOR_TREND_CACHE[map.etf] = entry;
-  return entry;
-}
 // HeatmapTreemap + ZoomPanHeatmap moved to pb-views.js (Phase 4 inc 32) —
 // window.PBViews.{HeatmapTreemap,ZoomPanHeatmap}. They have no root-App caller
 // (entered only from the bucket Heatmap views + pb-modals SectorDetailModal, which
-// now reads ZoomPanHeatmap from window.PBViews at render time). fetchSectorTrend
-// stays above (impure Yahoo reader, bridged for pb-modals SectorDetailModal);
-// useContainerWidth moved to pb-views.js (Phase 4 inc 33).
+// now reads ZoomPanHeatmap from window.PBViews at render time). fetchSectorTrend +
+// SECTOR_TREND_CACHE moved to pb-modals.js (Phase 4 inc 35) — pb-modals-only
+// (SectorDetailModal); useContainerWidth moved to pb-views.js (Phase 4 inc 33).
 const HeatmapView = PBViews.HeatmapView;
 // PicksView is defined in pb-views.js (Phase 4 inc 8); bind it here.
 const PicksView = PBViews.PicksView;
@@ -5073,7 +5032,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useBodyScrollLock, fetchSectorTrend, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useBodyScrollLock, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic

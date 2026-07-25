@@ -13,10 +13,13 @@
   const INDICATOR_INFO = PBContent.INDICATOR_INFO; // PBContent global
   const fetchQuote = PBData.fetchQuote; // PBData global (browser-only; loaded before this script)
   const isUnitTrustId = PBData.isUnitTrustId; // PBData global
+  const fetchViaProxies = PBData.fetchViaProxies; // PBData global (CORS proxy fetch — used by fetchSectorTrend)
   const MARKET_CURRENCY = PBCore.MARKET_CURRENCY; // PBCore global
   const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES; // PBContent global
   const MARKETS = PBContent.MARKETS; // PBContent global
   const RIBBON_CATALOG = PBContent.RIBBON_CATALOG; // PBContent global
+  const SECTOR_ETF = PBContent.SECTOR_ETF; // PBContent global (sector -> SPDR ETF map)
+  const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS; // PBContent global
   const parseHoldingsFromText = PBImport.parseHoldingsFromText; // PBImport global (loaded before this script)
   const rankImportCandidates = PBImport.rankImportCandidates; // PBImport global
   const companyNameScore = PBImport.companyNameScore; // PBImport global
@@ -24,6 +27,50 @@
   const normaliseCompanyName = PBImport.normaliseCompanyName; // PBImport global
   const parseEasyEquitiesScreenshot = PBImport.parseEasyEquitiesScreenshot; // PBImport global
   const dedupeEeHoldings = PBImport.dedupeEeHoldings; // PBImport global
+// fetchSectorTrend + SECTOR_TREND_CACHE - sector-ETF trend reader. Moved verbatim
+// from app.js (Phase 4 inc 35); its only consumer is SectorDetailModal (this bucket,
+// zero pb-views / zero root-App callers). Impure (Yahoo via fetchViaProxies) but
+// app-state-uncoupled — reads PBContent/PBData globals (IIFE-read above) + its own
+// module-private cache, so no lead read is needed.
+// Each GICS-style sector maps to the SPDR sector ETF that tracks it. We treat
+// the ETF's own price history as a proxy for "the size / health of the sector"
+// over time — it's a clean, liquid, well-known instrument per sector and lets us
+// show multi-horizon trend without needing a sector-market-cap time series.
+const SECTOR_TREND_CACHE = {};
+async function fetchSectorTrend(sectorName) {
+  const map = SECTOR_ETF[sectorName];
+  if (!map) return { unsupported: true };
+  const cached = SECTOR_TREND_CACHE[map.etf];
+  if (cached && Date.now() - cached.fetchedAt < 6 * 3600 * 1000) return cached;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${map.etf}?interval=1d&range=5y`;
+  const text = await fetchViaProxies(url, { timeoutMs: 9000 });
+  if (!text) return null;
+  let result;
+  try { result = JSON.parse(text)?.chart?.result?.[0]; } catch (_e) { return null; }
+  const ts = result?.timestamp;
+  const closes = result?.indicators?.quote?.[0]?.close;
+  if (!Array.isArray(ts) || !Array.isArray(closes)) return null;
+  const bars = [];
+  for (let i = 0; i < ts.length; i++) {
+    const c = closes[i];
+    if (typeof c === 'number' && isFinite(c) && c > 0) bars.push({ t: ts[i] * 1000, p: c });
+  }
+  if (bars.length < 2) return null;
+  const latest = bars[bars.length - 1].p;
+  const now = bars[bars.length - 1].t;
+  const closeAtOrBefore = (targetMs) => {
+    for (let i = bars.length - 1; i >= 0; i--) { if (bars[i].t <= targetMs) return bars[i].p; }
+    return null;
+  };
+  const trends = SECTOR_TREND_WINDOWS.map(w => {
+    const past = closeAtOrBefore(now - w.days * 86400000);
+    const pct = past && past > 0 ? (latest - past) / past * 100 : null;
+    return { key: w.key, pct };
+  });
+  const entry = { etf: map.etf, name: map.name, trends, fetchedAt: Date.now() };
+  SECTOR_TREND_CACHE[map.etf] = entry;
+  return entry;
+}
 // useSwipeDownToClose - iOS-sheet swipe-to-dismiss hook. Moved verbatim from app.js
 // (Phase 4 inc 34); every caller lives in this bucket (modals only, zero pb-views /
 // zero root-App callers). Native useRef/useEffect already IIFE-read above; no lead read.
@@ -248,7 +295,7 @@ function SectorAllocationModal({ ticker, market, name, initialWeights, onClose, 
 // Sector detail popup (moved from app.js, Phase 4 inc 12) — heatmap sector card:
 // stats strip, relative-size bar, multi-window trend, contained zoom heatmap.
 function SectorDetailModal({ sectorName, rows, exchangeLabel, onClose, onOpenDetail }) {
-  const { Icon, useBodyScrollLock, fetchSectorTrend } = window.PBApp;
+  const { Icon, useBodyScrollLock } = window.PBApp;
   const { ZoomPanHeatmap } = window.PBViews;
   const [trend, setTrend] = useState(null);
   const [trendLoading, setTrendLoading] = useState(true);

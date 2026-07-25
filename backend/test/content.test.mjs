@@ -160,8 +160,11 @@ test('app.js delegates the content blocks to PBContent', () => {
   assert.ok(appSrc.includes('const INDICATOR_INFO = PBContent.INDICATOR_INFO'), 'binds INDICATOR_INFO');
   assert.ok(appSrc.includes('const BUILTIN_MACRO_2026 = PBContent.BUILTIN_MACRO_2026'), 'binds BUILTIN_MACRO_2026');
   assert.ok(appSrc.includes('const RULES = PBContent.RULES'), 'binds RULES');
-  assert.ok(appSrc.includes('const SECTOR_ETF = PBContent.SECTOR_ETF'), 'binds SECTOR_ETF');
-  assert.ok(appSrc.includes('const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS'), 'binds SECTOR_TREND_WINDOWS');
+  // SECTOR_ETF / SECTOR_TREND_WINDOWS's only consumer (fetchSectorTrend -> SectorDetailModal)
+  // moved to pb-modals.js in inc-35, so their PBContent delegation now lives in the bucket —
+  // still delegated, not inlined.
+  assert.ok((appSrc + modSrc).includes('const SECTOR_ETF = PBContent.SECTOR_ETF'), 'binds SECTOR_ETF');
+  assert.ok((appSrc + modSrc).includes('const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS'), 'binds SECTOR_TREND_WINDOWS');
   // SECTOR_FWD_PE's only consumer (FundamentalsBlock -> sectorForwardPE) moved to pb-modals.js
   // in inc-16, so its PBContent delegation now lives in the bucket — still delegated, not inlined.
   assert.ok((appSrc + modSrc).includes('const SECTOR_FWD_PE = PBContent.SECTOR_FWD_PE'), 'binds SECTOR_FWD_PE');
