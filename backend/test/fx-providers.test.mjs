@@ -124,6 +124,92 @@ installFetch([{ rates: { GBP: 0.78 } }]);
 ok('a FAILED historical lookup is not cached (a retry re-fetches)',
   await PBData.fetchHistoricalFx('2026-05-06', 'GBP') === 0.78 && calls.length === 1);
 
+// ─── Shared limiter + in-flight de-dupe (the second half of GAPS #7) ────────
+// These are the ONLY intentional behaviour changes vs the app.js original; every
+// assertion above still holds unchanged, which is what makes them safe.
+
+// A fetch that never resolves until released, so concurrency is observable.
+function makeGatedFetch(payload) {
+  let inFlight = 0, maxInFlight = 0, total = 0;
+  const releases = [];
+  globalThis.fetch = async () => {
+    total++; inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise(res => releases.push(res));
+    inFlight--;
+    return { ok: true, json: async () => payload };
+  };
+  return {
+    stats: () => ({ total, maxInFlight }),
+    // Draining once only frees the first pLimit slice; releasing those admits the
+    // next queued batch, so keep draining until nothing new is admitted.
+    releaseAll: async () => {
+      for (let guard = 0; guard < 100; guard++) {
+        while (releases.length) releases.shift()();
+        await new Promise(r => setTimeout(r, 0));
+        if (!releases.length) break;
+      }
+    }
+  };
+}
+
+PBData._resetFxCache();
+let gate = makeGatedFetch({ rates: { ZAR: 18.42 } });
+let trio = [
+  PBData.fetchHistoricalFx('2026-07-01', 'ZAR'),
+  PBData.fetchHistoricalFx('2026-07-01', 'ZAR'),
+  PBData.fetchHistoricalFx('2026-07-01', 'ZAR')
+];
+await new Promise(r => setTimeout(r, 0));
+ok('concurrent identical historical lookups collapse to ONE request', gate.stats().total === 1);
+await gate.releaseAll();
+let trioOut = await Promise.all(trio);
+eq('all three concurrent callers get the same rate', trioOut, [18.42, 18.42, 18.42]);
+
+PBData._resetFxCache();
+gate = makeGatedFetch({ rates: { ZAR: 1, GBP: 1, EUR: 1 } });
+const pair = [PBData.fetchHistoricalFx('2026-07-02', 'ZAR'), PBData.fetchHistoricalFx('2026-07-02', 'GBP')];
+await new Promise(r => setTimeout(r, 0));
+ok('concurrent DIFFERENT historical lookups are not collapsed', gate.stats().total === 2);
+await gate.releaseAll(); await Promise.all(pair);
+
+PBData._resetFxCache();
+gate = makeGatedFetch({ result: 'success', rates: { ZAR: 18.5, GBP: 0.79 } });
+const rates3 = [PBData.fetchFxRates(), PBData.fetchFxRates(), PBData.fetchFxRates()];
+await new Promise(r => setTimeout(r, 0));
+ok('concurrent fetchFxRates calls collapse to ONE request', gate.stats().total === 1);
+await gate.releaseAll();
+const rates3out = await Promise.all(rates3);
+ok('all three concurrent FX-table callers get a result', rates3out.every(r => r && r.rates.ZAR === 18.5));
+
+// After the in-flight promise settles the slot is released, so a later call re-fetches.
+PBData._resetFxCache();
+installFetch([{ result: 'success', rates: { ZAR: 1, GBP: 1 } }]);
+await PBData.fetchFxRates();
+const before = calls.length;
+await PBData.fetchFxRates();
+ok('a later fetchFxRates call is not served by a stale in-flight entry', calls.length === before + 1);
+
+// A failed lookup must clear its in-flight entry too (it is not cached, so a
+// retry has to be able to re-walk the ladder).
+PBData._resetFxCache();
+installFetch(['notok']);
+ok('a failed historical lookup still returns null', await PBData.fetchHistoricalFx('2026-07-03', 'GBP') === null);
+installFetch([{ rates: { GBP: 0.77 } }]);
+ok('a failed historical lookup releases its in-flight slot (retry re-fetches)',
+  await PBData.fetchHistoricalFx('2026-07-03', 'GBP') === 0.77);
+
+// The shared pLimit(8) gate: 20 distinct lookups must never exceed 8 concurrent
+// fetches. Before this change FX bypassed the limiter entirely.
+PBData._resetFxCache();
+gate = makeGatedFetch({ rates: { ZAR: 5 } });
+const many = [];
+for (let i = 0; i < 20; i++) many.push(PBData.fetchHistoricalFx('2026-08-' + String(i + 1).padStart(2, '0'), 'ZAR'));
+await new Promise(r => setTimeout(r, 0));
+ok(`FX fetches respect the shared pLimit(8) cap (max in flight = ${gate.stats().maxInFlight})`,
+  gate.stats().maxInFlight <= 8 && gate.stats().maxInFlight > 0);
+await gate.releaseAll();
+await Promise.all(many);
+
 // ─── Anti-drift guards ──────────────────────────────────────────────────────
 for (const fn of ['fetchFxRates', 'fetchHistoricalFx']) {
   ok(`app.js has no local function ${fn}`, !new RegExp(`function\\s+${fn}\\s*\\(`).test(appSrc));

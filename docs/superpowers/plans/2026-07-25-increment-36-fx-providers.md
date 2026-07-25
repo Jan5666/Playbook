@@ -75,3 +75,25 @@ Branch: `claude/refactor-plan-continuation-gto2pa` (off latest `origin/main` @ i
 - The committed browser mount gate still does not mount in this container (unpkg React is 403-blocked
   from here); it fails identically on pristine `HEAD`, so the load-order probe above stands in for it —
   the same accommodation inc-33/34/35 used.
+
+## Follow-up commit — the `pLimit`/de-dupe half of GAPS #7
+
+Done on the same branch, guarded by the matrix the relocation commit built.
+
+- **`fxFetch(url, cacheMode)`** wraps every FX `fetch()` in the shared `_fetchLimit` (`pLimit(8)`), so FX
+  requests can no longer bypass the app-wide concurrency cap.
+- **In-flight de-dupe**: `fetchHistoricalFx` becomes a thin wrapper (short-circuits + cache + `_fxInflight`
+  keyed on `date:code`) delegating to `_fetchHistoricalFxUncached`; `fetchFxRates` gets a single
+  `_fxRatesInflight` slot. Both release on settle, so a *failed* lookup still re-fetches on retry — the
+  "failures are not cached" rule is preserved. `_resetFxCache()` clears both maps.
+- **Deliberately NOT folded onto `fetchViaProxies`**: it is proxy-only (dropping the direct-first attempt),
+  hard-codes `cache:'no-store'`, and returns text. The FX cache directives are load-bearing.
+- **Verification**: all **35** original assertions pass **unchanged**; the before/after digest still matches
+  the pre-move `app.js` byte-for-byte; **+9** new assertions (concurrent identical lookups collapse to one
+  request, different ones don't, the in-flight slot releases on both success and failure, and 20 parallel
+  lookups peak at exactly **8** concurrent — unbounded before). Suite **29/29**. No `CACHE_NAME` re-bump:
+  v87 has not been deployed yet, so it still uniquely identifies the final shipped content of this branch.
+- **Honest read-out**: the original GAPS #7 premise overstated the risk. `fetchHistoricalFx` is called from
+  a *sequential* import loop (`app.js:2199`) and from single user actions, and the completed-value cache
+  already collapsed sequential repeats — at most ~2 FX fetches were ever concurrent. The cap closes an
+  unbounded-by-design path and future-proofs parallelising that loop, but it fixed a **latent** problem.

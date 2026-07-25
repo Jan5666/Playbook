@@ -139,8 +139,10 @@ or an impure/anchored reader coupled to `DATA`/root infra.
 **inc-36** then closed **GAPS #7** by moving the FX providers (`fetchFxRates`/`fetchHistoricalFx` +
 `FX_PROXIES` + `HISTORICAL_FX_CACHE`) into `pb-data.js` — **app.js now contains no network code** (5037 ->
 4999 lines). `DISPLAY_CURRENCIES` is injected via `PBData.configure` (pb-data is dual-mode and must never
-read `PBContent`). `sw` `CACHE_NAME` = `playbook-shell-v87`. Next steps, smallest first: the `pLimit`/de-dupe
-half of GAPS #7 (now guarded by `backend/test/fx-providers.test.mjs`), the GAPS #9 `pb.prices.v1` write
+read `PBContent`). A follow-up commit closed **GAPS #7's second half**: the FX readers now share the
+app-wide `pLimit(8)` gate + in-flight de-dupe, but deliberately still do NOT call `fetchViaProxies` (that
+path is proxy-only, hard-codes `no-store`, and returns text — the FX cache modes are load-bearing).
+`sw` `CACHE_NAME` = `playbook-shell-v87`. Next steps, smallest first: the GAPS #9 `pb.prices.v1` write
 debounce, then **Phase 5 (IndexedDB behind the `LS` adapter — the only phase still "not started"; touches
 rule #5, so spec + Jan's sign-off first)**. **After that comes
 [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — start it only when Jan calls the refactor phase done.

@@ -141,9 +141,18 @@ plan (several items below are officially "owned" by that roadmap).*
 > 14-scenario characterization matrix run against the app.js source *before* the move and
 > against `PBData` *after* — byte-identical digests — now committed as
 > `backend/test/fx-providers.test.mjs` (35 assertions incl. anti-drift guards).
-> `CACHE_NAME` bumped to v87. **The `pLimit`/de-dupe re-routing below is deliberately NOT
-> part of that move** (it is a behaviour change, not a relocation) and remains open — see
-> the follow-up note at the end of this entry. Entry kept for history until merged to main.
+> `CACHE_NAME` bumped to v87.
+>
+> **Second half done (same branch, follow-up commit):** the FX readers now share the
+> app-wide `pLimit(8)` gate (via a small `fxFetch` helper) and collapse concurrent
+> identical requests through in-flight maps. They still do **not** call `fetchViaProxies`,
+> and that is deliberate — that path is proxy-only (it would drop the direct-first
+> attempt), hard-codes `cache:'no-store'`, and returns text, whereas the per-request cache
+> directive here is load-bearing (immutable historical rates are `force-cache`d). The
+> characterization matrix was the guard: all 35 original assertions still pass unchanged
+> and the before/after digest still matches the pre-move app.js exactly, with 9 new
+> assertions covering the de-dupe and the concurrency cap (`max in flight = 8` for 20
+> parallel lookups; it was unbounded before). Entry kept for history until merged to main.
 
 - **What**: `FX_PROXIES` (app.js:463), `fetchFxRates`, `fetchHistoricalFx`,
   `HISTORICAL_FX_CACHE` (app.js:~1100) — a second, parallel proxy ladder that
@@ -156,14 +165,18 @@ plan (several items below are officially "owned" by that roadmap).*
   block to pb-data.js (inject `DISPLAY_CURRENCIES` via `PBData.configure` like
   `indicatorCatalog`), bind in app.js, route through `pLimit`/de-dupe, add
   characterization tests + anti-drift guard, bump sw cache.
-- **Follow-up still open (the drift half of this gap)**: the relocation landed, but
-  `FX_PROXIES` is still a *second* ladder living next to `fetchViaProxies` in the same
-  file — no in-flight de-dupe, no `pLimit(8)` cap, its own error heuristics. Folding the
-  FX readers onto `fetchViaProxies` is a genuine behaviour change (the FX ladder is
-  direct-first and the shared one is not, and the two differ on what counts as a failed
-  response), so it needs its own increment with the now-committed characterization matrix
-  as the guard. Severity drops to **Low-Medium** now that the code is tested and
-  co-located.
+- **Outcome (both halves done)**: `FX_PROXIES` remains a second, *intentionally* distinct
+  ladder — direct-first, with per-request cache modes — but it is no longer an
+  unsupervised one: it shares the `pLimit(8)` gate and the in-flight de-dupe, and it is
+  now the best-tested network path in the codebase (44 assertions). The residual
+  "duplicate proxy logic" is a deliberate, documented difference rather than drift.
+- **Note on the original premise**: the fix line above assumed the missing `pLimit`/de-dupe
+  was a live risk. Reading the call sites showed it was mostly latent — `fetchHistoricalFx`
+  is called from a **sequential** import loop and from single user actions, and the
+  completed-value cache already collapsed sequential repeats, so at most ~2 FX fetches were
+  ever concurrent in practice. The cap is still worth having (it removes an
+  unbounded-by-design path and future-proofs parallelising that loop) but it fixed a
+  latent, not an active, problem.
 
 ## 8. app.js is still a 12,289-line monolith (~50 components in one file)
 

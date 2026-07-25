@@ -304,11 +304,22 @@ loader). This was **verified member-by-member in inc-36**, not assumed — see t
 **What "continue the refactor" means from here.** With Phase 4 closed and GAPS #7 done (inc-36), the
 remaining documented refactor work is, in order of increasing size:
 
-1. **The `pLimit`/de-dupe half of GAPS #7** — fold the FX readers onto `fetchViaProxies`. A behaviour
-   change, so it needs its own increment; `backend/test/fx-providers.test.mjs` is now the guard that makes
-   it safe. Smallest real next step.
+1. ~~**The `pLimit`/de-dupe half of GAPS #7**~~ — **DONE** (inc-36 follow-up commit). The FX readers now
+   share the app-wide `pLimit(8)` gate via a small `fxFetch` helper and collapse concurrent identical
+   requests via in-flight maps (`_fxInflight` keyed on `date:code`, plus a single slot for the live table).
+   They deliberately still do **not** call `fetchViaProxies`: that path is proxy-only (it would drop the
+   direct-first attempt), hard-codes `cache:'no-store'` and returns text, while the per-request cache mode
+   here is load-bearing (immutable historical rates are `force-cache`d). The characterization matrix did
+   exactly the job it was built for — all 35 original assertions passed **unchanged**, and the before/after
+   digest still matches the pre-move `app.js` byte-for-byte, with **+9 new assertions** for the new
+   guarantees (`max in flight = 8` across 20 parallel lookups; unbounded before). **Worth recording: the
+   original premise was overstated.** Reading the call sites showed `fetchHistoricalFx` runs from a
+   *sequential* import loop and single user actions, and the completed-value cache already collapsed
+   sequential repeats — so at most ~2 FX fetches were ever concurrent. The cap removes an
+   unbounded-by-design path and future-proofs parallelising that loop, but it fixed a **latent**, not an
+   active, problem. **GAPS #7 is now fully closed.**
 2. **The GAPS #9 interim task** — debounce/throttle the `pb.prices.v1` write (it is in `BACKUP_SKIP`, so
-   nothing downstream cares about write timing). Small, pure perf.
+   nothing downstream cares about write timing). Small, pure perf. **Now the smallest real next step.**
 3. **Phase 5 — IndexedDB behind the existing `LS`-shaped adapter** (`PROJECT.md:224`, GAPS #9). This is the
    real next *phase* and the only one still listed as "not started". It touches **rule #5** (cloud-backup
    byte-compatibility, `LEGACY_KEY_MAP` migrations), so it wants a spec + Jan's sign-off on the approach
