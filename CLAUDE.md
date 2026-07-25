@@ -18,7 +18,7 @@ npx serve .                       # or: python -m http.server
 
 # Unit tests — zero-framework Node scripts, run individually (cwd doesn't matter):
 node backend/test/money-math.test.mjs
-for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (29)
+for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (31)
 
 # MONEY GATE — must be green on ANY change touching money/import code:
 #   money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers
@@ -151,8 +151,24 @@ kills pending timers on a backgrounded PWA, losing the last sweep), no max-wait,
 capture — all three now fixed behind `PBStore.createWriteScheduler` in `pb-store.js`, with the 1200 ms
 quiet period proven unchanged by a 7-scenario characterization matrix
 (`backend/test/write-scheduler.test.mjs`, 36 tests; suite 29 -> 30). app.js 4999 -> 5025 lines.
-`sw` `CACHE_NAME` = `playbook-shell-v88`. Next step is now the only remaining refactor item:
-**Phase 5 (IndexedDB behind the `LS` adapter — the only phase still "not started"; touches
-rule #5, so spec + Jan's sign-off first)**. **After that comes
-[SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — start it only when Jan calls the refactor phase done.
-Highest-value quick fixes still live at the top of [GAPS.md](GAPS.md).
+`sw` `CACHE_NAME` = `playbook-shell-v88`.
+
+**inc-38** spec'd **Phase 5** and stopped at the gate: it touches rule #5, so it needs Jan's sign-off
+before any code, and none was written. Checking the premise first killed it —
+`docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md` shows the app uses **261 KB =
+5.1%** of the 5 MB localStorage budget (**812 KB / 15.9%** on a 5-year model), so there is **no size
+ceiling**; Safari's ITP evicts **IndexedDB too** (and exempts installed PWAs), so the substrate swap
+doesn't fix the eviction risk either; and the "seam already exists" claim is false — **three paths
+bypass `LS`** (`gatherBackup` enumerates, `applyBackup` writes raw strings, `pb-data.js:142/154`) plus
+`index.html:33/38`. The real problem is that `LS` is **synchronous and read at module-eval time** while
+IDB is async. **Four options are in the spec awaiting Jan's decision — do not start implementing one
+unprompted.** inc-38 also landed the pin Phase 5 needs under any option:
+`backend/test/backup-roundtrip.test.mjs` (21 tests, suite 30 -> 31) tests the **real** `app.js` backup
+block via a `vm` slice, closing GAPS #13's backup half — and it caught `verify-cloud-backup.mjs` having
+drifted (7-key vs 9-key `BACKUP_SKIP`; the legacy-restore branch untested anywhere). Also corrected:
+there are **44** `pb.*` keys, not 40 — `pb-views.js` owns 8 the schemas don't list.
+
+With Phase 4 at its verified floor and Phase 5 blocked on Jan, **there is no unblocked refactor work**;
+the highest-value unblocked items are at the top of [GAPS.md](GAPS.md) (#12 harness flake, the rest of
+#13). **After the refactor comes [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — start it only when Jan
+calls the refactor phase done.

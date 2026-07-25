@@ -194,13 +194,52 @@ plan (several items below are officially "owned" by that roadmap).*
 
 ## 9. localStorage is the database (D2)
 
-- **What**: 40 `pb.*` keys via the synchronous `LS` adapter; everything shares the
-  ~5 MB quota; iOS can evict storage for uninstalled/rarely-used PWAs.
-- **Why it matters**: a hard size ceiling as transactions/history grow, and total
-  data loss on Safari eviction if cloud backup is off.
-- **Severity**: **Medium** (works today at current data size).
-- **Fix**: Phase 5 as planned (IndexedDB behind the existing `LS`-shaped adapter —
-  the seam already exists because everything goes through `LS`).
+- **What**: **44** `pb.*` keys (not 40 — 22 are schema'd, 8 more live only in
+  `pb-views.js` via raw `usePersistedState`) through the synchronous `LS` adapter;
+  everything shares the ~5 MB quota.
+- **Severity**: **Low** (downgraded from Medium — see the correction below).
+- **Fix**: see `docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`.
+  **Awaiting Jan's decision between four options**; the spec recommends the narrow
+  one (churny `BACKUP_SKIP` blobs only) or closing Phase 5 outright.
+
+**Correction (2026-07-25, Phase 5 spec).** This entry used to claim "a hard size
+ceiling as transactions/history grow, and total data loss on Safari eviction if
+cloud backup is off", with the fix being "Phase 5 as planned (IndexedDB behind the
+existing `LS`-shaped adapter — the seam already exists because everything goes
+through `LS`)". **All three parts were checked and none survived:**
+
+1. **There is no size ceiling in sight.** Modelled from the real stored shapes and
+   the real `data.js` constituent lists: **261 KB today** (all tabs visited, 300
+   transactions, 500 cached names) = **5.1%** of a 5 MB budget; **812 KB** on a
+   5-year model (3,000 transactions) = **15.9%**. The two "churny blobs" are
+   bounded by construction (keyed by exchange id, and there are exactly 9
+   exchanges → ~160 KB combined, forever). The only unbounded slices are
+   transactions (159 bytes each) and nameCache (30 bytes each) — roughly **27,000
+   transactions** to reach half the budget. Also verified: heatmap quotes never
+   enter `pb.prices.v1` (`HeatmapView` never calls `mergePrices`), so 440
+   constituents cost one bounded blob, not 440 persisted quotes.
+2. **IndexedDB would not fix the eviction risk.** Safari's ITP evicts *all*
+   script-writable storage — localStorage, **IndexedDB**, Cache API and SW
+   registrations alike — after 7 days without interaction; home-screen-installed
+   web apps are exempt. So for an installed PWA the risk largely does not apply,
+   and where it does, migrating substrate does not reduce it. The encrypted cloud
+   backup remains the correct mitigation, and it already ships.
+3. **The seam does not already exist.** Three paths bypass `LS` and hit
+   `localStorage` directly — `gatherBackup` (enumerates; `LS` has no `keys()`),
+   `applyBackup` (writes raw strings; `LS.set` would re-stringify), and
+   `pb-data.js:142/154` (`pb.nameCache.v1`) — plus `index.html:33/38`, which reads
+   and writes `pb.iconTheme.v1` in an inline script before any module loads and is
+   synchronous by requirement. CLAUDE.md rule #5's "all durable state … through the
+   `LS` adapter" is aspirational, not descriptive.
+
+The real engineering problem is neither size nor eviction: it is that `LS` is
+**synchronous and consumed at module-eval time** (`app.js:2673`/`:2692` seed 22
+slices before mount; 17 `usePersistedState` call sites read synchronously during
+render) while IndexedDB is async. The only shape that preserves those call sites is
+hydrate-at-boot into an in-memory mirror. Two things already exist that make the
+narrow option cheap: the pre-React splash (`#pb-splash`) is a ready-made hydration
+gate, and inc-37's `PBStore.createWriteScheduler` is already the bounded, flushable,
+`pagehide`-safe write-behind path.
 
 **Correction (inc-37, 2026-07-25).** This entry used to claim `pb.prices.v1` "is
 re-stringified on every sweep", costing a main-thread `JSON.stringify` on every
@@ -266,6 +305,28 @@ The logic now lives in `PBStore.createWriteScheduler` (`pb-store.js`), pinned by
   (c) update or delete the stale settings assertion.
 
 ## 13. No unit tests on the remaining in-app logic seams
+
+> **BACKUP HALF FIXED 2026-07-25** (branch `claude/refactor-plan-continuation-qws8g3`):
+> `backend/test/backup-roundtrip.test.mjs` (**21 tests**, node suite 30 → 31) now pins
+> `gatherBackup`/`applyBackup`/`LEGACY_KEY_MAP`/`LS` against the **real `app.js` source**
+> — sliced out by source marker and run in `node:vm` over a fake `localStorage`, since
+> Node suites never load app.js. Covers the byte-identical round-trip, raw-string
+> capture, the 9-key skip set, prefix filtering, overwrite-not-merge, **all 8 legacy
+> `LEGACY_KEY_MAP` fields**, partial legacy exports, envelope-beats-legacy precedence,
+> the `-1` rejection paths, foreign keys being dropped from a backup file, corrupt-JSON
+> fallback, `_backupNotify` firing for durable `pb.*` only (set *and* remove), and
+> quota failure returning `false` instead of throwing.
+>
+> **It also found live drift.** `verify-cloud-backup.mjs` hand-mirrors both functions
+> ("kept identical on purpose") and had diverged: its `BACKUP_SKIP` listed **7** keys
+> vs app.js's **9** (missing `pb.rotation.lastgood.v1` and `pb.hotStocks.v1`), and its
+> `applyBackup` omitted the **entire legacy branch** — so the path that exists so old
+> backup files still restore had zero coverage anywhere. The skip set is corrected and
+> is now pinned by a guard that fails if the two ever diverge again; the legacy branch
+> is covered properly by the new suite. That harness stays the authority on the
+> AES-GCM/PBKDF2 crypto, which is its real subject. Test-only change — no `CACHE_NAME`
+> bump owed. **Still open in this entry**: Hot Topics date math (`hotToDate`/`hotDayDiff`)
+> and `describeOutcome` coverage. (The FX ladder sub-item is closed by gap #7.)
 
 - **What**: pure logic *outside* the extracted modules is untested: the FX fetch
   ladder (gap #7), `gatherBackup`/`applyBackup` round-trip, the backup crypto

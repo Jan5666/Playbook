@@ -4,8 +4,9 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-sq76f9` (inc-37, off latest `origin/main` @ inc-36/PR #45).
-**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-36 FX providers
+**Branch:** `claude/refactor-plan-continuation-qws8g3` (inc-38, off latest `origin/main` @ inc-37/PR #46).
+**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-37 the
+`pb.prices.v1` write scheduler (PR #46); before it inc-36 FX providers
 + the `pLimit`/de-dupe follow-up (PR #45); before it inc-35 `fetchSectorTrend` (PR #44); before it inc-34
 `useSwipeDownToClose` (PR #43); before it inc-33 `useContainerWidth` (PR #42); before it inc-32 Heatmap
 cluster (PR #41); before it inc-31 `SectorWeightRows`
@@ -302,6 +303,52 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   (20 assertions — the harness that actually drives the price feed; unlike inc-33/34/35 it **does** mount
   in this container, so it is a real pin).
 
+- **inc-38** the **Phase 5 spec + the rule-#5 characterization pin it requires**. **No implementation
+  code — Phase 5 is gated on Jan's sign-off and that gate is respected.** Two deliverables:
+
+  **(a) The spec** ([design](specs/2026-07-25-phase-5-indexeddb-storage-design.md) +
+  [plan](plans/2026-07-25-phase-5-indexeddb-storage.md)). Phase 5's premise was **measured before
+  designing anything**, and — for the **fifth roadmap claim in a row** — it did not hold. GAPS #9
+  justified Phase 5 with a size ceiling and Safari eviction, and asserted the seam already existed.
+  **All three failed:** (1) modelled from the real stored shapes + the real `data.js` constituent lists,
+  the app uses **261 KB = 5.1%** of a 5 MB budget today and **812 KB = 15.9%** on a 5-year model — the
+  churny blobs are bounded by construction (9 exchanges → ~160 KB forever) and it would take ~27,000
+  transactions to reach half the budget; also verified that heatmap quotes **never** enter
+  `pb.prices.v1` (`HeatmapView` never calls `mergePrices`), so 440 constituents cost one blob, not 440
+  quotes. (2) Safari's ITP evicts *all* script-writable storage including **IndexedDB**, and exempts
+  home-screen-installed PWAs — so the proposed fix does not address the stated risk. (3) **Three paths
+  bypass `LS`** (`gatherBackup` enumerates — `LS` has no `keys()`; `applyBackup` writes raw strings —
+  `LS.set` would re-stringify; `pb-data.js:142/154`), plus `index.html:33/38`, which is synchronous by
+  requirement. Rule #5's "all durable state through the `LS` adapter" is aspirational, not descriptive.
+  Also corrected: the key count is **44**, not 40 — `pb-views.js` owns **8 unschema'd keys**, two of
+  which (`pb.tfsa.targets.v1`, `pb.tfsa.contribution.v1`) are user-entered planning data that rides
+  cloud backup only by accident of the `pb.` prefix rule. The **real** problem is neither size nor
+  eviction: `LS` is synchronous and consumed at module-eval time (`app.js:2673`/`:2692` seed 22 slices
+  before mount; 17 `usePersistedState` sites read during render) while IDB is async — so the only shape
+  that preserves those call sites is hydrate-at-boot into an in-memory mirror. Two assets already exist
+  for that: the pre-React splash `#pb-splash` is a ready-made hydration gate, and inc-37's
+  `createWriteScheduler` is already the bounded/flushable/`pagehide`-safe write-behind. GAPS #9,
+  `PROJECT.md:54` and `PROJECT.md:226` corrected to match.
+
+  **(b) `backend/test/backup-roundtrip.test.mjs`** (**21 tests**, node suite **30 -> 31**) — GAPS #13's
+  scoped task, and the prerequisite Phase 5 needs under **every** option, since `gatherBackup`/
+  `applyBackup` are two of the three `LS` bypasses an async swap must rewrite. They had **no** unit
+  coverage. It slices the real backup block out of `app.js` **by source marker** and runs it in
+  `node:vm` over a fake `localStorage` (Node suites never load app.js, so this is the only way to test
+  shipped code rather than a copy). Pins the byte-identical round-trip, raw-string capture, the 9-key
+  skip set, prefix filtering, overwrite-not-merge, **all 8 `LEGACY_KEY_MAP` fields**, partial legacy
+  exports, envelope-beats-legacy precedence, six `-1` rejection paths, foreign keys dropped from a
+  backup file, corrupt-JSON fallback, `_backupNotify` firing for durable `pb.*` only (set *and*
+  remove), and quota failure returning `false`. **It found live drift:** `verify-cloud-backup.mjs`
+  hand-mirrors both functions ("kept identical on purpose") and had diverged — `BACKUP_SKIP` listed
+  **7** keys vs app.js's **9** (missing `pb.rotation.lastgood.v1`, `pb.hotStocks.v1`), and its
+  `applyBackup` omitted the **entire legacy branch**, so the old-backup-file restore path had zero
+  coverage anywhere. Skip set corrected and now pinned by a guard that fails on any future divergence;
+  the legacy branch is covered properly by the new suite. That harness stays the authority on the
+  AES-GCM/PBKDF2 crypto. **Test-only change — no shipped file touched, so no `CACHE_NAME` bump owed**
+  (`sw.js` stays **v88**). Verified: 21/21, full suite **31/31**, money gate green,
+  `verify-cloud-backup.mjs` still all-green.
+
 **Bridge-floor audit (inc-36, the verification inc-33/34/35 each lacked):** the "floor reached" claim was
 re-tested rather than trusted, by enumerating **all 38** `window.PBApp` members and counting real callers in
 `app.js` / `pb-views.js` / `pb-modals.js` (excluding comments and the publish line). **The floor at 38 is
@@ -340,9 +387,10 @@ across **both** buckets (`Icon`, `PriceBlock`, `fmt`, `timeAgo`, `prettyName`, `
 `parseCashFlowsFromText`/`parseCashFlowFile` cash-flow parsers blocked by the shared `loadScriptOnce` CDN
 loader). This was **verified member-by-member in inc-36**, not assumed — see the bridge-floor audit above.
 
-**What "continue the refactor" means from here.** With Phase 4 closed, GAPS #7 done (inc-36) and the
-GAPS #9 interim task closed + corrected (inc-37), the remaining documented refactor work is, in order of
-increasing size:
+**What "continue the refactor" means from here.** With Phase 4 closed, GAPS #7 done (inc-36), the
+GAPS #9 interim task closed + corrected (inc-37), and **Phase 5 spec'd and now blocked on Jan
+(inc-38)**, there is **no unblocked refactor work left**. The list below is the record of how that was
+reached, in order of increasing size:
 
 1. ~~**The `pLimit`/de-dupe half of GAPS #7**~~ — **DONE** (inc-36 follow-up commit). The FX readers now
    share the app-wide `pLimit(8)` gate via a small `fxFetch` helper and collapse concurrent identical
@@ -366,19 +414,34 @@ increasing size:
    has been corrected to match. **Worth recording as a pattern: this is the third roadmap claim in a
    row (inc-33/34/35 corrected bridge-floor claims, inc-36 verified one, inc-37 corrects a GAPS one)
    that did not survive being checked. Check before building.**
-3. **Phase 5 — IndexedDB behind the existing `LS`-shaped adapter** (`PROJECT.md:224`, GAPS #9). This is
-   now **the only remaining refactor item**, the real next *phase*, and the only one still listed as
-   "not started". It touches **rule #5** (cloud-backup byte-compatibility, `LEGACY_KEY_MAP` migrations),
-   so it wants a spec + Jan's sign-off on the approach **before** any code. Note
-   `SECURITY_ROADMAP.md` says its own Phase 3 iOS-storage work *is* refactor Phase 5 — "do it once,
-   there", with the refactor task as the canonical home. inc-37 is useful groundwork: the one churny
-   write is now bounded, flushable and Node-testable behind a seam, instead of an inline timer in a
-   React hook.
+3. ~~**Phase 5 — IndexedDB behind the existing `LS`-shaped adapter**~~ — **SPEC'D (inc-38), now
+   awaiting Jan's decision.** It touches **rule #5**, so the roadmap required a spec + sign-off before
+   any code; that spec is
+   [`specs/2026-07-25-phase-5-indexeddb-storage-design.md`](specs/2026-07-25-phase-5-indexeddb-storage-design.md)
+   and **its premise did not survive being checked** (see inc-38 below). No implementation code has been
+   written. **Jan picks between four options** — the spec recommends the narrow one (Option B, churny
+   `BACKUP_SKIP` blobs only) *if* he wants the boot-cost win, otherwise closing Phase 5 outright
+   (Option A).
 
 **Then** the next phase is [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md) (the post-refactor
 security/platform plan) — start it only when Jan calls the refactor phase done. Note that roadmap's own
-sequencing rule points back here: refactor Phase 5 is a prerequisite for its storage work. The section below
-is retained as the historical record of how the modal tier was prioritized and cleared.
+sequencing rule points back here: refactor Phase 5 is a prerequisite for its storage work.
+
+**A fresh chat arriving here should read this first.** As of inc-38 there is **no unblocked refactor
+work**: Phase 4 is at its verified bridge floor, GAPS #7 and the GAPS #9 interim task are closed, and
+Phase 5 is spec'd but **waiting on a decision from Jan** (four options, §3 of the spec — do not start
+implementing any of them unprompted; the gate is deliberate and rule #5 is why). If Jan has not yet
+decided, the useful work is elsewhere: the highest-value items are at the top of
+[`GAPS.md`](../../GAPS.md) — #12 (stale/flaky browser-harness debt, three tiny tasks) and the remainder
+of #13 (Hot Topics date math, `describeOutcome` coverage) are both unblocked and self-contained.
+
+**And the pattern worth carrying forward:** inc-33/34/35 each corrected an unverified bridge-floor
+claim, inc-36 verified one member-by-member, inc-37 corrected a GAPS premise, and inc-38 corrected
+three at once. **Six increments running, the written roadmap was wrong about something load-bearing.**
+Measure the claim before building on it — every one of those corrections was found by a grep or a
+30-line script, not by deep analysis.
+
+The section below is retained as the historical record of how the modal tier was prioritized and cleared.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
