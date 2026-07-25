@@ -18,10 +18,10 @@ npx serve .                       # or: python -m http.server
 
 # Unit tests — zero-framework Node scripts, run individually (cwd doesn't matter):
 node backend/test/money-math.test.mjs
-for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (19)
+for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (29)
 
 # MONEY GATE — must be green on ANY change touching money/import code:
-#   money-math, cost-basis, import-matching, ee-ocr-parse
+#   money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers
 
 # Browser smoke (spawns local Chrome + HTTP server, mocks Yahoo). THE mount gate:
 node backend/test/verify-refresh-behavior.mjs
@@ -124,15 +124,24 @@ Adding a **new runtime file** additionally requires ALL of:
   (`GBp`/`GBX`, and bare `GBP` on LSE is treated as pence too) — `centDivisor`
   in pb-core handles it; never hand-divide by 100 elsewhere.
 
-## Current state (2026-07-24)
+## Current state (2026-07-25)
 
 Refactor Phases 0-3 complete. **Phase 4 view/modal extraction is COMPLETE — the `window.PBApp` bridge has
-reached its floor (38 members)** as of **inc-35**. The living roadmap a fresh chat should read is
+reached its floor (38 members)** as of **inc-35**, and inc-36 **verified that floor member-by-member**
+(the previous three increments each corrected an unverified "floor reached" claim; this one enumerated all
+38 and counted real callers — it holds). The living roadmap a fresh chat should read is
 **[docs/superpowers/REFACTOR_STATUS.md](docs/superpowers/REFACTOR_STATUS.md)**. `pb-views.js` holds all 11
 tab views + the Heatmap cluster + the growth-chart cluster; `pb-modals.js` holds all 11 modals (incl. the
 three rule-#3 money modals) + the detail/settings subtrees + `SectorWeightRows` + `useSwipeDownToClose` +
-`fetchSectorTrend`. After inc-35 no verbatim-move candidate remains: every bridge member is genuinely shared
-across both buckets, consumed by the root `App`, or an impure/anchored reader coupled to `DATA`/root infra.
-`sw` `CACHE_NAME` = `playbook-shell-v86`. **The next phase is [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** —
-start it only when Jan calls the refactor phase done. Highest-value quick fixes still live at the top of
-[GAPS.md](GAPS.md).
+`fetchSectorTrend`. Every bridge member is genuinely shared across both buckets, consumed by the root `App`,
+or an impure/anchored reader coupled to `DATA`/root infra.
+
+**inc-36** then closed **GAPS #7** by moving the FX providers (`fetchFxRates`/`fetchHistoricalFx` +
+`FX_PROXIES` + `HISTORICAL_FX_CACHE`) into `pb-data.js` — **app.js now contains no network code** (5037 ->
+4999 lines). `DISPLAY_CURRENCIES` is injected via `PBData.configure` (pb-data is dual-mode and must never
+read `PBContent`). `sw` `CACHE_NAME` = `playbook-shell-v87`. Next steps, smallest first: the `pLimit`/de-dupe
+half of GAPS #7 (now guarded by `backend/test/fx-providers.test.mjs`), the GAPS #9 `pb.prices.v1` write
+debounce, then **Phase 5 (IndexedDB behind the `LS` adapter — the only phase still "not started"; touches
+rule #5, so spec + Jan's sign-off first)**. **After that comes
+[SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — start it only when Jan calls the refactor phase done.
+Highest-value quick fixes still live at the top of [GAPS.md](GAPS.md).

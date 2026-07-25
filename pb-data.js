@@ -21,7 +21,7 @@
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
   // pb-data never reaches into app.js globals (which would break the Node tests).
-  const cfg = { indicatorCatalog: null };
+  const cfg = { indicatorCatalog: null, displayCurrencies: null };
   function configure(opts) { if (opts && typeof opts === 'object') Object.assign(cfg, opts); }
 
   // ─── Rotating CORS proxy chain ──────────────────────────────────────────────
@@ -942,6 +942,71 @@
     return out;
   }
 
+  // ─── FX providers ─────────────────────────────────────────────────────
+  // Moved verbatim from app.js (GAPS #7) - it was the last network code left in
+  // the monolith. This is a SECOND, deliberately simpler ladder than the hardened
+  // fetchViaProxies chain above: FX endpoints usually allow direct CORS, so entry 0
+  // is the bare url and the proxies are only a fallback. Kept byte-for-byte on the
+  // move (behaviour pinned by backend/test/fx-providers.test.mjs before and after);
+  // routing it through the shared pLimit/de-dupe path is a deliberate follow-up, not
+  // part of this move.
+  // FX endpoints often allow direct CORS; fall back to proxies only on failure.
+  const FX_PROXIES = [
+    url => url,
+    url => `https://corsmirror.com/v1?url=${encodeURIComponent(url)}`,
+    url => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
+    url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+  ];
+  const HISTORICAL_FX_CACHE = {};
+  async function fetchHistoricalFx(dateISO, code) {
+    if (!dateISO || !code || code === 'USD') return code === 'USD' ? 1 : null;
+    const cacheKey = dateISO + ':' + code;
+    if (HISTORICAL_FX_CACHE[cacheKey] != null) return HISTORICAL_FX_CACHE[cacheKey];
+    const endpoints = [
+      `https://api.frankfurter.app/${dateISO}?from=USD&to=${code}`,
+      `https://api.exchangerate.host/${dateISO}?base=USD&symbols=${code}`
+    ];
+    for (const url of endpoints) {
+      for (const build of FX_PROXIES) {
+        try {
+          const res = await fetch(build(url), { cache: 'force-cache' });
+          if (!res.ok) continue;
+          const d = await res.json();
+          const rate = d?.rates?.[code];
+          if (typeof rate === 'number' && isFinite(rate) && rate > 0) {
+            HISTORICAL_FX_CACHE[cacheKey] = rate;
+            return rate;
+          }
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
+  async function fetchFxRates() {
+    // Injected from app.js via PBData.configure - pb-data must not reach into
+    // app.js / pb-content globals (that would break the Node tests).
+    const DISPLAY_CURRENCIES = cfg.displayCurrencies || [];
+    const url = 'https://open.er-api.com/v6/latest/USD';
+    for (const build of FX_PROXIES) {
+      try {
+        const res = await fetch(build(url), { cache: 'no-store' });
+        if (!res.ok) continue;
+        const d = await res.json();
+        if (d && (d.result === 'success' || d.rates)) {
+          const pick = {};
+          DISPLAY_CURRENCIES.forEach(c => {
+            if (d.rates && typeof d.rates[c.code] === 'number') pick[c.code] = d.rates[c.code];
+          });
+          if (!pick.USD) pick.USD = 1;
+          if (Object.keys(pick).length >= 2) {
+            return { base: 'USD', rates: pick, fetchedAt: Date.now(), source: 'open.er-api.com' };
+          }
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
   const PBData = {
     configure,
     fetchViaProxies, looksLikeProxyError, orderedProxies,
@@ -952,7 +1017,11 @@
     isUnitTrustId, searchUnitTrusts, fetchUnitTrustQuote, fetchUnitTrustHistory,
     fetchIndicatorQuote, fetchIndicatorHistory,
     cacheName, cachedName,
+    fetchFxRates, fetchHistoricalFx,
     _setLastGoodProxy,
+    // Test hook: the FX cache is module-private, so the characterization suite
+    // needs a way to start each scenario from a cold cache.
+    _resetFxCache() { for (const k of Object.keys(HISTORICAL_FX_CACHE)) delete HISTORICAL_FX_CACHE[k]; },
     get _lastGoodProxy() { return lastGoodProxy; }
   };
 

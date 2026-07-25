@@ -133,6 +133,18 @@ plan (several items below are officially "owned" by that roadmap).*
 
 ## 7. FX fetching is the last network code still inside app.js
 
+> **FIXED 2026-07-25** (branch `claude/refactor-plan-continuation-gto2pa`, inc-36): the
+> whole FX block (`FX_PROXIES`, `HISTORICAL_FX_CACHE`, `fetchHistoricalFx`, `fetchFxRates`)
+> moved verbatim into `pb-data.js`; app.js keeps two binds (`const fetchFxRates =
+> PBData.fetchFxRates;`) so its 4 call sites are unchanged, and `DISPLAY_CURRENCIES` is
+> injected via `PBData.configure` like `indicatorCatalog`. Behaviour was pinned by a
+> 14-scenario characterization matrix run against the app.js source *before* the move and
+> against `PBData` *after* — byte-identical digests — now committed as
+> `backend/test/fx-providers.test.mjs` (35 assertions incl. anti-drift guards).
+> `CACHE_NAME` bumped to v87. **The `pLimit`/de-dupe re-routing below is deliberately NOT
+> part of that move** (it is a behaviour change, not a relocation) and remains open — see
+> the follow-up note at the end of this entry. Entry kept for history until merged to main.
+
 - **What**: `FX_PROXIES` (app.js:463), `fetchFxRates`, `fetchHistoricalFx`,
   `HISTORICAL_FX_CACHE` (app.js:~1100) — a second, parallel proxy ladder that
   never moved to pb-data.js (explicitly deferred in Phase 2/3).
@@ -144,6 +156,14 @@ plan (several items below are officially "owned" by that roadmap).*
   block to pb-data.js (inject `DISPLAY_CURRENCIES` via `PBData.configure` like
   `indicatorCatalog`), bind in app.js, route through `pLimit`/de-dupe, add
   characterization tests + anti-drift guard, bump sw cache.
+- **Follow-up still open (the drift half of this gap)**: the relocation landed, but
+  `FX_PROXIES` is still a *second* ladder living next to `fetchViaProxies` in the same
+  file — no in-flight de-dupe, no `pLimit(8)` cap, its own error heuristics. Folding the
+  FX readers onto `fetchViaProxies` is a genuine behaviour change (the FX ladder is
+  direct-first and the shared one is not, and the two differ on what counts as a failed
+  response), so it needs its own increment with the now-committed characterization matrix
+  as the guard. Severity drops to **Low-Medium** now that the code is tested and
+  co-located.
 
 ## 8. app.js is still a 12,289-line monolith (~50 components in one file)
 

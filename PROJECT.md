@@ -71,10 +71,12 @@ pb-core.js     676 ln  PURE shared logic — no React/DOM/network. Market sessio
                        centDivisor, money/FX/cost-basis math, Yahoo quote parsers,
                        buildFetchPlan, parseDecimal, pLimit, priceKey.
                        Imported by BOTH the browser and backend/worker.js.
-pb-data.js     797 ln  IMPURE client-only network layer. The 6-proxy CORS ladder
+pb-data.js    1030 ln  IMPURE client-only network layer. The 6-proxy CORS ladder
                        (fetchViaProxies + in-flight de-dupe + pLimit(8) cap),
                        Yahoo quote/history fetchers, Stooq, Morningstar unit
-                       trusts, FRED indicators, quote batchers, ticker→name cache.
+                       trusts, FRED indicators, quote batchers, ticker→name cache,
+                       and the FX providers (fetchFxRates / fetchHistoricalFx +
+                       their own direct-first FX_PROXIES ladder).
                        Depends only on pb-core. Worker/sw.js must NOT import it.
 pb-store.js    129 ln  The state store: {prices, settings, portfolio} slices +
                        schema-driven configureSettings/configureCollections and
