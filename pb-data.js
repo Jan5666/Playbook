@@ -21,7 +21,7 @@
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
   // pb-data never reaches into app.js globals (which would break the Node tests).
-  const cfg = { indicatorCatalog: null };
+  const cfg = { indicatorCatalog: null, displayCurrencies: null };
   function configure(opts) { if (opts && typeof opts === 'object') Object.assign(cfg, opts); }
 
   // ─── Rotating CORS proxy chain ──────────────────────────────────────────────
@@ -942,6 +942,106 @@
     return out;
   }
 
+  // ─── FX providers ─────────────────────────────────────────────────────
+  // Moved out of app.js in GAPS #7 - it was the last network code left in the
+  // monolith. This is a SECOND, deliberately simpler ladder than the hardened
+  // fetchViaProxies chain above: FX endpoints usually allow direct CORS, so entry 0
+  // is the bare url and the proxies are only a fallback.
+  //
+  // These do NOT call fetchViaProxies, and that is deliberate: that path is
+  // proxy-only (it would drop the direct-first attempt), hard-codes cache:'no-store',
+  // and returns text. The per-request cache directive here is load-bearing -
+  // historical rates are immutable so they are force-cached, live rates never are.
+  // What they DO share is the app-wide fetch limiter and in-flight de-dupe, which
+  // is the part of the hardened path that actually matters (see fxFetch below).
+  // Behaviour is pinned by backend/test/fx-providers.test.mjs.
+  // FX endpoints often allow direct CORS; fall back to proxies only on failure.
+  const FX_PROXIES = [
+    url => url,
+    url => `https://corsmirror.com/v1?url=${encodeURIComponent(url)}`,
+    url => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
+    url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+  ];
+  // Every FX request goes through the same pLimit(8) gate as the quote providers,
+  // so a portfolio import's historical lookups can't stack on top of a price sweep
+  // and trip the shared proxies' rate limits. Unlike fetchViaProxies this keeps the
+  // caller's cache mode and hands back the Response (the FX readers want .json()).
+  function fxFetch(url, cacheMode) {
+    return _fetchLimit(() => fetch(url, { cache: cacheMode }));
+  }
+  const HISTORICAL_FX_CACHE = {};
+  // Collapse concurrent identical lookups. The completed-value cache below already
+  // covers sequential repeats (the import loop awaits row by row), so this only
+  // bites when callers run in parallel - but it costs nothing and means parallelising
+  // that loop later can't turn one date into N ladder walks.
+  const _fxInflight = new Map();
+  function fetchHistoricalFx(dateISO, code) {
+    if (!dateISO || !code || code === 'USD') return Promise.resolve(code === 'USD' ? 1 : null);
+    const cacheKey = dateISO + ':' + code;
+    if (HISTORICAL_FX_CACHE[cacheKey] != null) return Promise.resolve(HISTORICAL_FX_CACHE[cacheKey]);
+    const existing = _fxInflight.get(cacheKey);
+    if (existing) return existing;
+    const run = _fetchHistoricalFxUncached(dateISO, code, cacheKey);
+    _fxInflight.set(cacheKey, run);
+    run.finally(() => _fxInflight.delete(cacheKey));
+    return run;
+  }
+  async function _fetchHistoricalFxUncached(dateISO, code, cacheKey) {
+    const endpoints = [
+      `https://api.frankfurter.app/${dateISO}?from=USD&to=${code}`,
+      `https://api.exchangerate.host/${dateISO}?base=USD&symbols=${code}`
+    ];
+    for (const url of endpoints) {
+      for (const build of FX_PROXIES) {
+        try {
+          const res = await fxFetch(build(url), 'force-cache');
+          if (!res.ok) continue;
+          const d = await res.json();
+          const rate = d?.rates?.[code];
+          if (typeof rate === 'number' && isFinite(rate) && rate > 0) {
+            HISTORICAL_FX_CACHE[cacheKey] = rate;
+            return rate;
+          }
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
+  // Same de-dupe for the live table: an auto-refresh landing on top of a manual
+  // one should be one request, not two.
+  let _fxRatesInflight = null;
+  function fetchFxRates() {
+    if (_fxRatesInflight) return _fxRatesInflight;
+    const run = _fetchFxRatesUncached();
+    _fxRatesInflight = run;
+    run.finally(() => { if (_fxRatesInflight === run) _fxRatesInflight = null; });
+    return run;
+  }
+  async function _fetchFxRatesUncached() {
+    // Injected from app.js via PBData.configure - pb-data must not reach into
+    // app.js / pb-content globals (that would break the Node tests).
+    const DISPLAY_CURRENCIES = cfg.displayCurrencies || [];
+    const url = 'https://open.er-api.com/v6/latest/USD';
+    for (const build of FX_PROXIES) {
+      try {
+        const res = await fxFetch(build(url), 'no-store');
+        if (!res.ok) continue;
+        const d = await res.json();
+        if (d && (d.result === 'success' || d.rates)) {
+          const pick = {};
+          DISPLAY_CURRENCIES.forEach(c => {
+            if (d.rates && typeof d.rates[c.code] === 'number') pick[c.code] = d.rates[c.code];
+          });
+          if (!pick.USD) pick.USD = 1;
+          if (Object.keys(pick).length >= 2) {
+            return { base: 'USD', rates: pick, fetchedAt: Date.now(), source: 'open.er-api.com' };
+          }
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
   const PBData = {
     configure,
     fetchViaProxies, looksLikeProxyError, orderedProxies,
@@ -952,7 +1052,15 @@
     isUnitTrustId, searchUnitTrusts, fetchUnitTrustQuote, fetchUnitTrustHistory,
     fetchIndicatorQuote, fetchIndicatorHistory,
     cacheName, cachedName,
+    fetchFxRates, fetchHistoricalFx,
     _setLastGoodProxy,
+    // Test hook: the FX cache + in-flight maps are module-private, so the
+    // characterization suite needs a way to start each scenario cold.
+    _resetFxCache() {
+      for (const k of Object.keys(HISTORICAL_FX_CACHE)) delete HISTORICAL_FX_CACHE[k];
+      _fxInflight.clear();
+      _fxRatesInflight = null;
+    },
     get _lastGoodProxy() { return lastGoodProxy; }
   };
 

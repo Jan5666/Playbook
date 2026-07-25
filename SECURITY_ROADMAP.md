@@ -61,7 +61,7 @@ notifications properly, and (4) prepare for future broker integrations (EasyEqui
 | 5 | Morningstar | Unit-trust search/prices | Proxy ladder | Same as #1 |
 | 6 | Perplexity API | AI news/fundamentals | **Direct**, user's own API key (localStorage, user-supplied) | Acceptable by design; key is XSS-reachable (F5) |
 | 7 | rss2json.com | News RSS conversion | Direct | Low |
-| 8 | open.er-api.com (FX) | FX rates, historical FX | Direct-first, proxy fallback (`FX_PROXIES`, app.js) | Medium — FX feeds money math |
+| 8 | open.er-api.com (FX) | FX rates, historical FX | Direct-first, proxy fallback (`FX_PROXIES`, pb-data.js) | Medium — FX feeds money math |
 | 9 | unpkg.com | React runtime | Direct `<script>` — **no SRI** | **High** — supply chain (F3) |
 | 10 | Google Fonts | Fonts | Direct | Low (privacy: IP + UA to Google) |
 

@@ -324,13 +324,9 @@ const RULES = PBContent.RULES;
 // The CORS proxy ladder now lives in pb-data.js (client-only network layer).
 // Bound here so app.js call sites are unchanged. PBData is loaded before app.js.
 const fetchViaProxies = PBData.fetchViaProxies;
-// FX endpoints often allow direct CORS; fall back to proxies only on failure.
-const FX_PROXIES = [
-  url => url,
-  url => `https://corsmirror.com/v1?url=${encodeURIComponent(url)}`,
-  url => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
-];
+// FX_PROXIES moved to pb-data.js with the two FX readers (GAPS #7). It is
+// module-private there - only fetchFxRates / fetchHistoricalFx use it - so it is
+// deliberately not bound back here.
 // Yahoo reports JSE in cents (ZAc) and LSE in pence (GBp / GBX) for some
 // instruments. Values reported in those units must be divided by 100 to get
 // the natural unit (rand, pound). Matching is case-insensitive and accepts
@@ -340,7 +336,7 @@ const buildFetchPlan = PBCore.buildFetchPlan;
 // The quote/price/history providers, batchers, and ticker→name cache now live in
 // pb-data.js (client-only network layer). Bound here so app.js call sites are
 // unchanged; the indicator catalog (UI/content config) is injected once.
-PBData.configure({ indicatorCatalog: RIBBON_CATALOG_MAP });
+PBData.configure({ indicatorCatalog: RIBBON_CATALOG_MAP, displayCurrencies: DISPLAY_CURRENCIES });
 const fetchQuote = PBData.fetchQuote;
 const fetchQuoteBatch = PBData.fetchQuoteBatch;
 const fetchQuoteBatchLight = PBData.fetchQuoteBatchLight;
@@ -1123,52 +1119,17 @@ async function buildHotTopics(apiKey, userSymbols, fundamentals, heldTickers) {
 
   return { earnings: upcomingEarnings, macro, news, aiUsed: !!ai, generatedAt: Date.now() };
 }
-const HISTORICAL_FX_CACHE = {};
-async function fetchHistoricalFx(dateISO, code) {
-  if (!dateISO || !code || code === 'USD') return code === 'USD' ? 1 : null;
-  const cacheKey = dateISO + ':' + code;
-  if (HISTORICAL_FX_CACHE[cacheKey] != null) return HISTORICAL_FX_CACHE[cacheKey];
-  const endpoints = [
-    `https://api.frankfurter.app/${dateISO}?from=USD&to=${code}`,
-    `https://api.exchangerate.host/${dateISO}?base=USD&symbols=${code}`
-  ];
-  for (const url of endpoints) {
-    for (const build of FX_PROXIES) {
-      try {
-        const res = await fetch(build(url), { cache: 'force-cache' });
-        if (!res.ok) continue;
-        const d = await res.json();
-        const rate = d?.rates?.[code];
-        if (typeof rate === 'number' && isFinite(rate) && rate > 0) {
-          HISTORICAL_FX_CACHE[cacheKey] = rate;
-          return rate;
-        }
-      } catch (e) {}
-    }
-  }
-  return null;
-}
-async function fetchFxRates() {
-  const url = 'https://open.er-api.com/v6/latest/USD';
-  for (const build of FX_PROXIES) {
-    try {
-      const res = await fetch(build(url), { cache: 'no-store' });
-      if (!res.ok) continue;
-      const d = await res.json();
-      if (d && (d.result === 'success' || d.rates)) {
-        const pick = {};
-        DISPLAY_CURRENCIES.forEach(c => {
-          if (d.rates && typeof d.rates[c.code] === 'number') pick[c.code] = d.rates[c.code];
-        });
-        if (!pick.USD) pick.USD = 1;
-        if (Object.keys(pick).length >= 2) {
-          return { base: 'USD', rates: pick, fetchedAt: Date.now(), source: 'open.er-api.com' };
-        }
-      }
-    } catch (e) {}
-  }
-  return null;
-}
+// The FX providers (fetchFxRates, fetchHistoricalFx) + their FX_PROXIES ladder and
+// HISTORICAL_FX_CACHE now live in pb-data.js - the client-only network layer - so the
+// last network code leaves app.js (GAPS #7). Behaviour was pinned by a before/after
+// characterization matrix first (backend/test/fx-providers.test.mjs): proxy-ladder order,
+// the no-store / force-cache directives, the >=2-rate threshold, and the rule that a
+// failed historical lookup is NOT cached. DISPLAY_CURRENCIES is injected into pb-data via
+// PBData.configure above (pb-data never reaches into app.js/pb-content globals). Bound to
+// local names here so the 4 call sites below are unchanged; PBData is initialized before
+// app.js runs, so these binds are TDZ-safe.
+const fetchFxRates = PBData.fetchFxRates;
+const fetchHistoricalFx = PBData.fetchHistoricalFx;
 // The money helpers (convertCcy, contribInDisplay, marketCurrency, positionCostCcy,
 // valuePositionInCostCcy, resolvePositionUpdates) now live in pb-core.js — pure,
 // unit-tested in isolation (backend/test/money-math.test.mjs). Bound to local

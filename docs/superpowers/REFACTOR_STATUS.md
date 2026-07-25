@@ -4,7 +4,7 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-7tf0bb` (inc-35, off latest `origin/main` @ inc-34/PR #43).
+**Branch:** `claude/refactor-plan-continuation-gto2pa` (inc-36, off latest `origin/main` @ inc-35/PR #44).
 **Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-34
 `useSwipeDownToClose` (PR #43); before it inc-33 `useContainerWidth` (PR #42); before it inc-32 Heatmap
 cluster (PR #41); before it inc-31 `SectorWeightRows`
@@ -237,11 +237,52 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   `fetchViaProxies` → unsupported branch, `+10.0%` 1m trend, 6-hour cache-hit reference identity — all four
   in-scope deps resolve bucket-local).
 
+- **inc-36** the **FX provider block** — `FX_PROXIES` + `HISTORICAL_FX_CACHE` + `fetchHistoricalFx` +
+  `fetchFxRates` (~38 lines) -> **`pb-data.js`**; **bridge unchanged (38) / +1 injected config key**.
+  **Not a Phase 4 bucket move** — this is the Phase 2 module-extraction pattern applied to the one network
+  block deferred when `pb-data.js` was carved out, and it closes **GAPS #7 ("FX fetching is the last network
+  code still inside app.js")**. Chosen because a **full 38-member bridge audit** (see below) established that
+  Phase 4 genuinely has no verbatim-move candidate left, so the remaining refactor value had moved out of the
+  bridge and into the monolith's leftover impure code. Zero `pb-views`/`pb-modals`/`sw.js`/`worker.js`
+  references; all 4 `app.js` call sites stay put and both readers are **bound back**
+  (`const fetchFxRates = PBData.fetchFxRates;`) exactly like `fetchQuote`/`fetchHistory`, so no call site
+  changed. The one seam is `DISPLAY_CURRENCIES` (a `PBContent` value `pb-data` must never reach for, being
+  dual-mode): injected via `PBData.configure({ …, displayCurrencies: DISPLAY_CURRENCIES })` following the
+  `indicatorCatalog` precedent, resolved as `fetchFxRates`'s first statement so the rest of the body is
+  byte-identical. **Rule #3 applies** — FX feeds `convertCcy` and supplies the locked landed-USD deposit rate
+  — so a **14-scenario characterization matrix was run BEFORE the move** against the block sliced out of
+  `git show HEAD:app.js`, then re-run against `PBData` after: **byte-identical digests**. It pins
+  direct-first ladder order, `no-store` vs `force-cache`, the `result`-less-but-`rates`-present acceptance,
+  USD forced to 1, the **>=2-rate threshold**, frankfurter-then-exchangerate.host endpoint order, and that a
+  **successful** historical rate is cached while a **failed** one is not. Committed as
+  `backend/test/fx-providers.test.mjs` (**35 assertions** incl. anti-drift guards) + a `_resetFxCache()` test
+  hook (the `_setLastGoodProxy` precedent). The `pLimit`/de-dupe re-routing in GAPS #7's fix line is
+  **deliberately excluded** — it is a behaviour change (the FX ladder is direct-first; `looksLikeProxyError`
+  would reject bodies the FX readers accept), so it stays open as a follow-up, now guarded by this matrix.
+  `app.js` **5037 -> 4999** lines and now contains **no network code**; `pb-data.js` 961 -> 1030.
+  `CACHE_NAME` -> **v87**. Pinned by `node --check` (both files) + the full node suite (**29/29**, money gate
+  green) + the before/after digest diff + a **load-order probe** (real `pb-core`/`pb-data`/`pb-content` in
+  `index.html` order, replaying the 4 real `app.js` wiring statements: binds resolve, the injection reaches
+  the provider — JPY filtered out — and 4 call sites remain).
+
+**Bridge-floor audit (inc-36, the verification inc-33/34/35 each lacked):** the "floor reached" claim was
+re-tested rather than trusted, by enumerating **all 38** `window.PBApp` members and counting real callers in
+`app.js` / `pb-views.js` / `pb-modals.js` (excluding comments and the publish line). **The floor at 38 is
+real.** The four members that *look* movable are not: `useHotStocks` (pb-views-only, but needs `poolMap`,
+which has a second `app.js` caller -> net-0 swap); `buildSuggestions` (pb-views-only, but `DATA`-coupled via
+`findInfo`/`_sectorLookup`/`HOLDINGS` — the inc-30 `resolvePositionSector` precedent); `searchListingsMulti`
+(pb-modals-only, but needs `fetchYahooSearch`, which `TickerSearch` also calls -> net-0 swap); and
+`TickerSearch` (zero `app.js` callers and used by **both** buckets, so inc-32's cross-bucket
+`window.PBViews` read would apply — but it needs `ALL_TICKERS`, which is `DATA`-derived, **and**
+`sameUnderlyingExchange`, which has 4 other `app.js` callers, bridged -> net **worse**). Two `app.js`
+"occurrences" that made members look consumed are only **comments** (`searchListingsMulti` at
+`app.js:4890`, `resolvePositionSector` at `app.js:3876`) — worth knowing before anyone re-audits.
+
 **Current state:** `pb-modals.js` holds **11 modals + the detail subtree + the settings subtree + the shared
 `SectorWeightRows` sector-split editor + the `useSwipeDownToClose` gesture hook + the `fetchSectorTrend`
 sector-ETF trend reader**;
 `window.PBApp` bridge = **38** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**; **inc-33 removed 1**; **inc-34 removed 1**; **inc-35 removed 1**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v86** (inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40; inc-34 moved `useSwipeDownToClose` into `pb-modals.js`, bridge 40 -> 39; inc-35 moved `fetchSectorTrend` + `SECTOR_TREND_CACHE` into `pb-modals.js`, bridge 39 -> 38). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+`sw.js` `CACHE_NAME` = **playbook-shell-v87** (inc-36 moved the FX providers into `pb-data.js`, bridge unchanged; inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40; inc-34 moved `useSwipeDownToClose` into `pb-modals.js`, bridge 40 -> 39; inc-35 moved `fetchSectorTrend` + `SECTOR_TREND_CACHE` into `pb-modals.js`, bridge 39 -> 38). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the Heatmap cluster (`HeatmapTreemap`/`ZoomPanHeatmap` +
 treemap math) + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
@@ -258,9 +299,37 @@ across **both** buckets (`Icon`, `PriceBlock`, `fmt`, `timeAgo`, `prettyName`, `
 `TAB_LABELS`), or (c) an impure/anchored reader coupled to `DATA` or root infra (`parseImportFile`,
 `ocrImageFile`, `searchListingsMulti`, `useHotStocks`, `buildSuggestions`, `resolvePositionSector`, and the
 `parseCashFlowsFromText`/`parseCashFlowFile` cash-flow parsers blocked by the shared `loadScriptOnce` CDN
-loader). **The next phase is [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md)** (the post-refactor
-security/platform plan) — start it only when Jan calls the refactor phase done. The section below is retained
-as the historical record of how the modal tier was prioritized and cleared.
+loader). This was **verified member-by-member in inc-36**, not assumed — see the bridge-floor audit above.
+
+**What "continue the refactor" means from here.** With Phase 4 closed and GAPS #7 done (inc-36), the
+remaining documented refactor work is, in order of increasing size:
+
+1. ~~**The `pLimit`/de-dupe half of GAPS #7**~~ — **DONE** (inc-36 follow-up commit). The FX readers now
+   share the app-wide `pLimit(8)` gate via a small `fxFetch` helper and collapse concurrent identical
+   requests via in-flight maps (`_fxInflight` keyed on `date:code`, plus a single slot for the live table).
+   They deliberately still do **not** call `fetchViaProxies`: that path is proxy-only (it would drop the
+   direct-first attempt), hard-codes `cache:'no-store'` and returns text, while the per-request cache mode
+   here is load-bearing (immutable historical rates are `force-cache`d). The characterization matrix did
+   exactly the job it was built for — all 35 original assertions passed **unchanged**, and the before/after
+   digest still matches the pre-move `app.js` byte-for-byte, with **+9 new assertions** for the new
+   guarantees (`max in flight = 8` across 20 parallel lookups; unbounded before). **Worth recording: the
+   original premise was overstated.** Reading the call sites showed `fetchHistoricalFx` runs from a
+   *sequential* import loop and single user actions, and the completed-value cache already collapsed
+   sequential repeats — so at most ~2 FX fetches were ever concurrent. The cap removes an
+   unbounded-by-design path and future-proofs parallelising that loop, but it fixed a **latent**, not an
+   active, problem. **GAPS #7 is now fully closed.**
+2. **The GAPS #9 interim task** — debounce/throttle the `pb.prices.v1` write (it is in `BACKUP_SKIP`, so
+   nothing downstream cares about write timing). Small, pure perf. **Now the smallest real next step.**
+3. **Phase 5 — IndexedDB behind the existing `LS`-shaped adapter** (`PROJECT.md:224`, GAPS #9). This is the
+   real next *phase* and the only one still listed as "not started". It touches **rule #5** (cloud-backup
+   byte-compatibility, `LEGACY_KEY_MAP` migrations), so it wants a spec + Jan's sign-off on the approach
+   **before** any code. Note `SECURITY_ROADMAP.md` says its own Phase 3 iOS-storage work *is* refactor
+   Phase 5 — "do it once, there", with the refactor task as the canonical home.
+
+**Then** the next phase is [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md) (the post-refactor
+security/platform plan) — start it only when Jan calls the refactor phase done. Note that roadmap's own
+sequencing rule points back here: refactor Phase 5 is a prerequisite for its storage work. The section below
+is retained as the historical record of how the modal tier was prioritized and cleared.
 
 ## Remaining modals — prioritized (senior-dev, no-regression first)
 
