@@ -1558,6 +1558,8 @@ const Icon = _ref => {
 // calls (visibility + interval) both read loading=false and double-fetch.
 const PRICES_LS_KEY = 'pb.prices.v1';
 const PRICES_MAX_AGE_MS = 3 * 24 * 3600 * 1000; // drop quotes older than 3 days
+const PRICES_PERSIST_MS = 1200;       // trailing quiet period before a price write
+const PRICES_PERSIST_MAX_MS = 10000;  // hard checkpoint ceiling for a merge stream
 // ─── Market hours ────────────────────────────────────────────────────────────
 // Sessions table + marketOpen/anyMarketOpen now live in pb-core.js (loaded before
 // this script), shared with backend/worker.js so the poll cadence and the push
@@ -1607,11 +1609,35 @@ function usePriceFeed(order, fetchKey) {
   orderRef.current = order;
   const [lastUpdate, setLastUpdate] = useState(null);
   const [failStreak, setFailStreak] = useState(0);
-  // Debounced persist so a burst of merges writes once.
+  // Debounced persist so a burst of merges writes once. The scheduler lives in
+  // pb-store.js (Node-testable; see backend/test/write-scheduler.test.mjs) and
+  // fixes three things the old inline setTimeout got wrong: it reads the map at
+  // fire time so a queued write can never persist a stale snapshot, it
+  // checkpoints every PRICES_PERSIST_MAX_MS so a merge stream arriving faster
+  // than the quiet period cannot defer the write forever, and it can be flushed
+  // on the way out (below). The 1200ms quiet period itself is unchanged.
   const persistRef = useRef(null);
-  const persistPrices = useCallback((obj) => {
-    if (persistRef.current) clearTimeout(persistRef.current);
-    persistRef.current = setTimeout(() => LS.set(PRICES_LS_KEY, obj), 1200);
+  if (!persistRef.current) {
+    persistRef.current = PBStore.createWriteScheduler({
+      write: () => LS.set(PRICES_LS_KEY, PBStore.getPrices()),
+      delay: PRICES_PERSIST_MS,
+      maxDelay: PRICES_PERSIST_MAX_MS
+    });
+  }
+  const persistPrices = useCallback(() => { persistRef.current.schedule(); }, []);
+  // iOS freezes/discards a backgrounded PWA and kills pending timers, so a sweep
+  // that lands just before the user swipes away would otherwise never reach
+  // localStorage — and the seed-on-open above would paint stale numbers.
+  useEffect(() => {
+    const flush = () => { persistRef.current.flush(); };
+    const onHide = () => { if (document.hidden) flush(); };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onHide);
+      flush();
+    };
   }, []);
   // Plausibility-gate a quote batch against the currently accepted quotes
   // before it reaches the store: a transiently mis-scaled Yahoo response (the
@@ -1632,7 +1658,7 @@ function usePriceFeed(order, fetchKey) {
   const mergePrices = useCallback((obj) => {
     if (!obj || !Object.keys(obj).length) return;
     PBStore.mergePrices(guardBatch(obj));
-    persistPrices(PBStore.getPrices());
+    persistPrices();
   }, [persistPrices, guardBatch]);
   // A manual tap that arrives mid-fetch sets this so the in-flight run loops
   // once more (with cache-bust) the moment it finishes — the press always ends
@@ -1648,7 +1674,7 @@ function usePriceFeed(order, fetchKey) {
         const newPrices = await fetchQuoteBatch(orderRef.current, {
           cacheBust: force,
           // Merge each batch as it lands so holdings paint progressively.
-          onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(PBStore.getPrices()); }
+          onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(); }
         });
         if (Object.keys(newPrices).length > 0) {
           setLastUpdate(new Date());

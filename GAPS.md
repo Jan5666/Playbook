@@ -194,17 +194,34 @@ plan (several items below are officially "owned" by that roadmap).*
 
 ## 9. localStorage is the database (D2)
 
-- **What**: 40 `pb.*` keys via the synchronous `LS` adapter; `pb.prices.v1` is
-  re-stringified on every sweep; everything shares the ~5 MB quota; iOS can evict
-  storage for uninstalled/rarely-used PWAs.
-- **Why it matters**: main-thread JSON.stringify on every price merge (perf), a
-  hard size ceiling as transactions/history grow, and total data loss on Safari
-  eviction if cloud backup is off.
+- **What**: 40 `pb.*` keys via the synchronous `LS` adapter; everything shares the
+  ~5 MB quota; iOS can evict storage for uninstalled/rarely-used PWAs.
+- **Why it matters**: a hard size ceiling as transactions/history grow, and total
+  data loss on Safari eviction if cloud backup is off.
 - **Severity**: **Medium** (works today at current data size).
 - **Fix**: Phase 5 as planned (IndexedDB behind the existing `LS`-shaped adapter —
-  the seam already exists because everything goes through `LS`). A small interim
-  task: debounce/throttle the `pb.prices.v1` write (currently every sweep) — it's
-  in `BACKUP_SKIP` so nothing downstream cares about write timing.
+  the seam already exists because everything goes through `LS`).
+
+**Correction (inc-37, 2026-07-25).** This entry used to claim `pb.prices.v1` "is
+re-stringified on every sweep", costing a main-thread `JSON.stringify` on every
+price merge, and proposed "debounce/throttle the write" as an interim task. **That
+was wrong and has been removed from the text above.** `usePriceFeed` has debounced
+the write since the repo's first commit (`2de0e16`), both merge paths ride it, and
+`fetchQuoteBatch` emits `onBatch` once per 8-symbol batch — so a whole sweep
+already collapsed into a single write. There was no perf problem to fix.
+
+What the debounce *did* get wrong was durability, and inc-37 fixed all three:
+1. **no flush on hide/unmount** — iOS kills pending timers on a backgrounded PWA,
+   so a sweep landing within 1.2 s of the user swiping away was silently lost;
+2. **no max-wait** — a merge stream arriving faster than 1200 ms deferred the
+   write forever (bounded in practice only by network latency, by accident);
+3. **stale-snapshot capture** — the map was captured at schedule time, correct only
+   because every merge path happened to re-schedule.
+
+The logic now lives in `PBStore.createWriteScheduler` (`pb-store.js`), pinned by
+`backend/test/write-scheduler.test.mjs` (36 tests on a fake clock, including a
+7-scenario characterization matrix proving the quiet-period timing is unchanged).
+**The interim task is closed**; only the Phase 5 IndexedDB work remains.
 
 ## 10. Perf debt inside the monolith: memoization is thin
 
