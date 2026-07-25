@@ -99,7 +99,8 @@ Adding a **new runtime file** additionally requires ALL of:
 
 ## Gotchas (things that look right but aren't)
 
-- **Encoding**: app.js has a BOM + CRLF; `£ € · —` are authored as `\uXXXX` ASCII
+- **Encoding**: app.js has a BOM and **LF** line endings (measured: 0 CRLF — an older note here said
+  CRLF, it is wrong); `£ € · —` are authored as `\uXXXX` ASCII
   escapes. The Edit tool decodes typed `\uXXXX` into literal glyphs — you cannot
   retype these strings. Move content with Node slice scripts (read → splice →
   write). In Node scripts, a `.replace()` search spanning a line break needs
@@ -142,8 +143,16 @@ or an impure/anchored reader coupled to `DATA`/root infra.
 read `PBContent`). A follow-up commit closed **GAPS #7's second half**: the FX readers now share the
 app-wide `pLimit(8)` gate + in-flight de-dupe, but deliberately still do NOT call `fetchViaProxies` (that
 path is proxy-only, hard-codes `no-store`, and returns text — the FX cache modes are load-bearing).
-`sw` `CACHE_NAME` = `playbook-shell-v87`. Next steps, smallest first: the GAPS #9 `pb.prices.v1` write
-debounce, then **Phase 5 (IndexedDB behind the `LS` adapter — the only phase still "not started"; touches
+**inc-37** closed the **GAPS #9 interim task by correcting its premise**: the `pb.prices.v1` write was
+**already debounced** (since the repo's first commit — both merge paths rode it, and `onBatch` fires once
+per 8-symbol batch, so a sweep always collapsed to one `JSON.stringify`), so the stringify-per-merge perf
+cost GAPS described never existed. The real defects were durability ones — no flush on hide/unmount (iOS
+kills pending timers on a backgrounded PWA, losing the last sweep), no max-wait, and a stale-snapshot
+capture — all three now fixed behind `PBStore.createWriteScheduler` in `pb-store.js`, with the 1200 ms
+quiet period proven unchanged by a 7-scenario characterization matrix
+(`backend/test/write-scheduler.test.mjs`, 36 tests; suite 29 -> 30). app.js 4999 -> 5025 lines.
+`sw` `CACHE_NAME` = `playbook-shell-v88`. Next step is now the only remaining refactor item:
+**Phase 5 (IndexedDB behind the `LS` adapter — the only phase still "not started"; touches
 rule #5, so spec + Jan's sign-off first)**. **After that comes
 [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — start it only when Jan calls the refactor phase done.
 Highest-value quick fixes still live at the top of [GAPS.md](GAPS.md).

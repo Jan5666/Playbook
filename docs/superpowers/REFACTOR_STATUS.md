@@ -4,8 +4,9 @@
 Keep it current at the end of each increment. Canonical detail lives in
 `docs/superpowers/{specs,plans}/`.
 
-**Branch:** `claude/refactor-plan-continuation-gto2pa` (inc-36, off latest `origin/main` @ inc-35/PR #44).
-**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-34
+**Branch:** `claude/refactor-plan-continuation-sq76f9` (inc-37, off latest `origin/main` @ inc-36/PR #45).
+**Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-36 FX providers
++ the `pLimit`/de-dupe follow-up (PR #45); before it inc-35 `fetchSectorTrend` (PR #44); before it inc-34
 `useSwipeDownToClose` (PR #43); before it inc-33 `useContainerWidth` (PR #42); before it inc-32 Heatmap
 cluster (PR #41); before it inc-31 `SectorWeightRows`
 (PR #40); before it inc-30 `PortfolioPieChart`
@@ -265,6 +266,42 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   `index.html` order, replaying the 4 real `app.js` wiring statements: binds resolve, the injection reaches
   the provider — JPY filtered out — and 4 call sites remain).
 
+- **inc-37** the **`pb.prices.v1` write scheduler** — `PBStore.createWriteScheduler` added to
+  **`pb-store.js`** (~50 lines); `usePriceFeed`'s inline `setTimeout` debounce replaced by it, plus a
+  page-hide flush; **bridge unchanged (38)**. **Not a Phase 4 bucket move** — it closes the GAPS #9
+  interim task by **correcting its premise**. The roadmap listed "debounce/throttle the `pb.prices.v1`
+  write (currently every sweep)" as the next-smallest step; `git log -S"persistRef"` shows the debounce
+  landed in **`2de0e16`, the squashed initial import** — it has always been there, both merge paths
+  (`app.js:1632`/`:1651`) already rode it, and `fetchQuoteBatch` emits `onBatch` once per **8-symbol**
+  batch, so a sweep already collapsed to **one** `JSON.stringify`. **The perf problem GAPS #9 described
+  did not exist**, and adding a debounce would have been a no-op. What the debounce *did* get wrong was
+  **durability**, in three ways, all now fixed: (1) **no flush on hide/unmount** — iOS freezes a
+  backgrounded PWA and kills pending timers, so a sweep landing within 1.2 s of the user swiping away
+  was silently lost, starving the seed-on-open path that exists to paint real numbers immediately;
+  (2) **no max-wait** — a trailing-only debounce defers forever under a sub-1200 ms merge stream,
+  bounded today only by network latency (an accident, not a guarantee); (3) **stale-snapshot capture** —
+  `persistPrices(PBStore.getPrices())` held a whole map in a closure for 1.2 s, correct only because
+  every path happened to re-schedule. `createWriteScheduler({ write, delay, maxDelay, now?, setTimeout?,
+  clearTimeout? }) -> { schedule, flush, cancel, isPending }` fixes all three: `write` takes **no
+  arguments** (read-at-fire-time), `maxDelay` (**10 s**) measures from the **first** schedule of a burst,
+  and `flush()` fires synchronously. The **1200 ms quiet period is unchanged**. Chosen for `pb-store.js`
+  because it already owns the prices slice, is dual-mode/Node-testable, and is already wired everywhere —
+  so **no new runtime file** and the wiring checklist reduced to the `CACHE_NAME` bump. **Rule #5 holds**:
+  same `LS` adapter, same key, same serialized shape, still in `BACKUP_SKIP` (no `_backupNotify`, no
+  `LEGACY_KEY_MAP` migration). **Rule #3 untouched**: no money math added, moved or reordered —
+  `guardBatch`/`PBCore.guardQuote`/`PBStore.mergePrices` are byte-identical; only *when* the merged map
+  is serialized changed. Characterization came **first**: the old inline debounce was replicated as a
+  reference implementation on a fake clock and driven through a **7-scenario matrix** — **identical write
+  traces**; the three defects are themselves pinned as tests (starvation writes 0 times, the lost-on-hide
+  write, the `v1` snapshot) so a silent regression is visible. Committed as
+  `backend/test/write-scheduler.test.mjs` (**36 tests**, deterministic, no sleeps) + anti-drift source
+  guards (inline `setTimeout(() => LS.set(PRICES_LS_KEY …))` gone, delegation present, `pagehide` wired,
+  `pb.prices.v1` still in `BACKUP_SKIP`). `app.js` **4999 -> 5025** lines; `pb-store.js` 129 -> 179.
+  `CACHE_NAME` -> **v88**. Pinned by `node --check` (both files) + the full node suite (**30/30**, money
+  gate green) + the characterization matrix + the **mount gate `verify-refresh-behavior`: ALL PASSED**
+  (20 assertions — the harness that actually drives the price feed; unlike inc-33/34/35 it **does** mount
+  in this container, so it is a real pin).
+
 **Bridge-floor audit (inc-36, the verification inc-33/34/35 each lacked):** the "floor reached" claim was
 re-tested rather than trusted, by enumerating **all 38** `window.PBApp` members and counting real callers in
 `app.js` / `pb-views.js` / `pb-modals.js` (excluding comments and the publish line). **The floor at 38 is
@@ -282,7 +319,9 @@ which has a second `app.js` caller -> net-0 swap); `buildSuggestions` (pb-views-
 `SectorWeightRows` sector-split editor + the `useSwipeDownToClose` gesture hook + the `fetchSectorTrend`
 sector-ETF trend reader**;
 `window.PBApp` bridge = **38** members (33 after feature PRs #27–#29; inc-19 added 4, inc-22 added 1, inc-23 added 1, inc-24 added 2, inc-25 added 2, inc-26 added 3; inc-27 added 0; **inc-28 removed 2**; inc-30 net 0; **inc-31 removed 1**; **inc-32 removed 2**; **inc-33 removed 1**; **inc-34 removed 1**; **inc-35 removed 1**);
-`sw.js` `CACHE_NAME` = **playbook-shell-v87** (inc-36 moved the FX providers into `pb-data.js`, bridge unchanged; inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40; inc-34 moved `useSwipeDownToClose` into `pb-modals.js`, bridge 40 -> 39; inc-35 moved `fetchSectorTrend` + `SECTOR_TREND_CACHE` into `pb-modals.js`, bridge 39 -> 38). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
+`sw.js` `CACHE_NAME` = **playbook-shell-v88** (inc-37 moved the `pb.prices.v1` write onto
+`PBStore.createWriteScheduler` — bounded + flushable + Node-testable, bridge unchanged, node suite 29 -> 30;
+inc-36 moved the FX providers into `pb-data.js`, bridge unchanged; inc-29 removed dead `FxSummary`; inc-30 moved `PortfolioPieChart`/`SectorHoldingsPopup` into `pb-views.js`, bridge net 0; inc-31 moved `SectorWeightRows` into `pb-modals.js`, bridge 44 -> 43; inc-32 moved the Heatmap cluster `HeatmapTreemap`/`ZoomPanHeatmap` + treemap-layout math into `pb-views.js`, bridge 43 -> 41; inc-33 moved `useContainerWidth` into `pb-views.js`, bridge 41 -> 40; inc-34 moved `useSwipeDownToClose` into `pb-modals.js`, bridge 40 -> 39; inc-35 moved `fetchSectorTrend` + `SECTOR_TREND_CACHE` into `pb-modals.js`, bridge 39 -> 38). `HoldingRow`/`HoldingsListHead` now live in `pb-views.js` beside their only consumers. **Phase 4 modal extraction is COMPLETE** — every modal
 (and all three money modals) lives in the bucket. **The non-modal view tier is also complete** — `pb-views.js`
 now holds **11 views + the Heatmap fullscreen chrome + the Heatmap cluster (`HeatmapTreemap`/`ZoomPanHeatmap` +
 treemap math) + the growth-chart cluster** (inc-23 `HeatmapView`, inc-24
@@ -301,8 +340,9 @@ across **both** buckets (`Icon`, `PriceBlock`, `fmt`, `timeAgo`, `prettyName`, `
 `parseCashFlowsFromText`/`parseCashFlowFile` cash-flow parsers blocked by the shared `loadScriptOnce` CDN
 loader). This was **verified member-by-member in inc-36**, not assumed — see the bridge-floor audit above.
 
-**What "continue the refactor" means from here.** With Phase 4 closed and GAPS #7 done (inc-36), the
-remaining documented refactor work is, in order of increasing size:
+**What "continue the refactor" means from here.** With Phase 4 closed, GAPS #7 done (inc-36) and the
+GAPS #9 interim task closed + corrected (inc-37), the remaining documented refactor work is, in order of
+increasing size:
 
 1. ~~**The `pLimit`/de-dupe half of GAPS #7**~~ — **DONE** (inc-36 follow-up commit). The FX readers now
    share the app-wide `pLimit(8)` gate via a small `fxFetch` helper and collapse concurrent identical
@@ -318,13 +358,22 @@ remaining documented refactor work is, in order of increasing size:
    sequential repeats — so at most ~2 FX fetches were ever concurrent. The cap removes an
    unbounded-by-design path and future-proofs parallelising that loop, but it fixed a **latent**, not an
    active, problem. **GAPS #7 is now fully closed.**
-2. **The GAPS #9 interim task** — debounce/throttle the `pb.prices.v1` write (it is in `BACKUP_SKIP`, so
-   nothing downstream cares about write timing). Small, pure perf. **Now the smallest real next step.**
-3. **Phase 5 — IndexedDB behind the existing `LS`-shaped adapter** (`PROJECT.md:224`, GAPS #9). This is the
-   real next *phase* and the only one still listed as "not started". It touches **rule #5** (cloud-backup
-   byte-compatibility, `LEGACY_KEY_MAP` migrations), so it wants a spec + Jan's sign-off on the approach
-   **before** any code. Note `SECURITY_ROADMAP.md` says its own Phase 3 iOS-storage work *is* refactor
-   Phase 5 — "do it once, there", with the refactor task as the canonical home.
+2. ~~**The GAPS #9 interim task**~~ — **DONE, and its premise was wrong** (inc-37). The write was
+   **already debounced** and had been since the repo's first commit, so there was no
+   stringify-per-merge cost to remove. The real defects were durability ones (no flush on hide, no
+   max-wait, stale-snapshot capture); all three are fixed behind `PBStore.createWriteScheduler`, with
+   the 1200 ms quiet period proven unchanged by a 7-scenario characterization matrix. GAPS #9's text
+   has been corrected to match. **Worth recording as a pattern: this is the third roadmap claim in a
+   row (inc-33/34/35 corrected bridge-floor claims, inc-36 verified one, inc-37 corrects a GAPS one)
+   that did not survive being checked. Check before building.**
+3. **Phase 5 — IndexedDB behind the existing `LS`-shaped adapter** (`PROJECT.md:224`, GAPS #9). This is
+   now **the only remaining refactor item**, the real next *phase*, and the only one still listed as
+   "not started". It touches **rule #5** (cloud-backup byte-compatibility, `LEGACY_KEY_MAP` migrations),
+   so it wants a spec + Jan's sign-off on the approach **before** any code. Note
+   `SECURITY_ROADMAP.md` says its own Phase 3 iOS-storage work *is* refactor Phase 5 — "do it once,
+   there", with the refactor task as the canonical home. inc-37 is useful groundwork: the one churny
+   write is now bounded, flushable and Node-testable behind a seam, instead of an inline timer in a
+   React hook.
 
 **Then** the next phase is [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md) (the post-refactor
 security/platform plan) — start it only when Jan calls the refactor phase done. Note that roadmap's own

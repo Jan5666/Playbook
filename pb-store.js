@@ -25,6 +25,56 @@
     };
   }
 
+  // A bounded, flushable trailing debounce for churny persistence — the
+  // pb.prices.v1 quote cache (Increment 37). It replaces an inline setTimeout
+  // that lived in app.js's usePriceFeed, where Node could never test it.
+  //
+  //   delay     trailing quiet period: a burst of schedule() calls writes once
+  //             (this is the shipped 1200ms behaviour, unchanged)
+  //   maxDelay  hard ceiling measured from the FIRST schedule() of a burst, so a
+  //             merge stream arriving faster than `delay` still checkpoints
+  //             instead of deferring the write forever. 0 disables it.
+  //   flush()   write now if one is pending — the page-hide path. iOS freezes a
+  //             backgrounded PWA and kills pending timers, so without this a
+  //             sweep finishing just before the user swipes away is lost.
+  //
+  // `write` takes NO arguments: the caller's closure reads the freshest value at
+  // fire time, so a queued write can never persist a stale snapshot.
+  // now/setTimeout/clearTimeout are injectable for tests only; the browser
+  // passes none and gets real timers.
+  function createWriteScheduler(opts) {
+    const o = opts || {};
+    const write = typeof o.write === 'function' ? o.write : null;
+    const delay = o.delay > 0 ? o.delay : 0;
+    const maxDelay = o.maxDelay > 0 ? o.maxDelay : 0;
+    const now = typeof o.now === 'function' ? o.now : (() => Date.now());
+    const setT = o.setTimeout || ((fn, ms) => setTimeout(fn, ms));
+    const clearT = o.clearTimeout || (id => clearTimeout(id));
+    let timer = null;      // pending timer id, or null when idle
+    let burstStart = 0;    // now() at the first schedule() of the current burst
+    function stop() { if (timer !== null) { clearT(timer); timer = null; } }
+    // Clear before writing so a throwing write (quota exceeded) leaves the
+    // scheduler idle rather than wedged with a dead timer id.
+    function fire() { stop(); burstStart = 0; if (write) write(); }
+    function schedule() {
+      if (!write) return;
+      const t = now();
+      if (timer === null) burstStart = t;
+      stop();
+      let wait = delay;
+      if (maxDelay > 0) {
+        const remaining = burstStart + maxDelay - t;
+        if (remaining <= 0) { fire(); return; }
+        if (remaining < wait) wait = remaining;
+      }
+      timer = setT(fire, wait);
+    }
+    function flush() { if (timer === null) return false; fire(); return true; }
+    function cancel() { stop(); burstStart = 0; }
+    function isPending() { return timer !== null; }
+    return { schedule, flush, cancel, isPending };
+  }
+
   // The single app store. Holds prices (Increment 1) + settings (Increment 2) +
   // non-money portfolio collections (Increment 3a).
   const appStore = createStore({ prices: {}, settings: {}, portfolio: {} });
@@ -116,7 +166,7 @@
   }
 
   const PBStore = {
-    createStore,
+    createStore, createWriteScheduler,
     getPrices, mergePrices, setPricesMap,
     configureSettings, getSettings, getSetting, setSetting,
     configureCollections, getCollection, setCollection,
