@@ -205,8 +205,9 @@ plan (several items below are officially "owned" by that roadmap).*
 > correctly stay as they are. **Reopen only if** the appendix footprint script in that spec
 > reports materially more than ~1 MB on Jan's real device.
 
-- **What**: **44** `pb.*` keys (not 40 — 22 are schema'd, 8 more live only in
-  `pb-views.js` via raw `usePersistedState`) through the synchronous `LS` adapter;
+- **What**: **44** `pb.*` keys (not 40). **24** are schema'd as of 2026-07-26 (was 22 — the two
+  TFSA planning keys joined `PORTFOLIO_SCHEMA`); the remaining **6** live only in
+  `pb-views.js` via raw `usePersistedState`, correctly, being view-local UI state through the synchronous `LS` adapter;
   everything shares the ~5 MB quota. Measured usage: **261 KB = 5.1%** of that quota.
 - **Severity**: **Low** (downgraded from Medium — see the correction below). Now closed.
 - **Fix**: **none needed.** Both original justifications failed measurement (1 and 2 below)

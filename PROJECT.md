@@ -66,46 +66,61 @@ accounts and no server-side plaintext.
 
 ```
 React UMD ×2 (unpkg CDN)
-pb-core.js     676 ln  PURE shared logic — no React/DOM/network. Market sessions,
+pb-core.js   1,376 ln  PURE shared logic — no React/DOM/network. Market sessions,
                        marketOpen, alert evaluation (evaluateAlerts), yahooSymbol,
                        centDivisor, money/FX/cost-basis math, Yahoo quote parsers,
                        buildFetchPlan, parseDecimal, pLimit, priceKey.
                        Imported by BOTH the browser and backend/worker.js.
-pb-data.js    1030 ln  IMPURE client-only network layer. The 6-proxy CORS ladder
+pb-data.js   1,069 ln  IMPURE client-only network layer. The 6-proxy CORS ladder
                        (fetchViaProxies + in-flight de-dupe + pLimit(8) cap),
                        Yahoo quote/history fetchers, Stooq, Morningstar unit
                        trusts, FRED indicators, quote batchers, ticker→name cache,
                        and the FX providers (fetchFxRates / fetchHistoricalFx +
                        their own direct-first FX_PROXIES ladder).
                        Depends only on pb-core. Worker/sw.js must NOT import it.
-pb-store.js    129 ln  The state store: {prices, settings, portfolio} slices +
+pb-store.js    179 ln  The state store: {prices, settings, portfolio} slices +
                        schema-driven configureSettings/configureCollections and
                        useSetting/useCollection/usePricesMap hooks.
-pb-content.js  224 ln  Pure static content: RIBBON_CATALOG, INDICATOR_INFO,
+pb-content.js  263 ln  Pure static content: RIBBON_CATALOG, INDICATOR_INFO,
                        BUILTIN_MACRO_2026 calendar, RULES prose, SECTOR_* tables,
                        MARKETS/DISPLAY_CURRENCIES/CURRENCY_SYMBOLS.
 pb-import.js   874 ln  Pure import engine: Yahoo-suffix→market mapping, fuzzy
                        name/ticker matching, CSV/table→holdings mapper, and the
                        EasyEquities screenshot OCR parsers.
+pb-views.js  4,388 ln  Phase 4 view bucket (browser-only classic script): all 11
+                       tab views + the Heatmap cluster (HeatmapTreemap/ZoomPanHeatmap
+                       + treemap math), the growth-chart cluster, HoldingRow/
+                       HoldingsListHead, PortfolioPieChart, useContainerWidth. Reads
+                       shared app.js internals at render time via window.PBApp.
+pb-modals.js 3,907 ln  Phase 4 modal bucket: all 11 modals (incl. the three rule-#3
+                       money modals), the detail + settings subtrees,
+                       SectorWeightRows, useSwipeDownToClose, fetchSectorTrend.
+                       Registers on window.PBModals; same PBApp bridge.
 data.js      1,114 ln  window.PB_DATA — Jan's hand-written reference data:
                        HOLDINGS (theses), NEW_PICKS, HEDGES, RISKS, PILLARS +
                        sector classifiers (findSector/normalizeSector/findInfo).
 demo-data.js    54 ln  window.PB_DEMO — deterministic demo portfolio for Preview mode.
-app.js      12,289 ln  Everything else: ~50 React components (all views + modals),
-                       the remaining hooks (usePortfolio, usePriceFeed,
+app.js       5,030 ln  Everything else, after Phase 4 moved the views + modals out
+                       (was ~12.3k): the root App, the shared components still used
+                       by both buckets, the hooks (usePortfolio, usePriceFeed,
                        useAlertEngine, useCloudBackup, usePushBackend…), the LS
-                       persistence adapter, backup crypto, FX fetchers, Hot Topics.
+                       persistence adapter, backup crypto, Hot Topics, and the
+                       window.PBApp bridge (38 members, at its verified floor).
+                       Contains NO network code since inc-36 — the FX providers
+                       moved to pb-data.js.
 ```
 
 Outside the page:
 
 ```
-sw.js          333 ln  Service worker (cache v50): precaches the shell
+sw.js          303 ln  Service worker (cache v89): precaches the shell
                        (SHELL_ASSETS), network-first for same-origin, SWR for CDN,
                        shows push notifications, AND runs its own background
-                       alert-check engine on periodicsync (with its own inline
-                       copies of the proxy chain / yahooSymbol / centDivisor /
-                       evaluate — a known drift risk, GAPS.md #2).
+                       alert-check engine on periodicsync. It now
+                       importScripts('./pb-core.js') and delegates yahooSymbol /
+                       centDivisor / evaluateAlerts (GAPS.md #2, fixed 2026-07-21);
+                       only the inline proxy chain remains its own, deliberately,
+                       since pb-data.js is browser-only (rule #6).
 backend/worker.js      Cloudflare Worker: /subscribe /sync /test /unsubscribe
                        (push), /backup (zero-knowledge blob store), and a
                        scheduled() cron every minute that fetches quotes for
@@ -328,9 +343,13 @@ re-implemented. If you re-inline a `function centDivisor` in app.js, a test fail
    wrongly "fixed" back in; the smoke test now asserts its *absence*.
 6. **The live Worker ≠ the repo Worker** until Jan runs `wrangler deploy` (see
    GAPS.md #3). The static site auto-deploys; the Worker never does.
-7. **Some test failures are known-stale**: `verify-indicators` ribbon checks fail on
-   baseline (harness passes a prop the app now ignores), and screenshot-style
-   harnesses have a pre-existing flaky CDP "Execution context destroyed" race.
-   Reliable gates: `verify-refresh-behavior`, `verify-watchlist`, `verify-settings`.
+7. **The known-stale test failures are FIXED** (GAPS.md #12, 2026-07-26). `verify-indicators`
+   ribbon checks passed a prop the app ignores (`Hero` self-subscribes from `PBStore`) — the
+   harness now seeds localStorage before app.js evaluates. The CDP "Execution context
+   destroyed" race was **structural**, not flaky: Chrome destroys the `about:blank` context
+   when the harness URL commits and harnesses attach in exactly that window. The retry
+   `verify-refresh-behavior` always carried is now in all 16 other harnesses, so if you see
+   that error again, suspect a NEW cause rather than dismissing it.
+   Reliable gates: `verify-refresh-behavior` (THE mount gate), `verify-watchlist`, `verify-settings`.
 8. **`BUILTIN_MACRO_2026`** (pb-content.js) is a hand-written one-year calendar that
    must be refreshed annually — it goes quietly stale in 2027.

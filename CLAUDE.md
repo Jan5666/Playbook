@@ -5,7 +5,7 @@ to GitHub Pages, with an optional Cloudflare Worker for push + encrypted backup.
 
 - **[PROJECT.md](PROJECT.md)** — architecture, data flow, design decisions, critical paths. Read before any structural change.
 - **[GAPS.md](GAPS.md)** — every known weakness, ranked by severity, each with a scoped fix.
-- **[SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — the post-refactor security/platform plan (do not start it before the refactor phases finish).
+- **[SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — the post-refactor security/platform plan. **The refactor is finished (2026-07-26), so this is now the active plan.**
 - **docs/superpowers/{specs,plans}/** — the spec + plan for every refactor increment; the written history of why each seam exists.
 
 ## Commands
@@ -18,7 +18,7 @@ npx serve .                       # or: python -m http.server
 
 # Unit tests — zero-framework Node scripts, run individually (cwd doesn't matter):
 node backend/test/money-math.test.mjs
-for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (31)
+for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (33)
 
 # MONEY GATE — must be green on ANY change touching money/import code:
 #   money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers
@@ -26,10 +26,13 @@ for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (31
 # Browser smoke (spawns local Chrome + HTTP server, mocks Yahoo). THE mount gate:
 node backend/test/verify-refresh-behavior.mjs
 # Reliable smokes: verify-refresh-behavior, verify-watchlist, verify-settings.
-# Screenshot-style harnesses (modals/sector-weights/holdings/goal-holdings) have a
-# PRE-EXISTING flaky CDP "Execution context destroyed" race — rerun before blaming
-# your change. verify-indicators' 2 ribbon FAILs + verify-settings' "Alerts: menu
-# overflows" are known-stale (GAPS.md #12). Chrome path is hardcoded:
+# The CDP "Execution context destroyed" race is FIXED (GAPS.md #12, 2026-07-26): it
+# was structural, not luck — Chrome destroys the about:blank context when the harness
+# URL commits and harnesses attach in exactly that window — and the retry that
+# verify-refresh-behavior always had is now in all 16 others. If you still see it,
+# suspect a NEW cause, don't write it off as the old flake.
+# verify-indicators' 2 ribbon FAILs and verify-settings' "Alerts: menu overflows" are
+# also fixed, so they are no longer expected-red. Chrome path is hardcoded:
 # C:\Program Files\Google\Chrome\Application\chrome.exe
 
 # Syntax check (necessary, NOT sufficient — see Gotchas):
@@ -65,11 +68,13 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v86`), or installed PWAs serve stale assets offline.
+`playbook-shell-v89`), or installed PWAs serve stale assets offline.
 
 Adding a **new runtime file** additionally requires ALL of:
-1. `<script>` tag in `index.html` (order: pb-core → pb-data → pb-store →
-   pb-content → pb-import → data.js → demo-data.js → app.js — pb-core first, always);
+1. `<script>` tag in `index.html` (real order, verified: pb-core → pb-data → pb-store →
+   pb-content → pb-import → **pb-views → pb-modals** → data.js → demo-data.js → app.js —
+   pb-core first, always; app.js last. The buckets load BEFORE data.js, which is why they
+   read `DATA`/`PB_DATA` at render time rather than at IIFE top);
 2. `sw.js` `SHELL_ASSETS` entry + cache bump;
 3. `.github/workflows/static.yml` — BOTH the `cp` list AND the Guard-1 loop;
 4. the 16 app-mounting `backend/test/verify-*.mjs` harness shells (each embeds its
@@ -88,7 +93,7 @@ Adding a **new runtime file** additionally requires ALL of:
   reference, that's what makes `React.memo` work). Raw `usePersistedState` is for
   view-local UI state only. Volatile/re-derivable keys go in `BACKUP_SKIP`.
 - **Mutators return `{ok, code, ...}` outcomes — never call toast in the data
-  layer.** All user-facing copy lives in `describeOutcome` (app.js:2499); wire new
+  layer.** All user-facing copy lives in `describeOutcome` (app.js:2528); wire new
   mutators through `useToastEvents` at the App edge.
 - **Tests**: characterization first, then move code; add an anti-drift source guard
   (tests grep app.js/worker.js to assert delegation, e.g. no `function centDivisor`
@@ -165,7 +170,7 @@ kills pending timers on a backgrounded PWA, losing the last sweep), no max-wait,
 capture — all three now fixed behind `PBStore.createWriteScheduler` in `pb-store.js`, with the 1200 ms
 quiet period proven unchanged by a 7-scenario characterization matrix
 (`backend/test/write-scheduler.test.mjs`, 36 tests; suite 29 -> 30). app.js 4999 -> 5025 lines.
-`sw` `CACHE_NAME` = `playbook-shell-v88`.
+`sw` `CACHE_NAME` = `playbook-shell-v89` (inc-39).
 
 **inc-38** spec'd **Phase 5** and stopped at the gate: it touches rule #5, so it needs Jan's sign-off
 before any code, and none was written. Checking the premise first killed it —
@@ -192,4 +197,27 @@ user-entered planning data stored with the **view-local-UI idiom** (raw `usePers
 cloud backup only by accident of the `pb.` prefix rule — both now live in `PORTFOLIO_SCHEMA` beside
 `tfsaDeposits`. **`PORTFOLIO_SCHEMA`, not `SETTINGS_SCHEMA`**: `setTargets` is called with an updater
 function and only `setCollection` accepts one. The other six unschema'd `pb-views.js` keys are
-genuinely view-local and correctly stay put.
+genuinely view-local and correctly stay put. **Bridge unchanged (38)**; rule #5 proven by a
+before/after render probe with an **identical digest** plus a write-path probe whose stored JSON is
+byte-identical to the same probe on pristine code. `CACHE_NAME` -> **v89**.
+
+inc-39 also closed the last two GAPS items. **#13**: `hot-topics-dates.test.mjs` (8 tests) pins the
+`toISOString` day-roll trap in positive-offset zones (re-run in 3 zones via `TZ` re-spawn) and the
+**DST** trap — `2026-03-08->09` is empirically a **23-hour** day, so `Math.floor` would render
+tomorrow's earnings as "today"; `describe-outcome.test.mjs` (18 tests) adds a bidirectional
+code<->case guard (a returned code with no `case` is a *silent missing toast*) and **found nothing
+wrong** — 37/37, zero orphans. Suite **31 -> 33**. **#12**: the CDP "Execution context destroyed"
+flake is **structural**, not luck (Chrome destroys the `about:blank` context when the harness URL
+commits, and harnesses attach in exactly that window — pristine `verify-indicators` failed 3/3
+here), and **the fix already existed** in `verify-refresh-behavior.mjs`, never propagated; it now
+covers **16** harnesses (mount gate left untouched). `verify-indicators` Part B2 now seeds
+`pb.ribbonItems.v1` before app.js evaluates (`Hero` takes only `onOpenDetail` — all three props it
+was passed were ignored). The stale `verify-settings` scroll assertion was **unpassable in any
+environment**: the scroller is `.modal-panel > .modal-body`, so querying `.modal-panel` made
+overflow always 0 — and its partner assertion was passing vacuously.
+
+**The pattern held to the very end: seven increments running, the written roadmap was wrong about
+something load-bearing.** Phase 5's whole premise (inc-38), `PROJECT.md`'s Phase 4 status, GAPS
+#12's "flake" (structural, and already fixed elsewhere in the repo), and GAPS #12(c)'s "one stale
+assertion" (two — its partner was a false green). Every one was caught by a grep or a 30-line
+script. **Measure the claim before building on it.**

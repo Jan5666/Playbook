@@ -372,6 +372,63 @@ shared app.js internal, and shrinks when a single-caller helper is relocated int
   (`sw.js` stays **v88**). Verified: 21/21, full suite **31/31**, money gate green,
   `verify-cloud-backup.mjs` still all-green.
 
+- **inc-39** — **the increment that closed the refactor.** Four parts, no structural extraction:
+
+  **(a) Phase 5 closed (Option A), by Jan's decision.** inc-38 measured the premise and it failed;
+  Jan reviewed and closed it rather than building any of the four options. Every doc that promised
+  IndexedDB was corrected: the spec (status + all five §5 questions answered), the plan (§3's
+  Option B build plan marked **rejected — do not execute**), `GAPS.md` #9 (resolved-by-evidence),
+  `PROJECT.md` (`:54` persistence row + the Phase 5 entry; its **Phase 4 entry was also stale** —
+  still "in progress" and pointing at "the first real view/modal split" as *next*), this file, and
+  `CLAUDE.md`. The load-bearing one: **four `SECURITY_ROADMAP.md` references** (`:19`, `:311`,
+  `:363`, `:476`) treated refactor Phase 5 as the canonical home for that roadmap's storage work.
+  Left alone, the security roadmap would have started **blocked on a phase that will never run**.
+  Roadmap Phase 3 now owns it, and with Phase 5's measurements in hand those items shrink to
+  `QuotaExceededError` handling + a diagnostics line rather than a migration.
+
+  **(b) GAPS #13 closed** — `hot-topics-dates.test.mjs` (8 tests) + `describe-outcome.test.mjs`
+  (18 tests), suite **31 → 33**, both via the inc-38 `node:vm` source-slice pattern. The date suite
+  pins the two traps that code actually sits on: `toISOString` day-rolling in positive-offset zones
+  (re-run in **three** zones by re-spawning with `TZ` set) and **DST**, where `2026-03-08→09` is
+  empirically a **23-hour** day so `Math.floor` would render tomorrow's earnings as *"today"*.
+  `hotDayDiff` reads `new Date()` internally with no seam, so the vm context gets a `Date`
+  **subclass** frozen at a chosen instant — real TZ/DST arithmetic, fixed "now".
+  The `describeOutcome` suite's value is a **bidirectional** code↔case guard (a returned code with
+  no case is a *silent missing toast*). **Honest read-out: it found nothing** — 37/37, zero orphans
+  both ways; it pins a clean state, unlike the backup suite which found real drift.
+
+  **(c) GAPS #12 closed** — and (b) of that entry was **root-caused, not papered over**. The CDP
+  "Execution context destroyed" flake is **structural**: Chrome makes a context for the initial
+  `about:blank` and destroys it when the harness URL commits, and every harness attaches in exactly
+  that window — so on a loaded machine it reproduces **every run** (pristine `verify-indicators`
+  failed **3/3** here, which is also what exonerated the (a) edit when it appeared to have broken
+  the run). **The fix already existed in the repo**: `verify-refresh-behavior.mjs` — the one
+  harness CLAUDE.md calls reliable — has carried this retry all along with the same diagnosis in
+  its comment, and it was simply never propagated. Now standardized across **16** harnesses
+  (mount gate deliberately untouched). `verify-indicators` Part B2 was fixed by seeding
+  `pb.ribbonItems.v1`/`pb.ribbonMode.v1` **before** app.js evaluates (`Hero` takes only
+  `onOpenDetail`; all three props it was passed were ignored) — 13 FAILs → 11. And the
+  `verify-settings` assertion turned out to be **unpassable in any environment**: the scroller is
+  `.modal-panel > .modal-body`, so querying `.modal-panel` made overflow always 0 — *and its
+  partner assertion was passing vacuously*, which GAPS had not noticed.
+
+  **(d) The one durable action item out of the Phase 5 spec** (§5 Q4): `pb.tfsa.targets.v1` +
+  `pb.tfsa.contribution.v1` moved from raw `usePersistedState` into **`PORTFOLIO_SCHEMA`** beside
+  `tfsaDeposits`. They are user-entered planning data wearing the view-local-UI idiom, riding cloud
+  backup only by accident of the `pb.` prefix rule. **`PORTFOLIO_SCHEMA`, not `SETTINGS_SCHEMA`**:
+  `setTarget` passes an **updater fn** (`pb-views.js:3660`) and only `setCollection` accepts one
+  (`pb-store.js:142`). **Bridge unchanged (38)** — `usePersistedState` leaves only *this component's*
+  lead read and stays bridged for its 7 other `pb-views.js` consumers. **Rule #5 holds and was
+  proven, not assumed**: same keys, same shapes, same `LS` adapter, so no `LEGACY_KEY_MAP` entry —
+  pinned by a before/after render probe with an **identical digest** (`31c2cc95a4565adf`; targets
+  60/25 normalising to 70.6%/29.4% and allocating R4,435.29 + R564.71 = R5,000) **plus** a write-path
+  probe driving the updater fn through the real UI, which stored
+  `{"SYGWD":"45","SYG500":"25"}` — **byte-identical to the same probe run on stashed pristine code**.
+  The other **six** unschema'd `pb-views.js` keys are genuinely view-local and correctly stay put.
+  Shipped files changed → `CACHE_NAME` **v88 → v89**. Verified: `node --check` both files, BOM/LF/
+  U+FFFD intact, suite **33/33** with `backup-roundtrip.test.mjs` green **and unmodified** (the real
+  rule-#5 proof), money gate green, `deploy-assets` green, mount gate **ALL PASSED**, bridge still 38.
+
 **Bridge-floor audit (inc-36, the verification inc-33/34/35 each lacked):** the "floor reached" claim was
 re-tested rather than trusted, by enumerating **all 38** `window.PBApp` members and counting real callers in
 `app.js` / `pb-views.js` / `pb-modals.js` (excluding comments and the publish line). **The floor at 38 is
