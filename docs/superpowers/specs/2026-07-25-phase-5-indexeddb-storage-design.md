@@ -1,6 +1,26 @@
 # Phase 5 — IndexedDB behind the `LS` adapter (design + premise check)
 
-**Status: awaiting Jan's decision. No Phase 5 implementation code has been written.**
+**Status: CLOSED 2026-07-26 — Option A, resolved by evidence. Jan's decision.**
+**No Phase 5 implementation code was ever written, and none should be.**
+
+> **Why this is closed, in one paragraph.** Phase 5 existed to fix two things: a storage
+> size ceiling and Safari eviction. Measurement (§1, independently re-derived 2026-07-26 —
+> every figure reproduced exactly) says the app uses **261 KB = 5.1%** of a 5 MB budget today
+> and **812 KB = 15.9%** on a 5-year model, with the two churny blobs bounded by construction
+> at ~160 KB forever, so **there is no ceiling to lift**. And Safari's ITP evicts *all*
+> script-writable storage including IndexedDB, exempting installed home-screen PWAs, so the
+> substrate swap **does not address the eviction risk** it was proposed for — the encrypted
+> cloud backup already does. The migration was also never as cheap as GAPS #9 implied: the
+> "everything goes through `LS`" seam does not exist (§1 Claim C, four bypasses), and the real
+> obstacle is that `LS` is **synchronous and read at module-eval time** while IndexedDB is
+> async (§2). That is a boot-order rewrite plus edits to `gatherBackup`/`applyBackup` — the
+> disaster-recovery path, rule #5 — bought for a benefit measurement says is ~zero.
+> **Closing it is the cheap, correct call.** The refactor is done; the next phase is
+> [`SECURITY_ROADMAP.md`](../../../SECURITY_ROADMAP.md).
+>
+> The sections below are retained **as the evidence for the decision**, not as a live plan.
+> Options B/C/D were considered and rejected; §3 records why. If anyone reopens this, the
+> bar is the appendix script reporting materially more than ~1 MB on Jan's real device.
 
 `REFACTOR_STATUS.md` records that Phase 5 "touches **rule #5**, so it wants a spec + Jan's sign-off on
 the approach **before** any code." This is that spec. It does three things: checks the premise against
@@ -187,9 +207,17 @@ write-behinds to IDB; on boot, if localStorage is empty but IDB is not, restore 
 *Against:* two substrates to keep coherent; and per Claim B, ITP evicts both together, so the recovery
 case it buys is narrow (quota eviction, not ITP) and overlaps the cloud backup that already exists.
 
-### Recommendation
+### Recommendation — and the decision taken
 
-**Option B, and only if Jan wants the boot-cost win; otherwise Option A.**
+> **DECIDED 2026-07-26: Option A.** Jan closed Phase 5 outright. Options B, C and D are
+> **not** to be built; they are retained below only as the record of what was weighed.
+> Option B's boot-cost win (~190 KB less synchronous parsing at startup) was judged not
+> worth an IndexedDB wrapper and a migration while app-open performance is acceptable.
+> The one durable action item from this spec — folding the unschema'd TFSA planning keys
+> into a schema (§5 Q4) — was accepted and is being done separately; it is a correctness
+> fix independent of the storage substrate.
+
+**Original recommendation (for the record): Option B, and only if Jan wants the boot-cost win; otherwise Option A.**
 
 B is the only version whose benefit survived measurement (a smaller synchronous boot read) at a cost
 that does not put rule #5 at risk — the four keys it moves are precisely the four the backup path is
@@ -233,18 +261,33 @@ No shipped file changed — test-only — so **no `CACHE_NAME` bump is owed** (`
 
 ---
 
-## 5. Decisions needed from Jan
+## 5. Decisions needed from Jan — ANSWERED 2026-07-26
 
-1. **Which option** (A / B / C / D)?
-2. If B or C: is a **new bootstrap runtime file** acceptable given it triggers the full wiring
-   checklist including all 16 `verify-*.mjs` harness shells?
-3. **Claim B sanity-check:** is Playbook used mainly as an installed home-screen PWA? If yes, the ITP
-   eviction justification is largely moot and A/B get stronger.
-4. Should the **8 unschema'd `pb-views.js` keys** be folded into a schema regardless of the Phase 5
-   outcome? Two of them (`pb.tfsa.targets.v1`, `pb.tfsa.contribution.v1`) are user-entered planning
-   data currently backed up only by accident of the `pb.` prefix rule.
-5. Confirm the **GAPS #9 / `PROJECT.md:226` corrections** should be written up now, independent of
-   which option is chosen.
+1. **Which option (A / B / C / D)?** → **A. Phase 5 is closed, resolved by evidence.** No
+   IndexedDB migration, in any scope. The refactor is complete.
+2. **Is a new bootstrap runtime file acceptable?** → **Moot under A.** No new runtime file, so
+   the wiring checklist (and all 16 `verify-*.mjs` harness shells) is untouched.
+3. **Claim B sanity-check — installed home-screen PWA?** → **Not needed to decide.** Option A
+   holds either way: if it *is* installed, ITP exempts it and the risk is moot; if it is *not*,
+   ITP evicts IndexedDB too, so migrating would not have helped. The mitigation stays the
+   encrypted cloud backup, which is already shipped. (The ITP behaviour remains the one claim
+   in this spec not verified by measurement here — but the decision no longer rests on it.)
+4. **Fold the 8 unschema'd `pb-views.js` keys into a schema?** → **Yes for the two that matter,
+   now.** `pb.tfsa.targets.v1` and `pb.tfsa.contribution.v1` are user-entered planning data and
+   are moving into `PORTFOLIO_SCHEMA` beside `tfsaDeposits` (2026-07-26). This is a **correctness
+   fix, independent of Phase 5**: they ride cloud backup today only by accident of the `pb.`
+   prefix rule, one rename away from silently not being backed up. `PORTFOLIO_SCHEMA` rather than
+   `SETTINGS_SCHEMA` because `setTargets` is called with an **updater function**
+   (`pb-views.js:3660`) and only `setCollection` accepts one. The other **six** keys
+   (`pb.heatmap.{exchange,mode,pf}.v1`, `pb.rotation.exchange.v1`,
+   `pb.watchlist.{activeList,showSuggestions}.v1`) are genuinely view-local UI state and
+   correctly stay on raw `usePersistedState` — no change.
+5. **Write up the GAPS #9 / `PROJECT.md:226` corrections now?** → **Yes, done 2026-07-26**,
+   together with `REFACTOR_STATUS.md`, `CLAUDE.md`, and the four `SECURITY_ROADMAP.md`
+   references that treated refactor Phase 5 as a live prerequisite (`:19`, `:311`, `:363`,
+   `:476`). Roadmap Phase 3 now **owns** its storage work outright rather than waiting on a
+   phase that will never run — without this, the security roadmap would have started blocked
+   on a dead dependency.
 
 ---
 

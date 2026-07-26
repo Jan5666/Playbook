@@ -96,10 +96,33 @@ async function cdp(ws, method, params = {}, id = Math.floor(Math.random() * 1e9)
     ws.addEventListener('message', on); ws.send(JSON.stringify({ id, method, params }));
   });
 }
+// Transient CDP failures, NOT page failures. Chrome creates an execution context
+// for the initial about:blank and destroys it when the harness URL commits, so an
+// evaluate issued in that window dies with "Execution context was destroyed"
+// before the page has done anything wrong. We attach as soon as /json lists the
+// target -- which is exactly that window -- so the race is structural, not
+// unlucky: on a slow or loaded machine it reproduces every run. This retry is the
+// one verify-refresh-behavior.mjs (the mount gate) has always had; GAPS.md #12(b)
+// is propagating it to the harnesses that were left flaky without it.
+//
+// Only the transient CDP error is retried, NEVER a page exception: that is a real
+// failure, and re-running an expression with side effects would be wrong. Retrying
+// the transient case is safe because a destroyed context ran nothing.
+const TRANSIENT_CDP = /context was destroyed|Cannot find context|Execution context with given id not found|Inspected target navigated or closed/i;
 async function evals(ws, expr, timeout = 20000) {
-  const r = await cdp(ws, 'Runtime.evaluate', { expression: `(async()=>{${expr}})()`, awaitPromise: true, returnByValue: true, timeout });
-  if (r.exceptionDetails) throw new Error('page exception: ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-  return r.result.value;
+  let last;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await cdp(ws, 'Runtime.evaluate', { expression: `(async()=>{${expr}})()`, awaitPromise: true, returnByValue: true, timeout });
+      if (r.exceptionDetails) throw new Error('page exception: ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
+      return r.result.value;
+    } catch (e) {
+      last = e;
+      if (!TRANSIENT_CDP.test(String((e && e.message) || e))) throw e;
+      await sleep(300 * (attempt + 1));
+    }
+  }
+  throw last;
 }
 async function shot(ws, name) {
   const r = await cdp(ws, 'Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });

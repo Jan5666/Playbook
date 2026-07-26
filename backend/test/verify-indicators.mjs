@@ -24,9 +24,21 @@ const PORT = 9917;
 const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png' };
 
+// Ribbon items for Part B2. Hero takes ONLY onOpenDetail as a prop — ribbonItems,
+// ribbonMode and prices are all self-subscribed from PBStore (app.js:3542-3544)
+// since Phase 3 inc 2. PBStore.configureSettings seeds the settings slice from
+// localStorage at app.js EVAL time, so these have to be in storage before the
+// app.js <script> runs; passing them as props (as this harness used to) is a
+// silent no-op. GAPS.md #12(a).
+const RIBBON_TEST_ITEMS = ['US:^SPX', 'US:^TNX', 'MACRO:CPI', 'MACRO:FNG', 'US:^DJT'];
+
 const HARNESS_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ind-harness</title>
 <link rel="stylesheet" href="/styles.css"></head><body>
 <div id="test"></div>
+<script>try{
+  localStorage.setItem('pb.ribbonItems.v1', ${JSON.stringify(JSON.stringify(RIBBON_TEST_ITEMS))});
+  localStorage.setItem('pb.ribbonMode.v1', '"rows"');
+}catch(e){}</script>
 <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="/pb-core.js"></script>
@@ -55,10 +67,33 @@ async function cdp(ws, method, params = {}, id = Math.floor(Math.random() * 1e9)
     ws.addEventListener('message', on); ws.send(JSON.stringify({ id, method, params }));
   });
 }
+// Transient CDP failures, NOT page failures. Chrome creates an execution context
+// for the initial about:blank and destroys it when the harness URL commits, so an
+// evaluate issued in that window dies with "Execution context was destroyed"
+// before the page has done anything wrong. We attach as soon as /json lists the
+// target -- which is exactly that window -- so the race is structural, not
+// unlucky: on a slow or loaded machine it reproduces every run. This retry is the
+// one verify-refresh-behavior.mjs (the mount gate) has always had; GAPS.md #12(b)
+// is propagating it to the harnesses that were left flaky without it.
+//
+// Only the transient CDP error is retried, NEVER a page exception: that is a real
+// failure, and re-running an expression with side effects would be wrong. Retrying
+// the transient case is safe because a destroyed context ran nothing.
+const TRANSIENT_CDP = /context was destroyed|Cannot find context|Execution context with given id not found|Inspected target navigated or closed/i;
 async function evalAsync(ws, expr, timeout = 120000) {
-  const r = await cdp(ws, 'Runtime.evaluate', { expression: `(async()=>{${expr}})()`, awaitPromise: true, returnByValue: true, timeout });
-  if (r.exceptionDetails) throw new Error('page exception: ' + JSON.stringify(r.exceptionDetails).slice(0, 500));
-  return r.result.value;
+  let last;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await cdp(ws, 'Runtime.evaluate', { expression: `(async()=>{${expr}})()`, awaitPromise: true, returnByValue: true, timeout });
+      if (r.exceptionDetails) throw new Error('page exception: ' + JSON.stringify(r.exceptionDetails).slice(0, 500));
+      return r.result.value;
+    } catch (e) {
+      last = e;
+      if (!TRANSIENT_CDP.test(String((e && e.message) || e))) throw e;
+      await sleep(300 * (attempt + 1));
+    }
+  }
+  throw last;
 }
 
 let chrome, userDir, failures = 0;
@@ -230,11 +265,13 @@ try {
   console.log('\nPart B2 — <Hero> ribbon pill is clickable:');
   const d = await evalAsync(ws, `
     let opened = null;
-    const items = ['US:^SPX','US:^TNX','MACRO:CPI','MACRO:FNG','US:^DJT'];
-    const prices = { 'US:^TNX': { price: 4.45, changePct: 0.3 }, 'MACRO:CPI': { price: 3.1, changePct: 0.0 } };
+    // ribbonItems + ribbonMode were seeded into localStorage before app.js ran
+    // (see RIBBON_TEST_ITEMS). Prices live in the store, not localStorage, so they
+    // go in through the store. Hero reads all three itself; only onOpenDetail is a prop.
+    PBStore.mergePrices({ 'US:^TNX': { price: 4.45, changePct: 0.3 }, 'MACRO:CPI': { price: 3.1, changePct: 0.0 } });
     const el = document.getElementById('test');
     const root = ReactDOM.createRoot(el);
-    root.render(React.createElement(Hero, { prices, ribbonItems: items, ribbonMode: 'rows', onOpenDetail: (t,m)=>{ opened = [t,m]; } }));
+    root.render(React.createElement(Hero, { onOpenDetail: (t,m)=>{ opened = [t,m]; } }));
     await new Promise(r=>setTimeout(r, 300));
     const pills = Array.from(document.querySelectorAll('.ribbon-pill-tappable'));
     const labels = pills.map(p => (p.querySelector('.ribbon-pill-label')||{}).textContent);

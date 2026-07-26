@@ -3639,10 +3639,17 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove, onRemoveMany }
 // underweight holdings first; any surplus beyond what's needed to reach target
 // is spread across holdings by target weight so the structure keeps holding.
 function TFSABalancer({ positions, onBuyPosition }) {
-  const { usePersistedState, Icon, fmt, prettyName } = window.PBApp;
+  const { Icon, fmt, prettyName } = window.PBApp;
   const prices = PBStore.usePricesMap();
-  const [targets, setTargets] = usePersistedState('pb.tfsa.targets.v1', {});
-  const [contribution, setContribution] = usePersistedState('pb.tfsa.contribution.v1', '');
+  // Durable user-entered planning data, so these live in PORTFOLIO_SCHEMA rather than
+  // raw usePersistedState (which is for view-local UI state only). PORTFOLIO_SCHEMA and
+  // not SETTINGS_SCHEMA because setTarget below passes an UPDATER FN, which
+  // setCollection accepts and setSetting does not. Same keys + same stored shapes as
+  // before, so cloud backup is unchanged.
+  const targets = PBStore.useCollection('tfsaTargets');
+  const setTargets = v => PBStore.setCollection('tfsaTargets', v);
+  const contribution = PBStore.useCollection('tfsaContribution');
+  const setContribution = v => PBStore.setCollection('tfsaContribution', v);
   const [editing, setEditing] = useState(false);
 
   const rows = positions.map(p => {

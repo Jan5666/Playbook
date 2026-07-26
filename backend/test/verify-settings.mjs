@@ -86,10 +86,33 @@ async function cdp(ws, method, params = {}, id = Math.floor(Math.random() * 1e9)
     ws.addEventListener('message', on); ws.send(JSON.stringify({ id, method, params }));
   });
 }
+// Transient CDP failures, NOT page failures. Chrome creates an execution context
+// for the initial about:blank and destroys it when the harness URL commits, so an
+// evaluate issued in that window dies with "Execution context was destroyed"
+// before the page has done anything wrong. We attach as soon as /json lists the
+// target -- which is exactly that window -- so the race is structural, not
+// unlucky: on a slow or loaded machine it reproduces every run. This retry is the
+// one verify-refresh-behavior.mjs (the mount gate) has always had; GAPS.md #12(b)
+// is propagating it to the harnesses that were left flaky without it.
+//
+// Only the transient CDP error is retried, NEVER a page exception: that is a real
+// failure, and re-running an expression with side effects would be wrong. Retrying
+// the transient case is safe because a destroyed context ran nothing.
+const TRANSIENT_CDP = /context was destroyed|Cannot find context|Execution context with given id not found|Inspected target navigated or closed/i;
 async function evals(ws, expr, timeout = 20000) {
-  const r = await cdp(ws, 'Runtime.evaluate', { expression: `(async()=>{${expr}})()`, awaitPromise: true, returnByValue: true, timeout });
-  if (r.exceptionDetails) throw new Error('page exception: ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
-  return r.result.value;
+  let last;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await cdp(ws, 'Runtime.evaluate', { expression: `(async()=>{${expr}})()`, awaitPromise: true, returnByValue: true, timeout });
+      if (r.exceptionDetails) throw new Error('page exception: ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails));
+      return r.result.value;
+    } catch (e) {
+      last = e;
+      if (!TRANSIENT_CDP.test(String((e && e.message) || e))) throw e;
+      await sleep(300 * (attempt + 1));
+    }
+  }
+  throw last;
 }
 async function shot(ws, name) {
   const r = await cdp(ws, 'Page.captureScreenshot', { format: 'png' });
@@ -197,9 +220,15 @@ try {
   await shot(ws, 'alerts-menu');
 
   // Scroll the notifications menu up and down — must move and settle correctly.
+  // The scroll container is `.modal-panel > .modal-body` (styles.css:915 —
+  // `overflow-y: auto`), NOT `.modal-panel`, which is a non-scrolling flex column.
+  // This used to query `.modal-panel`, so `scrollHeight - clientHeight` was always
+  // 0 and `scrollTop = N` was always a no-op: the overflow assertion could never
+  // pass in ANY environment, and its "scrolls back to top" partner passed
+  // vacuously (scrollTop was 0 because it never moved). GAPS.md #12(c).
   const scrollTest = await evals(ws, `
-    const sc = document.querySelector('.modal-panel');
-    if (!sc) return JSON.stringify({ err: 'no panel' });
+    const sc = document.querySelector('.modal-panel > .modal-body');
+    if (!sc) return JSON.stringify({ err: 'no modal body' });
     const overflow = sc.scrollHeight - sc.clientHeight;
     sc.scrollTop = sc.scrollHeight; await new Promise(r=>setTimeout(r,120));
     const down = sc.scrollTop;

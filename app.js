@@ -2688,6 +2688,12 @@ const PORTFOLIO_SCHEMA = [
   { name: 'transactions',    key: 'pb.transactions.v1',    default: [] },
   { name: 'contributions',   key: 'pb.contributions.v1',   default: [] },
   { name: 'tfsaDeposits',    key: 'pb.tfsa.deposits.v1',   default: [] },
+  // TFSA contribution-planner state. User-ENTERED planning data, not view-local UI
+  // state: target weights per holding and the amount being allocated. Both were
+  // written through raw usePersistedState from pb-views.js, so they rode cloud backup
+  // only by accident of the pb. prefix rule; schema'd here so that is deliberate.
+  { name: 'tfsaTargets',     key: 'pb.tfsa.targets.v1',    default: {} },
+  { name: 'tfsaContribution', key: 'pb.tfsa.contribution.v1', default: '' },
 ];
 PBStore.configureCollections({ schema: PORTFOLIO_SCHEMA, storage: LS });
 // Dashboard always stays available so the nav can never be emptied entirely.

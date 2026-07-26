@@ -3,9 +3,14 @@
 Companion to
 [`specs/2026-07-25-phase-5-indexeddb-storage-design.md`](../specs/2026-07-25-phase-5-indexeddb-storage-design.md).
 
-**Gated on Jan's decision.** Section 2 is the only part executed so far (it is safe under every option).
-Section 3 is the recommended-option build plan, written out so it is ready to run the moment Jan picks —
-but **not started**.
+**CLOSED 2026-07-26 — Jan chose Option A. Phase 5 will not be built.**
+
+Section 1 (the premise-check measurement) and Section 2 (the backup characterization pin, which
+landed and is valuable regardless) are the durable parts of this document. **Section 3 is a build
+plan for Option B that was never approved and must not be executed** — it is retained only as the
+record of what was scoped and rejected. See the
+[design spec](../specs/2026-07-25-phase-5-indexeddb-storage-design.md) for the decision and its
+evidence.
 
 ---
 
@@ -108,10 +113,12 @@ gate (money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers) green
 
 ---
 
-## 3. NOT STARTED — Option B build plan (churny blobs only)
+## 3. REJECTED — Option B build plan (churny blobs only) — DO NOT EXECUTE
 
-Written out so it is ready to execute on sign-off. **Do not start without Jan's decision** — it touches
-the storage substrate, and the spec recommends Option B only if he wants the boot-cost win.
+**Jan chose Option A on 2026-07-26; this plan was never approved and is now dead.** It is kept
+verbatim as the record of what Option B would have cost, so that anyone reopening the question
+starts from the real scope instead of re-deriving it. The bar for reopening is in the spec's
+appendix: the footprint script reporting materially more than ~1 MB on Jan's actual device.
 
 Scope: the four `BACKUP_SKIP` caches — `pb.prices.v1`, `pb.nameCache.v1`, `pb.heatmap.lastgood.v1`,
 `pb.rotation.lastgood.v1`. Rule #5 is untouched **by construction**: none of them ride cloud backup, so

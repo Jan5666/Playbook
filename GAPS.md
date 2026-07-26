@@ -194,13 +194,26 @@ plan (several items below are officially "owned" by that roadmap).*
 
 ## 9. localStorage is the database (D2)
 
-- **What**: **44** `pb.*` keys (not 40 — 22 are schema'd, 8 more live only in
-  `pb-views.js` via raw `usePersistedState`) through the synchronous `LS` adapter;
-  everything shares the ~5 MB quota.
-- **Severity**: **Low** (downgraded from Medium — see the correction below).
-- **Fix**: see `docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`.
-  **Awaiting Jan's decision between four options**; the spec recommends the narrow
-  one (churny `BACKUP_SKIP` blobs only) or closing Phase 5 outright.
+> **RESOLVED BY EVIDENCE 2026-07-26 — Phase 5 closed (Option A), Jan's decision.**
+> Not fixed by code: **measurement showed there was nothing to fix.** localStorage stays
+> the database. The full reasoning is in
+> [`specs/2026-07-25-phase-5-indexeddb-storage-design.md`](docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md);
+> the three corrections below are why. The one real action item to come out of it —
+> `pb.tfsa.targets.v1` + `pb.tfsa.contribution.v1` being user-entered data stored with the
+> view-local-UI idiom — was fixed separately by moving both into `PORTFOLIO_SCHEMA`
+> (2026-07-26). The remaining six unschema'd `pb-views.js` keys are genuinely view-local and
+> correctly stay as they are. **Reopen only if** the appendix footprint script in that spec
+> reports materially more than ~1 MB on Jan's real device.
+
+- **What**: **44** `pb.*` keys (not 40). **24** are schema'd as of 2026-07-26 (was 22 — the two
+  TFSA planning keys joined `PORTFOLIO_SCHEMA`); the remaining **6** live only in
+  `pb-views.js` via raw `usePersistedState`, correctly, being view-local UI state through the synchronous `LS` adapter;
+  everything shares the ~5 MB quota. Measured usage: **261 KB = 5.1%** of that quota.
+- **Severity**: **Low** (downgraded from Medium — see the correction below). Now closed.
+- **Fix**: **none needed.** Both original justifications failed measurement (1 and 2 below)
+  and the migration was never as cheap as this entry implied (3 below). The residual
+  boot-cost win Option B offered (~190 KB less synchronous parse at startup) was weighed
+  and declined while app-open performance is acceptable.
 
 **Correction (2026-07-25, Phase 5 spec).** This entry used to claim "a hard size
 ceiling as transactions/history grow, and total data loss on Safari eviction if
@@ -260,7 +273,8 @@ What the debounce *did* get wrong was durability, and inc-37 fixed all three:
 The logic now lives in `PBStore.createWriteScheduler` (`pb-store.js`), pinned by
 `backend/test/write-scheduler.test.mjs` (36 tests on a fake clock, including a
 7-scenario characterization matrix proving the quiet-period timing is unchanged).
-**The interim task is closed**; only the Phase 5 IndexedDB work remains.
+**The interim task is closed**; the Phase 5 IndexedDB work is closed too (see the
+resolution note at the top of this entry), so **this entry is fully closed**.
 
 ## 10. Perf debt inside the monolith: memoization is thin
 
@@ -289,6 +303,53 @@ The logic now lives in `PBStore.createWriteScheduler` (`pb-store.js`), pinned by
   files listed below".
 
 ## 12. Stale/flaky test debt in the browser harnesses
+
+> **FIXED 2026-07-26** (branch `claude/refactor-plan-phase-5-3n3fvo`): all three tasks done,
+> each verified against a **pristine `HEAD`** baseline first so a container artifact could not
+> be mistaken for a real defect. That discipline mattered — see (b).
+>
+> **(a) `verify-indicators` Part B2.** Confirmed exactly as described: `Hero` takes **only**
+> `onOpenDetail` as a prop (`app.js:3538-3544`) and self-subscribes `ribbonItems`, `ribbonMode`
+> **and** `prices` from `PBStore`, so all three props the harness passed were silently ignored.
+> Baseline printed `pills: ["S&P","VIX"]` — the schema **defaults**, not the 5 items under test.
+> Since `PBStore.configureSettings` seeds from localStorage at app.js **eval** time, the fix is
+> an inline `<script>` in the harness shell that writes `pb.ribbonItems.v1` + `pb.ribbonMode.v1`
+> **before** the app.js `<script>`; prices go in through `PBStore.mergePrices` (they live in the
+> store, not localStorage). Now prints all 5 pills and the CPI click fires
+> `onOpenDetail("CPI","MACRO")`. **13 FAILs → 11**, exactly the 2 ribbon ones. (The other 11 are
+> FRED/macro network failures in this container, not stale tests — untouched.)
+>
+> **(b) The CDP "Execution context destroyed" race — root-caused, and the fix already existed.**
+> Not really a flake: Chrome creates an execution context for the initial `about:blank` and
+> destroys it when the harness URL commits, and every harness attaches as soon as `/json` lists
+> the target — *exactly* that window. So it is **structural**, and on a loaded machine it
+> reproduces every run (pristine `verify-indicators` failed **3/3** here before any change —
+> which is also what exonerated the (a) edit when it appeared to have broken the run).
+> **`verify-refresh-behavior.mjs` — the one harness CLAUDE.md calls reliable — has carried this
+> exact retry all along**, with the same diagnosis in its comment; it was simply never
+> propagated. That retry is now standardized across **16** harnesses (each keeping its own
+> timeout default and `exceptionDetails` formatting): 3 attempts, escalating backoff, and it
+> retries **only** the transient CDP error, never a page exception — re-running an expression
+> with side effects would be wrong, while a destroyed context ran nothing. The mount gate is
+> deliberately **left untouched** (already correct, and it is the one harness that must not
+> break); `verify-cloud-backup.mjs` has no CDP. Result: `verify-indicators` completes 3/3 where
+> it previously died 3/3; mount gate still **ALL PASSED**; `verify-watchlist` ALL PASSED;
+> `verify-modals` completes. **Honest limit:** a flake fix cannot be *proven* by sampling —
+> `verify-sector-weights` failed 1 of 2 pristine runs and passes 2/2 now, which is suggestive,
+> not conclusive. The `verify-indicators` 3/3-to-3/3 flip is the hard evidence.
+>
+> **(c) The stale `verify-settings` assertion — it could never have passed.** The scroll
+> container is `.modal-panel > .modal-body` (`styles.css:915`, `overflow-y: auto`), **not**
+> `.modal-panel`, which is a non-scrolling flex column. Querying the panel meant
+> `scrollHeight - clientHeight` was **always 0** and `scrollTop = N` was **always a no-op**, in
+> every environment — and the partner assertion "menu scrolls back to top" was therefore passing
+> **vacuously** (`scrollTop === 0` because it never moved), which this entry had not noticed.
+> Retargeted at the real scroller: baseline `{overflow:0,down:0,up:0}` → `{overflow:691,down:691,up:0}`,
+> both assertions now meaningful. `verify-settings` **2 FAILs → 1**; the remaining "app mounted"
+> failure is pre-existing in this container and out of scope.
+>
+> Test-only change — no shipped file touched, so **no `CACHE_NAME` bump owed** (`sw.js` stays
+> **v88**). Node suite unaffected: **33/33**, money gate green.
 
 - **What**: (a) `verify-indicators.mjs` Part B2 fails on baseline — it passes
   `ribbonItems` as a prop, but Hero self-subscribes via
@@ -325,8 +386,40 @@ The logic now lives in `PBStore.createWriteScheduler` (`pb-store.js`), pinned by
 > is now pinned by a guard that fails if the two ever diverge again; the legacy branch
 > is covered properly by the new suite. That harness stays the authority on the
 > AES-GCM/PBKDF2 crypto, which is its real subject. Test-only change — no `CACHE_NAME`
-> bump owed. **Still open in this entry**: Hot Topics date math (`hotToDate`/`hotDayDiff`)
-> and `describeOutcome` coverage. (The FX ladder sub-item is closed by gap #7.)
+> bump owed. (The FX ladder sub-item is closed by gap #7.)
+>
+> **FULLY FIXED 2026-07-26** (branch `claude/refactor-plan-phase-5-3n3fvo`): the last two
+> sub-items are done, both using the same `node:vm` source-slice pattern (suite **31 → 33**).
+>
+> **`backend/test/hot-topics-dates.test.mjs`** (8 tests) pins `hotToDate`/`hotDayDiff`/
+> `hotDateKey` on the two traps they actually sit on. (a) **UTC-offset day rolling**: the
+> source comment says `hotDateKey` must never use `toISOString()`, because local midnight
+> of the 26th is 22:00 UTC on the 25th in SAST (UTC+2) — Jan's own zone — so ISO formatting
+> would render every event a day early. Nothing enforced that; now a guard rejects
+> `toISOString` in the block (checking code, not the warning comment) and the round-trip is
+> re-run in **three zones** by re-spawning the file with `TZ` set (Africa/Johannesburg, UTC,
+> America/Los_Angeles). (b) **DST**: `hotDayDiff` divides a ms delta by 86,400,000 and
+> **rounds**. Verified empirically that 2026-03-08→09 is a **23-hour** day in US Pacific
+> (0.958 days) and 2026-11-01→02 is **25** — so `Math.floor` would report tomorrow's
+> earnings as **"today"**. That rounding is now pinned in both directions. `hotDayDiff` reads
+> `new Date()` internally with no injection seam, so the vm context gets a `Date` **subclass**
+> frozen at a chosen instant — real timezone/DST arithmetic, fixed "now". Also pinned as
+> characterization: the regex validates **shape, not range**, so `'2026-13-01'` is accepted
+> and rolls into 2027 — current behaviour, recorded so adding validation is a deliberate act.
+>
+> **`backend/test/describe-outcome.test.mjs`** (18 tests) pins the 14 parameterized branches
+> (`1 position` vs `2 positions`, `entry`/`entries`, the `list === 'default'` fork, the
+> `isIOS` fork, the `detail || 'error'` and `status || '?'` fallbacks — including that
+> `status: 0` is falsy and falls back) plus the four non-ASCII copy strings, asserted via
+> `\uXXXX` escapes so a re-encoding of `app.js` fails loudly. Its real value is the
+> **bidirectional correspondence guard**: a returned code with no `case` is a *silent missing
+> toast* (the action works, the user sees nothing) and a `case` with no producer is dead copy,
+> and neither is visible from either file alone. **Honest read-out: this one found nothing** —
+> 37 producers, 37 cases, zero orphans both ways. Unlike the backup suite it pins a clean
+> state rather than fixing a broken one. Two apparent orphans were investigated and are not
+> orphans: `position-added`/`shares-added` come from a **ternary** at `app.js:2212`, which is
+> why the extractor captures the whole `code:` expression rather than a quoted literal.
+> **This entry is now closed.**
 
 - **What**: pure logic *outside* the extracted modules is untested: the FX fetch
   ladder (gap #7), `gatherBackup`/`applyBackup` round-trip, the backup crypto
