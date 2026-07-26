@@ -194,13 +194,25 @@ plan (several items below are officially "owned" by that roadmap).*
 
 ## 9. localStorage is the database (D2)
 
+> **RESOLVED BY EVIDENCE 2026-07-26 — Phase 5 closed (Option A), Jan's decision.**
+> Not fixed by code: **measurement showed there was nothing to fix.** localStorage stays
+> the database. The full reasoning is in
+> [`specs/2026-07-25-phase-5-indexeddb-storage-design.md`](docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md);
+> the three corrections below are why. The one real action item to come out of it —
+> `pb.tfsa.targets.v1` + `pb.tfsa.contribution.v1` being user-entered data stored with the
+> view-local-UI idiom — was fixed separately by moving both into `PORTFOLIO_SCHEMA`
+> (2026-07-26). The remaining six unschema'd `pb-views.js` keys are genuinely view-local and
+> correctly stay as they are. **Reopen only if** the appendix footprint script in that spec
+> reports materially more than ~1 MB on Jan's real device.
+
 - **What**: **44** `pb.*` keys (not 40 — 22 are schema'd, 8 more live only in
   `pb-views.js` via raw `usePersistedState`) through the synchronous `LS` adapter;
-  everything shares the ~5 MB quota.
-- **Severity**: **Low** (downgraded from Medium — see the correction below).
-- **Fix**: see `docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`.
-  **Awaiting Jan's decision between four options**; the spec recommends the narrow
-  one (churny `BACKUP_SKIP` blobs only) or closing Phase 5 outright.
+  everything shares the ~5 MB quota. Measured usage: **261 KB = 5.1%** of that quota.
+- **Severity**: **Low** (downgraded from Medium — see the correction below). Now closed.
+- **Fix**: **none needed.** Both original justifications failed measurement (1 and 2 below)
+  and the migration was never as cheap as this entry implied (3 below). The residual
+  boot-cost win Option B offered (~190 KB less synchronous parse at startup) was weighed
+  and declined while app-open performance is acceptable.
 
 **Correction (2026-07-25, Phase 5 spec).** This entry used to claim "a hard size
 ceiling as transactions/history grow, and total data loss on Safari eviction if
@@ -260,7 +272,8 @@ What the debounce *did* get wrong was durability, and inc-37 fixed all three:
 The logic now lives in `PBStore.createWriteScheduler` (`pb-store.js`), pinned by
 `backend/test/write-scheduler.test.mjs` (36 tests on a fake clock, including a
 7-scenario characterization matrix proving the quiet-period timing is unchanged).
-**The interim task is closed**; only the Phase 5 IndexedDB work remains.
+**The interim task is closed**; the Phase 5 IndexedDB work is closed too (see the
+resolution note at the top of this entry), so **this entry is fully closed**.
 
 ## 10. Perf debt inside the monolith: memoization is thin
 

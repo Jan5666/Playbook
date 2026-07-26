@@ -15,13 +15,23 @@ notifications properly, and (4) prepare for future broker integrations (EasyEqui
 >
 > | Refactor item (still open) | How this roadmap relates |
 > |---|---|
-> | Phase 4: first view/modal component split (+ deferred Vite decision) | Independent. Nothing here requires a build step; nothing here forbids one. |
-> | Phase 5: IndexedDB behind a cache interface | **Prerequisite-aligned**: Roadmap Phase 3's iOS storage work *is* refactor Phase 5 — do it once, there. |
+> | Phase 4: view/modal component split (+ deferred Vite decision) | **DONE** (increments 7–35; bridge at its verified 38-member floor). No build step was needed after all. |
+> | Phase 5: IndexedDB behind a cache interface | **CLOSED 2026-07-26 — will not be built.** Measurement killed both justifications (261 KB = 5.1% of budget, no ceiling; and ITP evicts IndexedDB too, so it does not fix eviction). **This roadmap no longer has a storage prerequisite** — see the note below. |
 > | Phase 5 (optional): "shared quote-cache in Worker → retire public proxies" | **Formalized here** as Roadmap Phase 1. Same idea, now with a concrete design. |
 >
-> Sequencing rule: start Roadmap Phase 1 only after the refactor phases Jan wants
-> done are merged. Where a roadmap task and a refactor task overlap (noted inline),
-> the refactor task is the canonical home for the work.
+> **The refactor is complete as of 2026-07-26, so this roadmap is unblocked.** The old
+> sequencing rule ("start Roadmap Phase 1 only after the refactor phases Jan wants done are
+> merged") is satisfied.
+>
+> ⚠️ **Storage-work ownership changed.** This document was written assuming refactor Phase 5
+> was the canonical home for any IndexedDB work, so Roadmap Phase 3 deferred its iOS storage
+> item to it. **Phase 5 is closed and that home no longer exists**, so **Roadmap Phase 3 now
+> owns its own storage work outright** — and it should start from the same evidence that closed
+> Phase 5 (`docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`): there is
+> no size ceiling to design around, and moving substrate does **not** buy eviction resistance.
+> In practice the storage items below reduce to quota-error handling and diagnostics, not a
+> migration. Do not reintroduce an IndexedDB migration here without re-running that spec's
+> appendix footprint script on Jan's real device first.
 
 ---
 
@@ -308,8 +318,9 @@ KV blob → **D1** (SQLite) or Durable Objects via the existing Worker.
 
 ### 2.4 Sync semantics (design once, on paper, before code)
 
-- Offline-first: local store (localStorage now; IndexedDB after refactor Phase 5)
-  remains the source of truth; sync is an async mirror.
+- Offline-first: the local store (**localStorage — permanently; refactor Phase 5's
+  IndexedDB migration was evaluated and closed 2026-07-26**) remains the source of truth;
+  sync is an async mirror. Design against a synchronous local store, not a future async one.
 - Per-slice versioned rows + `updated_at` last-write-wins is sufficient for one
   human on ≤3 devices; document the conflict rule and surface "synced Ns ago" in
   the existing refresh-chip pattern. No CRDTs unless real conflicts get reported.
@@ -359,9 +370,15 @@ not a build-from-scratch.
   - Current shell precache is ~1.3MB (fits with 40× headroom). Add a CI guard:
     fail deploy if `_site` total exceeds e.g. 10MB, so a future asset doesn't
     silently blow the budget.
-  - Churny/large data (price history, name/sector caches, transactions) moves to
-    IndexedDB **in refactor Phase 5** (canonical home for that work); wrap all
-    quota writes in `QuotaExceededError` handling that degrades to in-memory.
+  - ~~Churny/large data (price history, name/sector caches, transactions) moves to
+    IndexedDB **in refactor Phase 5**~~ — **dropped 2026-07-26.** Refactor Phase 5 is
+    closed and there is no quota pressure to relieve: the whole app measures **261 KB =
+    5.1%** of the 5 MB budget, and the churny blobs are bounded by construction at
+    ~160 KB (keyed by exchange, and there are 9). What survives from this bullet and is
+    still worth doing: wrap all quota writes in `QuotaExceededError` handling that
+    degrades to in-memory. (`LS.set` already returns `false` rather than throwing on
+    quota failure — pinned by `backend/test/backup-roundtrip.test.mjs` — so this is about
+    the paths that bypass `LS`.)
   - Add a Settings → diagnostics line using `navigator.storage.estimate()`.
   - Note: since iOS 17, *browser-tab* site data can be evicted after inactivity,
     but **installed home-screen apps are exempt from the 7-day eviction** — one
@@ -472,14 +489,20 @@ remains fully functional as the fallback.
 ## Sequencing & dependency map
 
 ```
-Refactor Phase 4 (component split) ──► finish first (Jan's call on timing)
-Refactor Phase 5 (IndexedDB)       ──► shared prerequisite ─┐
+Refactor Phase 4 (component split) ──► DONE (inc 7-35, bridge at its 38-member floor)
+Refactor Phase 5 (IndexedDB)       ──► CLOSED, will not be built (no prerequisite remains)
+                                                            │
+                            ── the refactor is complete; nothing gates this roadmap ──
                                                             ▼
-Roadmap P1 (edge data plane + hardening)  ── independent, start any time after refactor
+Roadmap P1 (edge data plane + hardening)  ── UNBLOCKED, start any time
         │  (Worker exists; F8/F9 are day-one tasks)
         ▼
 Roadmap P3 (iOS push)      — needs P1's Worker deploy + hardening; small.
-Roadmap P2 (cloud sync)    — needs P1's platform decision (1.4) + auth choice; benefits from refactor P5.
+                             Owns its own storage items now (P5 is closed) — and they
+                             shrink to quota handling + diagnostics, not a migration.
+Roadmap P2 (cloud sync)    — needs P1's platform decision (1.4) + auth choice.
+                             Design against the synchronous localStorage store; the
+                             "benefits from refactor P5" note is void.
         ▼
 Roadmap P4 (brokers)       — needs P2's key management + P1's connector patterns. Last, by design.
 ```

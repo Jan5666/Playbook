@@ -1,10 +1,33 @@
-# Refactor status — Phase 4 modal/view extraction (living roadmap)
+# Refactor status — COMPLETE (final record)
 
-**Purpose:** the single doc a fresh chat reads to resume the refactor without re-deriving context.
-Keep it current at the end of each increment. Canonical detail lives in
-`docs/superpowers/{specs,plans}/`.
+> # ✅ THE REFACTOR IS DONE (2026-07-26)
+>
+> **Phases 0–4 are complete and verified. Phase 5 is CLOSED — Option A, resolved by evidence,
+> Jan's decision. There is no remaining refactor work, and none should be invented.**
+>
+> - **Phase 4** reached its floor: the `window.PBApp` bridge is **38 members**, audited
+>   member-by-member in inc-36. Every one is genuinely shared, root-`App`-consumed, or an
+>   impure reader coupled to `DATA`. There is no verbatim-move candidate left.
+> - **Phase 5** (IndexedDB) will **not** be built. Both justifications failed measurement:
+>   the app uses **261 KB = 5.1%** of a 5 MB budget (812 KB / 15.9% on a 5-year model, churny
+>   blobs bounded by construction), and Safari's ITP evicts IndexedDB too, so the swap does not
+>   buy eviction resistance. Evidence:
+>   [`specs/…phase-5-indexeddb-storage-design.md`](specs/2026-07-25-phase-5-indexeddb-storage-design.md).
+> - **GAPS #7, #9, and #13's backup half** are closed. **GAPS #12 and #13's remainder** closed
+>   in inc-39.
+>
+> **➡️ The next phase is [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md), which is now
+> unblocked** — its storage prerequisite pointed at Phase 5 and has been rewritten, so Roadmap
+> Phase 3 owns that work now, and it shrinks to quota handling + diagnostics, not a migration.
+>
+> **A fresh chat should not resume the refactor.** Read this banner, then go to
+> `SECURITY_ROADMAP.md` or `GAPS.md`. Everything below is the historical record of how the
+> refactor was executed and verified — useful for *why a seam exists*, not for *what to do next*.
 
-**Branch:** `claude/refactor-plan-continuation-qws8g3` (inc-38, off latest `origin/main` @ inc-37/PR #46).
+**Purpose:** originally the single doc a fresh chat read to resume the refactor; now the final
+record of it. Canonical detail lives in `docs/superpowers/{specs,plans}/`.
+
+**Branch:** `claude/refactor-plan-phase-5-3n3fvo` (inc-39, off latest `origin/main` @ inc-38/PR #47).
 **Jan reviews + lands; never push `main`, never open a PR.** Last landed on `main`: inc-37 the
 `pb.prices.v1` write scheduler (PR #46); before it inc-36 FX providers
 + the `pLimit`/de-dupe follow-up (PR #45); before it inc-35 `fetchSectorTrend` (PR #44); before it inc-34
@@ -387,10 +410,10 @@ across **both** buckets (`Icon`, `PriceBlock`, `fmt`, `timeAgo`, `prettyName`, `
 `parseCashFlowsFromText`/`parseCashFlowFile` cash-flow parsers blocked by the shared `loadScriptOnce` CDN
 loader). This was **verified member-by-member in inc-36**, not assumed — see the bridge-floor audit above.
 
-**What "continue the refactor" means from here.** With Phase 4 closed, GAPS #7 done (inc-36), the
-GAPS #9 interim task closed + corrected (inc-37), and **Phase 5 spec'd and now blocked on Jan
-(inc-38)**, there is **no unblocked refactor work left**. The list below is the record of how that was
-reached, in order of increasing size:
+**What "continue the refactor" means from here: nothing — it is finished.** Phase 4 is at its
+verified floor, GAPS #7 is done (inc-36), the GAPS #9 interim task is closed + corrected (inc-37),
+and **Phase 5 is closed outright (inc-39, Option A)**. The list below is the record of how that was
+reached, in order of increasing size — all three items are now struck through:
 
 1. ~~**The `pLimit`/de-dupe half of GAPS #7**~~ — **DONE** (inc-36 follow-up commit). The FX readers now
    share the app-wide `pLimit(8)` gate via a small `fxFetch` helper and collapse concurrent identical
@@ -414,26 +437,33 @@ reached, in order of increasing size:
    has been corrected to match. **Worth recording as a pattern: this is the third roadmap claim in a
    row (inc-33/34/35 corrected bridge-floor claims, inc-36 verified one, inc-37 corrects a GAPS one)
    that did not survive being checked. Check before building.**
-3. ~~**Phase 5 — IndexedDB behind the existing `LS`-shaped adapter**~~ — **SPEC'D (inc-38), now
-   awaiting Jan's decision.** It touches **rule #5**, so the roadmap required a spec + sign-off before
-   any code; that spec is
+3. ~~**Phase 5 — IndexedDB behind the existing `LS`-shaped adapter**~~ — **CLOSED 2026-07-26,
+   Option A, resolved by evidence (Jan's decision).** Spec'd in inc-38, and **its premise did not
+   survive being checked**; Jan reviewed the measurements and closed it in inc-39 rather than
+   building any of the four options. **No implementation code was ever written, and none should be.**
+   Recorded in
    [`specs/2026-07-25-phase-5-indexeddb-storage-design.md`](specs/2026-07-25-phase-5-indexeddb-storage-design.md)
-   and **its premise did not survive being checked** (see inc-38 below). No implementation code has been
-   written. **Jan picks between four options** — the spec recommends the narrow one (Option B, churny
-   `BACKUP_SKIP` blobs only) *if* he wants the boot-cost win, otherwise closing Phase 5 outright
-   (Option A).
+   (§5 now carries the answers to all five decision questions) and
+   [`plans/2026-07-25-phase-5-indexeddb-storage.md`](plans/2026-07-25-phase-5-indexeddb-storage.md)
+   (§3's Option B build plan is marked **rejected — do not execute**). Option B's boot-cost win
+   (~190 KB less synchronous parse at startup) was weighed and declined while app-open performance
+   is acceptable. The **one** durable action item from the spec was accepted and done separately in
+   inc-39: the two unschema'd TFSA planning keys moved into `PORTFOLIO_SCHEMA`.
 
 **Then** the next phase is [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md) (the post-refactor
-security/platform plan) — start it only when Jan calls the refactor phase done. Note that roadmap's own
-sequencing rule points back here: refactor Phase 5 is a prerequisite for its storage work.
+security/platform plan). **Jan called the refactor done on 2026-07-26, so it is unblocked.** That
+roadmap's sequencing rule used to point back here — refactor Phase 5 as the canonical home for its
+storage work — and **that reference has been rewritten** (`:19`, `:311`, `:363`, `:476`): Roadmap
+Phase 3 now owns its storage items, and with Phase 5's measurements in hand they shrink to
+`QuotaExceededError` handling + a diagnostics line, not a migration.
 
-**A fresh chat arriving here should read this first.** As of inc-38 there is **no unblocked refactor
-work**: Phase 4 is at its verified bridge floor, GAPS #7 and the GAPS #9 interim task are closed, and
-Phase 5 is spec'd but **waiting on a decision from Jan** (four options, §3 of the spec — do not start
-implementing any of them unprompted; the gate is deliberate and rule #5 is why). If Jan has not yet
-decided, the useful work is elsewhere: the highest-value items are at the top of
-[`GAPS.md`](../../GAPS.md) — #12 (stale/flaky browser-harness debt, three tiny tasks) and the remainder
-of #13 (Hot Topics date math, `describeOutcome` coverage) are both unblocked and self-contained.
+**A fresh chat arriving here should read the banner at the top of this file and then leave.** The
+refactor is complete: Phase 4 is at its verified bridge floor, GAPS #7 / #9 / #12 / #13 are closed,
+and Phase 5 is closed by evidence. **Do not start a Phase 5 implementation** — not Option B, not any
+of them; the measurements that killed it are in the spec, and the bar for reopening is that spec's
+appendix footprint script reporting materially more than ~1 MB on Jan's real device. The useful work
+now lives in [`SECURITY_ROADMAP.md`](../../SECURITY_ROADMAP.md), with any residue in
+[`GAPS.md`](../../GAPS.md).
 
 **And the pattern worth carrying forward:** inc-33/34/35 each corrected an unverified bridge-floor
 claim, inc-36 verified one member-by-member, inc-37 corrected a GAPS premise, and inc-38 corrected

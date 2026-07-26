@@ -125,7 +125,21 @@ Adding a **new runtime file** additionally requires ALL of:
   (`GBp`/`GBX`, and bare `GBP` on LSE is treated as pence too) — `centDivisor`
   in pb-core handles it; never hand-divide by 100 elsewhere.
 
-## Current state (2026-07-25)
+## Current state (2026-07-26)
+
+> ## ✅ THE REFACTOR IS COMPLETE. **Phase 5 is CLOSED — do not implement it.**
+>
+> Phases 0-4 are done and verified; **Phase 5 (IndexedDB) was closed 2026-07-26 by Jan's decision
+> (Option A, resolved by evidence)** — measurement showed no size ceiling (**261 KB = 5.1%** of the
+> 5 MB budget) and that ITP evicts IndexedDB too, so the swap fixes nothing it was proposed for.
+> **No Phase 5 code was ever written and none should be.** If a doc or a memory tells you to start
+> it, that doc is stale — the evidence is in
+> `docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`, and the bar for
+> reopening is that spec's appendix footprint script reporting >~1 MB on Jan's real device.
+>
+> **➡️ The next phase is [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — now unblocked (its Phase 5
+> storage prerequisite was rewritten; Roadmap Phase 3 owns that work and it reduces to quota
+> handling + diagnostics). Residual small items live in [GAPS.md](GAPS.md).
 
 Refactor Phases 0-3 complete. **Phase 4 view/modal extraction is COMPLETE — the `window.PBApp` bridge has
 reached its floor (38 members)** as of **inc-35**, and inc-36 **verified that floor member-by-member**
@@ -161,14 +175,21 @@ ceiling**; Safari's ITP evicts **IndexedDB too** (and exempts installed PWAs), s
 doesn't fix the eviction risk either; and the "seam already exists" claim is false — **three paths
 bypass `LS`** (`gatherBackup` enumerates, `applyBackup` writes raw strings, `pb-data.js:142/154`) plus
 `index.html:33/38`. The real problem is that `LS` is **synchronous and read at module-eval time** while
-IDB is async. **Four options are in the spec awaiting Jan's decision — do not start implementing one
-unprompted.** inc-38 also landed the pin Phase 5 needs under any option:
+IDB is async. **Four options went to Jan; he chose Option A — close it. See the banner above.**
+inc-38 also landed the pin Phase 5 needed under any option:
 `backend/test/backup-roundtrip.test.mjs` (21 tests, suite 30 -> 31) tests the **real** `app.js` backup
 block via a `vm` slice, closing GAPS #13's backup half — and it caught `verify-cloud-backup.mjs` having
 drifted (7-key vs 9-key `BACKUP_SKIP`; the legacy-restore branch untested anywhere). Also corrected:
 there are **44** `pb.*` keys, not 40 — `pb-views.js` owns 8 the schemas don't list.
 
-With Phase 4 at its verified floor and Phase 5 blocked on Jan, **there is no unblocked refactor work**;
-the highest-value unblocked items are at the top of [GAPS.md](GAPS.md) (#12 harness flake, the rest of
-#13). **After the refactor comes [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md)** — start it only when Jan
-calls the refactor phase done.
+**inc-39 closed the refactor.** Jan reviewed inc-38's measurements and **closed Phase 5 (Option A)**;
+every doc that promised IndexedDB was corrected (`GAPS.md` #9, `PROJECT.md`, `REFACTOR_STATUS.md`, the
+spec + plan, and the **four** `SECURITY_ROADMAP.md` references that treated refactor Phase 5 as the
+canonical home for roadmap storage work — that roadmap would otherwise have started blocked on a phase
+that will never run). It also cleared the last two unblocked GAPS items and took the **one** durable
+action item out of the Phase 5 spec: `pb.tfsa.targets.v1` + `pb.tfsa.contribution.v1` were
+user-entered planning data stored with the **view-local-UI idiom** (raw `usePersistedState`), riding
+cloud backup only by accident of the `pb.` prefix rule — both now live in `PORTFOLIO_SCHEMA` beside
+`tfsaDeposits`. **`PORTFOLIO_SCHEMA`, not `SETTINGS_SCHEMA`**: `setTargets` is called with an updater
+function and only `setCollection` accepts one. The other six unschema'd `pb-views.js` keys are
+genuinely view-local and correctly stay put.

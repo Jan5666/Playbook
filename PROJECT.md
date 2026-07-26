@@ -51,7 +51,7 @@ accounts and no server-side plaintext.
 | UI | React 18.3.1 **UMD from unpkg CDN**, hand-written `React.createElement` — **no JSX, no build step** | The app must deploy by dragging a folder onto Netlify/GitHub Pages. No toolchain to install, no compile step to break. This constraint is deliberate and has been re-affirmed repeatedly during the refactor (the Vite decision is consciously deferred — see §5). |
 | Shared logic | Plain "classic scripts" with a **dual-mode footer** (`globalThis.X` for the browser + `module.exports` for Node/Worker) | Lets pure logic be unit-tested in Node and imported by the Cloudflare Worker while still loading via `<script src>` with zero tooling. |
 | State | Hand-rolled ~50-line store (`pb-store.js`) wired via `useSyncExternalStore` | A store was needed to stop whole-tree re-renders on every price batch; Zustand would have meant another CDN dependency. |
-| Persistence | `localStorage` under `pb.*` keys, one key per slice | Simple, synchronous, survives PWA restarts. 44 keys, measured at ~261 KB — **5.1% of the 5 MB budget**, so the long-assumed scaling limit is not near (GAPS.md #9 corrected 2026-07-25). IndexedDB (refactor Phase 5) is spec'd but gated on Jan's decision. |
+| Persistence | `localStorage` under `pb.*` keys, one key per slice | Simple, synchronous, survives PWA restarts. 44 keys, measured at ~261 KB — **5.1% of the 5 MB budget**, so the long-assumed scaling limit is not near (GAPS.md #9 corrected 2026-07-25). **IndexedDB was evaluated and rejected** (refactor Phase 5, closed 2026-07-26): no size ceiling to lift, and ITP evicts IndexedDB too. This is the permanent answer, not an interim one. |
 | Prices | Yahoo v8 chart API (unofficial) via 6 rotating public CORS proxies; Stooq fallback; FRED/Morningstar/RSS2JSON/Perplexity for indicators/funds/news | Free. No API keys for core function. The fragility and privacy cost of the public proxies is the top item on SECURITY_ROADMAP.md. |
 | Backend (optional) | Cloudflare Worker + KV + 1-min cron + dependency-free Web Push (RFC 8291/8292 implemented by hand in `backend/webpush.js`) | Free tier covers everything; iOS app-closed push is impossible from a static site. Deployed manually with `wrangler`, never by CI. |
 | Deploy | GitHub Pages via `.github/workflows/static.yml`, staging an **explicit allowlist** of runtime files into `_site/` | The workflow used to upload the whole repo, which once published a real secret. The allowlist + two guards (missing-asset, secret-leak) are the fix. |
@@ -219,16 +219,27 @@ without knowing the plan:
 - **Phase 3** (done): added `pb-store.js`; migrated prices, settings, and all 9
   portfolio slices; removed toast from the data layer; stabilized handler
   identities so `React.memo` bites on holdings rows.
-- **Phase 4** (in progress): content extraction into `pb-content.js` /
-  `pb-import.js` is **complete** (increments 1–6, all merged). **Next**: the first
-  real view/modal component split, which will force the deferred
-  Vite-vs-no-build decision.
-- **Phase 5** (spec'd 2026-07-25, **awaiting Jan's decision**): IndexedDB behind a
-  cache interface for churny blobs. The premise was measured before any code was
-  written and **the size-ceiling justification did not hold** (261 KB today = 5.1%
-  of budget; 812 KB on a 5-year model), nor does IndexedDB fix the Safari-eviction
-  justification. Four options, with a recommendation, are in
-  `docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`.
+- **Phase 4** (done): content extraction into `pb-content.js` / `pb-import.js`
+  (increments 1–6), then the view/modal split into `pb-views.js` (all 11 tab views +
+  the Heatmap and growth-chart clusters) and `pb-modals.js` (all 11 modals + the
+  detail/settings subtrees), reached across increments 7–35. Components read shared
+  `app.js` internals through the render-time `window.PBApp` bridge, which is at its
+  **verified floor of 38 members** (audited member-by-member in inc-36 — every one is
+  genuinely shared across both buckets, consumed by the root `App`, or an impure reader
+  coupled to `DATA`). The Vite-vs-no-build decision never had to be forced: the
+  dual-mode classic-script pattern carried the whole split with **no build step**.
+- **Phase 5** (**CLOSED 2026-07-26, resolved by evidence — Jan's decision**): would have
+  put IndexedDB behind a cache interface for churny blobs. **Not built, and should not
+  be.** The premise was measured before any code was written and neither justification
+  survived: there is no size ceiling (**261 KB today = 5.1%** of budget, 812 KB on a
+  5-year model, churny blobs bounded by construction at ~160 KB), and IndexedDB does not
+  fix the Safari-eviction risk (ITP evicts IndexedDB too; installed PWAs are exempt; the
+  encrypted cloud backup is the real mitigation). The migration was also not cheap —
+  `LS` is synchronous and read at module-eval time while IDB is async, so it meant a
+  boot-order rewrite plus edits to the backup path (rule #5). Full evidence and the four
+  options weighed: `docs/superpowers/specs/2026-07-25-phase-5-indexeddb-storage-design.md`.
+  **With Phase 5 closed the refactor is complete**; the next phase is
+  [SECURITY_ROADMAP.md](SECURITY_ROADMAP.md).
 
 Every increment follows the same ritual: brainstorm → spec → plan (both committed
 under `docs/superpowers/{specs,plans}/`) → implementation with tests → review. The
