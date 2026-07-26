@@ -303,6 +303,53 @@ resolution note at the top of this entry), so **this entry is fully closed**.
 
 ## 12. Stale/flaky test debt in the browser harnesses
 
+> **FIXED 2026-07-26** (branch `claude/refactor-plan-phase-5-3n3fvo`): all three tasks done,
+> each verified against a **pristine `HEAD`** baseline first so a container artifact could not
+> be mistaken for a real defect. That discipline mattered — see (b).
+>
+> **(a) `verify-indicators` Part B2.** Confirmed exactly as described: `Hero` takes **only**
+> `onOpenDetail` as a prop (`app.js:3538-3544`) and self-subscribes `ribbonItems`, `ribbonMode`
+> **and** `prices` from `PBStore`, so all three props the harness passed were silently ignored.
+> Baseline printed `pills: ["S&P","VIX"]` — the schema **defaults**, not the 5 items under test.
+> Since `PBStore.configureSettings` seeds from localStorage at app.js **eval** time, the fix is
+> an inline `<script>` in the harness shell that writes `pb.ribbonItems.v1` + `pb.ribbonMode.v1`
+> **before** the app.js `<script>`; prices go in through `PBStore.mergePrices` (they live in the
+> store, not localStorage). Now prints all 5 pills and the CPI click fires
+> `onOpenDetail("CPI","MACRO")`. **13 FAILs → 11**, exactly the 2 ribbon ones. (The other 11 are
+> FRED/macro network failures in this container, not stale tests — untouched.)
+>
+> **(b) The CDP "Execution context destroyed" race — root-caused, and the fix already existed.**
+> Not really a flake: Chrome creates an execution context for the initial `about:blank` and
+> destroys it when the harness URL commits, and every harness attaches as soon as `/json` lists
+> the target — *exactly* that window. So it is **structural**, and on a loaded machine it
+> reproduces every run (pristine `verify-indicators` failed **3/3** here before any change —
+> which is also what exonerated the (a) edit when it appeared to have broken the run).
+> **`verify-refresh-behavior.mjs` — the one harness CLAUDE.md calls reliable — has carried this
+> exact retry all along**, with the same diagnosis in its comment; it was simply never
+> propagated. That retry is now standardized across **16** harnesses (each keeping its own
+> timeout default and `exceptionDetails` formatting): 3 attempts, escalating backoff, and it
+> retries **only** the transient CDP error, never a page exception — re-running an expression
+> with side effects would be wrong, while a destroyed context ran nothing. The mount gate is
+> deliberately **left untouched** (already correct, and it is the one harness that must not
+> break); `verify-cloud-backup.mjs` has no CDP. Result: `verify-indicators` completes 3/3 where
+> it previously died 3/3; mount gate still **ALL PASSED**; `verify-watchlist` ALL PASSED;
+> `verify-modals` completes. **Honest limit:** a flake fix cannot be *proven* by sampling —
+> `verify-sector-weights` failed 1 of 2 pristine runs and passes 2/2 now, which is suggestive,
+> not conclusive. The `verify-indicators` 3/3-to-3/3 flip is the hard evidence.
+>
+> **(c) The stale `verify-settings` assertion — it could never have passed.** The scroll
+> container is `.modal-panel > .modal-body` (`styles.css:915`, `overflow-y: auto`), **not**
+> `.modal-panel`, which is a non-scrolling flex column. Querying the panel meant
+> `scrollHeight - clientHeight` was **always 0** and `scrollTop = N` was **always a no-op**, in
+> every environment — and the partner assertion "menu scrolls back to top" was therefore passing
+> **vacuously** (`scrollTop === 0` because it never moved), which this entry had not noticed.
+> Retargeted at the real scroller: baseline `{overflow:0,down:0,up:0}` → `{overflow:691,down:691,up:0}`,
+> both assertions now meaningful. `verify-settings` **2 FAILs → 1**; the remaining "app mounted"
+> failure is pre-existing in this container and out of scope.
+>
+> Test-only change — no shipped file touched, so **no `CACHE_NAME` bump owed** (`sw.js` stays
+> **v88**). Node suite unaffected: **33/33**, money gate green.
+
 - **What**: (a) `verify-indicators.mjs` Part B2 fails on baseline — it passes
   `ribbonItems` as a prop, but Hero self-subscribes via
   `PBStore.useSetting('ribbonItems')` since Phase 3 inc 2 and ignores the prop;
