@@ -338,8 +338,40 @@ resolution note at the top of this entry), so **this entry is fully closed**.
 > is now pinned by a guard that fails if the two ever diverge again; the legacy branch
 > is covered properly by the new suite. That harness stays the authority on the
 > AES-GCM/PBKDF2 crypto, which is its real subject. Test-only change — no `CACHE_NAME`
-> bump owed. **Still open in this entry**: Hot Topics date math (`hotToDate`/`hotDayDiff`)
-> and `describeOutcome` coverage. (The FX ladder sub-item is closed by gap #7.)
+> bump owed. (The FX ladder sub-item is closed by gap #7.)
+>
+> **FULLY FIXED 2026-07-26** (branch `claude/refactor-plan-phase-5-3n3fvo`): the last two
+> sub-items are done, both using the same `node:vm` source-slice pattern (suite **31 → 33**).
+>
+> **`backend/test/hot-topics-dates.test.mjs`** (8 tests) pins `hotToDate`/`hotDayDiff`/
+> `hotDateKey` on the two traps they actually sit on. (a) **UTC-offset day rolling**: the
+> source comment says `hotDateKey` must never use `toISOString()`, because local midnight
+> of the 26th is 22:00 UTC on the 25th in SAST (UTC+2) — Jan's own zone — so ISO formatting
+> would render every event a day early. Nothing enforced that; now a guard rejects
+> `toISOString` in the block (checking code, not the warning comment) and the round-trip is
+> re-run in **three zones** by re-spawning the file with `TZ` set (Africa/Johannesburg, UTC,
+> America/Los_Angeles). (b) **DST**: `hotDayDiff` divides a ms delta by 86,400,000 and
+> **rounds**. Verified empirically that 2026-03-08→09 is a **23-hour** day in US Pacific
+> (0.958 days) and 2026-11-01→02 is **25** — so `Math.floor` would report tomorrow's
+> earnings as **"today"**. That rounding is now pinned in both directions. `hotDayDiff` reads
+> `new Date()` internally with no injection seam, so the vm context gets a `Date` **subclass**
+> frozen at a chosen instant — real timezone/DST arithmetic, fixed "now". Also pinned as
+> characterization: the regex validates **shape, not range**, so `'2026-13-01'` is accepted
+> and rolls into 2027 — current behaviour, recorded so adding validation is a deliberate act.
+>
+> **`backend/test/describe-outcome.test.mjs`** (18 tests) pins the 14 parameterized branches
+> (`1 position` vs `2 positions`, `entry`/`entries`, the `list === 'default'` fork, the
+> `isIOS` fork, the `detail || 'error'` and `status || '?'` fallbacks — including that
+> `status: 0` is falsy and falls back) plus the four non-ASCII copy strings, asserted via
+> `\uXXXX` escapes so a re-encoding of `app.js` fails loudly. Its real value is the
+> **bidirectional correspondence guard**: a returned code with no `case` is a *silent missing
+> toast* (the action works, the user sees nothing) and a `case` with no producer is dead copy,
+> and neither is visible from either file alone. **Honest read-out: this one found nothing** —
+> 37 producers, 37 cases, zero orphans both ways. Unlike the backup suite it pins a clean
+> state rather than fixing a broken one. Two apparent orphans were investigated and are not
+> orphans: `position-added`/`shares-added` come from a **ternary** at `app.js:2212`, which is
+> why the extractor captures the whole `code:` expression rather than a quoted literal.
+> **This entry is now closed.**
 
 - **What**: pure logic *outside* the extracted modules is untested: the FX fetch
   ladder (gap #7), `gatherBackup`/`applyBackup` round-trip, the backup crypto
