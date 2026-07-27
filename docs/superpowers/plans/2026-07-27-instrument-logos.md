@@ -1173,12 +1173,45 @@ This is the only mechanism that catches a wrong-company logo. No status code, by
 
 Any mismatch: add or correct the ISIN in `tools/logo-sources.mjs` and re-run. **Do not proceed to Task 5 with an unreviewed sheet.**
 
-- [ ] **Step 8: Re-assert the anti-drift guard against the REAL orchestrator**
+- [ ] **Step 8: Strengthen and re-assert the anti-drift guard against the REAL orchestrator**
 
-Task 3's anti-drift test ran against a near-empty stub, so it passed vacuously. Now that `tools/build-logos.mjs` is real, the guard is meaningful for the first time.
+Task 3's anti-drift test ran against a near-empty stub, so it passed vacuously. Now that `tools/build-logos.mjs` is real, the guard matters for the first time — and Task 3's review proved the guard as written is too weak to rely on.
+
+**The demonstrated weakness:** the two regexes match one exact syntactic shape (`image-stock/${`, `logos/symbol/${`). A semantically identical reintroduction of the bug slips past both:
+
+```javascript
+const base = 'https://financialmodelingprep.com/image-stock/';
+return base + encodeURIComponent(ticker) + '.png';   // caught by neither regex
+```
+
+Replace the string-grep guard with a **structural** one that cannot be dodged by reformulating a string. Add to `backend/test/logo-collisions.test.mjs`:
+
+```javascript
+test('anti-drift: the orchestrator builds no logo URL of its own', () => {
+  // The Vail Resorts bug returns HTTP 200, so nothing downstream can catch it.
+  // The only defence is that build-logos.mjs never constructs a provider URL —
+  // every candidate must come from chainFor(), which enforces the market rule.
+  // Grepping for one string shape is dodgeable (proven in Task 3 review); assert
+  // the absence of provider hosts entirely, in any spelling.
+  const src = readFileSync(join(ROOT, 'tools', 'build-logos.mjs'), 'utf8');
+  const HOSTS = ['financialmodelingprep', 'assets.parqet.com', 'parqet.com', 'cryptocurrency-icons', 'jsdelivr'];
+  for (const h of HOSTS) {
+    assert.ok(!src.includes(h),
+      `build-logos.mjs names the provider host "${h}" — provider URLs must come from chainFor() only`);
+  }
+  // And it must actually import the resolver rather than rolling its own.
+  assert.match(src, /from\s+['"]\.\/logo-sources\.mjs['"]/,
+    'build-logos.mjs must import its candidates from logo-sources.mjs');
+  assert.match(src, /chainFor\s*\(/, 'build-logos.mjs must resolve candidates via chainFor()');
+});
+```
+
+Keep the two original regex assertions as well — they are cheap and catch the naive case early.
+
+**This constrains your orchestrator:** `tools/build-logos.mjs` must not contain any provider hostname. Issuer page URLs come from `ISSUERS[...].page`, and every fetchable candidate comes from `chainFor()`.
 
 Run: `node backend/test/logo-collisions.test.mjs`
-Expected: PASS — and specifically the `anti-drift` test now proves the real orchestrator builds no ticker-keyed URL of its own. Paste the output into the task report; a reviewer must be able to see this ran against the filled-in file, not the stub.
+Expected: PASS, now including the structural guard, against the real filled-in orchestrator. Paste the output into the task report so a reviewer can see it ran against the real file and not the stub.
 
 - [ ] **Step 9: Commit**
 
