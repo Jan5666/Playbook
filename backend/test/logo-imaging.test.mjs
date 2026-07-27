@@ -481,3 +481,62 @@ test('decodeRGBA collapses an undecodable PNG to null', () => {
 test('decodeRGBA returns null for a non-PNG', () => {
   assert.strictEqual(decodeRGBA(Buffer.from('definitely not a png')), null);
 });
+
+// --- whiteOnly / lumRange: catches "white logo for dark backgrounds" art that
+// bleed/needsBacking cannot see, since both only measure ink quantity/brightness,
+// never whether every opaque pixel is the SAME (white) colour. ---
+
+const WHITE_ON_CLEAR = (x, y) => (x > 20 && x < 100 && y > 20 && y < 100) ? [255, 255, 255, 255] : [0, 0, 0, 0];
+// NVDA-like: a flat, legible, non-white mid-luminance colour on transparency.
+// meanLum ~0.62 (measured NVDA meanLum=0.622), so it must NOT be flagged whiteOnly
+// even though a single flat fill also has lumRange 0 -- proves range alone can't trigger it.
+const FLAT_MID_LUM = (x, y) => (x > 20 && x < 100 && y > 20 && y < 100) ? [118, 185, 0, 255] : [0, 0, 0, 0];
+// A real multi-tone mark: three distinct opaque colours plus transparent padding.
+const MULTITONE = (x, y) => {
+  if (x >= 20 && x < 40 && y >= 20 && y < 40) return [200, 50, 50, 255];
+  if (x >= 40 && x < 60 && y >= 20 && y < 40) return [50, 50, 200, 255];
+  if (x >= 60 && x < 80 && y >= 20 && y < 40) return [50, 200, 50, 255];
+  return [0, 0, 0, 0];
+};
+
+test('pure-white opaque art on transparency is flagged whiteOnly', () => {
+  const a = analysePng(makePng(128, 128, WHITE_ON_CLEAR));
+  assert.ok(a.meanLum > 0.9, `expected bright, got ${a.meanLum}`);
+  assert.ok(a.lumRange < 0.05, `expected near-zero range, got ${a.lumRange}`);
+  assert.strictEqual(a.whiteOnly, true);
+});
+
+test('flat mid-luminance colour (NVDA-like) is not flagged whiteOnly', () => {
+  const a = analysePng(makePng(128, 128, FLAT_MID_LUM));
+  assert.ok(a.meanLum > 0.5 && a.meanLum < 0.7, `expected mid luminance, got ${a.meanLum}`);
+  // A single flat fill also has near-zero range -- this documents that low range
+  // ALONE is not the trigger; whiteOnly requires meanLum > 0.9 too.
+  assert.ok(a.lumRange < 0.05, `expected near-zero range (flat fill), got ${a.lumRange}`);
+  assert.strictEqual(a.whiteOnly, false, 'flat non-white colour must not be flagged');
+});
+
+test('normal multi-tone logo is not flagged whiteOnly', () => {
+  const a = analysePng(makePng(128, 128, MULTITONE));
+  assert.ok(a.lumRange > 0.05, `expected real range across tones, got ${a.lumRange}`);
+  assert.strictEqual(a.whiteOnly, false);
+});
+
+test('fully transparent art has lumRange 0 and does not crash', () => {
+  const a = analysePng(makePng(32, 32, () => [0, 0, 0, 0]));
+  assert.strictEqual(a.alphaCoverage, 0);
+  assert.strictEqual(a.lumRange, 0);
+  assert.strictEqual(a.whiteOnly, false);
+});
+
+test('lumRange is reported correctly for a known two-tone image', () => {
+  // 4x4: rows 0-1 opaque white (lum=1.0), row 2 opaque red (lum=0.2126), row 3 transparent.
+  const TWO_TONE = (x, y) => {
+    if (y < 2) return [255, 255, 255, 255];
+    if (y === 2) return [255, 0, 0, 255];
+    return [0, 0, 0, 0];
+  };
+  const a = analysePng(makePng(4, 4, TWO_TONE));
+  assert.strictEqual(a.alphaCoverage, 0.75, 'rows 0-2 of 4 are opaque');
+  // hand-computed: max lum (white) - min lum (red) = 1.0 - 0.2126 = 0.7874 -> 0.787
+  assert.strictEqual(a.lumRange, 0.787);
+});
