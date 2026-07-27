@@ -394,14 +394,28 @@ test('decode → encode round-trips pixel data exactly', () => {
   assert.deepStrictEqual(again.rgba, img.rgba);
 });
 
-test('encodeRGBA output survives a non-uniform gradient, exercising real filter math', () => {
-  // Uniform fills make every Paeth neighbour equal, which hides predictor bugs.
-  // A gradient gives a !== b !== c on most pixels.
-  const src = makePng(24, 24, (x, y) => [(x * 11) % 256, (y * 7) % 256, (x * y) % 256, 255]);
-  const a = decodeRGBA(src);
-  const b = decodeRGBA(encodeRGBA(a.w, a.h, a.rgba));
-  assert.deepStrictEqual(b.rgba, a.rgba);
-});
+// Test all five PNG scanline filters with a non-uniform gradient to ensure
+// predictors are correct. Uniform fills (like WHITE) make a === b === c for every
+// pixel, hiding predictor bugs. A gradient gives a !== b !== c on most pixels,
+// so each predictor produces a distinct result and wrong formulas cannot round-trip.
+for (const filter of [0, 1, 2, 3, 4]) {
+  test(`filter ${filter} reconstructs a non-uniform gradient exactly`, () => {
+    const paint = (x, y) => [(x * 11) % 256, (y * 7) % 256, (x * y) % 256, 255];
+    const src = makePng(24, 24, paint, { filter });
+    const img = decodeRGBA(src);
+    assert.ok(img, `filter ${filter} failed to decode`);
+    for (let y = 0; y < 24; y++) {
+      for (let x = 0; x < 24; x++) {
+        const o = (y * 24 + x) * 4;
+        const expected = paint(x, y);
+        assert.strictEqual(img.rgba[o], expected[0], `filter ${filter} R mismatch at ${x},${y}`);
+        assert.strictEqual(img.rgba[o + 1], expected[1], `filter ${filter} G mismatch at ${x},${y}`);
+        assert.strictEqual(img.rgba[o + 2], expected[2], `filter ${filter} B mismatch at ${x},${y}`);
+        assert.strictEqual(img.rgba[o + 3], expected[3], `filter ${filter} A mismatch at ${x},${y}`);
+      }
+    }
+  });
+}
 
 test('inkBox finds the mark and ignores transparent padding', () => {
   const img = decodeRGBA(makePng(100, 100, (x, y) =>
@@ -422,11 +436,22 @@ test('inkBox returns null for a fully transparent image', () => {
 });
 
 test('crop extracts exactly the requested region', () => {
-  const img = decodeRGBA(makePng(10, 10, (x) => [x * 25, 0, 0, 255]));
-  const c = crop(img, { x: 4, y: 0, w: 3, h: 2 });
+  const paint = (x, y) => [x * 25, y * 20, (x * y) % 256, 255];
+  const img = decodeRGBA(makePng(10, 10, paint));
+  const c = crop(img, { x: 4, y: 1, w: 3, h: 2 });
   assert.strictEqual(c.w, 3);
   assert.strictEqual(c.h, 2);
-  assert.strictEqual(c.rgba[0], 100); // x=4 → 4*25
+  // Verify full pixel content across both rows and all channels
+  for (let y = 0; y < 2; y++) {
+    for (let x = 0; x < 3; x++) {
+      const o = (y * 3 + x) * 4;
+      const expected = paint(4 + x, 1 + y);
+      assert.strictEqual(c.rgba[o], expected[0], `R at cropped ${x},${y}`);
+      assert.strictEqual(c.rgba[o + 1], expected[1], `G at cropped ${x},${y}`);
+      assert.strictEqual(c.rgba[o + 2], expected[2], `B at cropped ${x},${y}`);
+      assert.strictEqual(c.rgba[o + 3], expected[3], `A at cropped ${x},${y}`);
+    }
+  }
 });
 
 test('squarePad centres a wide wordmark without distorting it', () => {
