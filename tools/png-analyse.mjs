@@ -5,7 +5,10 @@
 import zlib from 'node:zlib';
 
 export function analysePng(buf) {
-  if (!buf || buf.length < 33 || buf[0] !== 0x89) return null;
+  // Verify full 8-byte PNG signature
+  if (!buf || buf.length < 33) return null;
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (let i = 0; i < 8; i++) if (buf[i] !== sig[i]) return null;
   let pos = 8, ihdr = null, idat = [], plte = null, trns = null;
   while (pos + 8 <= buf.length) {
     const len = buf.readUInt32BE(pos);
@@ -25,9 +28,12 @@ export function analysePng(buf) {
   const CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
   const bpp = CHANNELS[ihdr.color];
   if (!bpp) return { ...ihdr, unsupported: true };
+  if (ihdr.color === 3 && !plte) return { ...ihdr, unsupported: true };
   const stride = ihdr.w * bpp;
   let raw;
   try { raw = zlib.inflateSync(Buffer.concat(idat)); } catch { return { ...ihdr, unsupported: true }; }
+  // Verify inflated buffer contains the expected amount of data
+  if (raw.length < ihdr.h * (stride + 1)) return { ...ihdr, unsupported: true };
 
   // Undo the five PNG scanline filters (None/Sub/Up/Average/Paeth) in place.
   const out = Buffer.alloc(ihdr.h * stride);
