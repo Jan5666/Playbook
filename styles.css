@@ -4262,3 +4262,60 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .rot-foot { flex-direction: column; align-items: stretch; gap: 8px; }
   .rot-foot-right { justify-content: space-between; }
 }
+
+/* ─── Instrument logos ──────────────────────────────────────────────────────
+   One 34px box in four states. The white tile is not decoration: the logo
+   sources return opaque-on-white, bright-transparent, and near-black-transparent
+   art, and only a light ground renders all three legibly. */
+.pb-logo {
+  flex: 0 0 auto; width: 34px; height: 34px;
+  border-radius: 9.5px; overflow: hidden;
+  display: grid; place-items: center; position: relative;
+}
+.pb-logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pb-logo-bleed { background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08); }
+.pb-logo-backed { background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08); }
+.pb-logo-backed img { padding: 2px; }
+.pb-logo-plain { background: transparent; }
+.pb-logo-plain img { padding: 1px; }
+
+/* Monogram fallback — deterministic hue per ticker (--logo-h, set inline per
+   element by LogoMark), so a symbol keeps its colour for good. Theme tokens
+   below hold only saturation/lightness, NOT the hue: a custom property's
+   var() references resolve using the scope where the property is DECLARED,
+   not where it's consumed, so a `--logo-mono-bg: hsl(var(--logo-h) ...)`
+   declared at :root would try to read --logo-h at :root — where it's unset
+   (it only exists inline on the .pb-logo-mono element) — making the whole
+   value invalid-at-computed-time (measured: fully transparent chip, in BOTH
+   themes, not just a too-pale one). Keeping --logo-h out of the root-scoped
+   tokens and combining it into hsl() only in the .pb-logo-mono rule itself
+   (same element that defines --logo-h) is what makes the substitution work. */
+:root, :root[data-theme="dark"] {
+  --logo-mono-s: 42%; --logo-mono-l: 17%;
+  --logo-mono-ring-s: 40%; --logo-mono-ring-l: 30%;
+  --logo-mono-ink-s: 78%; --logo-mono-ink-l: 72%;
+}
+:root[data-theme="light"] {
+  /* First pass (58/88, 42/70) measured invisible against a white card in a real
+     screenshot — at L88 the tint is within a couple of percent of #fff and the 1px
+     ring reads as anti-aliasing noise. Deepened until both the tint and the ring
+     are unmistakable next to white. */
+  --logo-mono-s: 60%; --logo-mono-l: 78%;
+  --logo-mono-ring-s: 55%; --logo-mono-ring-l: 48%;
+  --logo-mono-ink-s: 70%; --logo-mono-ink-l: 20%;
+}
+.pb-logo-mono {
+  background: hsl(var(--logo-h) var(--logo-mono-s) var(--logo-mono-l));
+  box-shadow: inset 0 0 0 1px hsl(var(--logo-h) var(--logo-mono-ring-s) var(--logo-mono-ring-l));
+}
+.pb-logo-mono > span {
+  font-family: var(--mono); font-weight: 700; font-size: 12px;
+  letter-spacing: -0.02em; line-height: 1;
+  color: hsl(var(--logo-h) var(--logo-mono-ink-s) var(--logo-mono-ink-l));
+}
+
+/* The mark sits beside the two-line ticker/name block in both lists. */
+.holding-row .row-main { display: flex; align-items: center; gap: 11px; }
+.hold-txt { min-width: 0; flex: 1 1 auto; }
+.wl-id { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.wl-idtxt { min-width: 0; }
