@@ -540,3 +540,221 @@ test('lumRange is reported correctly for a known two-tone image', () => {
   // hand-computed: max lum (white) - min lum (red) = 1.0 - 0.2126 = 0.7874 -> 0.787
   assert.strictEqual(a.lumRange, 0.787);
 });
+
+// --- sub-byte bit depths (1/2/4) for colour types 0 (greyscale) and 3 (indexed) ---
+// The logo source's best art is depth=4/colorType=3; these pin the packed-byte
+// unpacking (MSB-first, byte-padded scanlines) directly against decodePng so the
+// exact RGBA bytes are checked, not just pass/fail through analysePng.
+import { decodePng } from '../../tools/png-decode.mjs';
+
+// Packs one scanline's worth of sub-byte values MSB-first into bytes, padding the
+// final byte with `padValue` when w * depth isn't a multiple of 8 -- pass a nonzero
+// padValue to prove a decoder discards it rather than reading a phantom pixel.
+function packScanline(rowValues, w, depth, padValue = 0) {
+  const perByte = 8 / depth;
+  const bytesPerScanline = Math.ceil(w * depth / 8);
+  const mask = (1 << depth) - 1;
+  const row = Buffer.alloc(bytesPerScanline);
+  for (let byteIdx = 0; byteIdx < bytesPerScanline; byteIdx++) {
+    let byte = 0;
+    for (let slot = 0; slot < perByte; slot++) {
+      const x = byteIdx * perByte + slot;
+      const shift = 8 - depth * (slot + 1);
+      const val = x < w ? rowValues[x] : padValue;
+      byte |= (val & mask) << shift;
+    }
+    row[byteIdx] = byte;
+  }
+  return row;
+}
+
+// Builds a depth 1/2/4/8 PNG for colour type 0 (greyscale) or 3 (indexed): `values`
+// is a flat row-major array of grey levels or palette indices in [0, 2^depth - 1].
+// Filtering (including Paeth) is applied to the packed bytes with byte-distance
+// bpp = max(1, floor(depth/8)) -- i.e. 1 for every sub-byte depth -- mirroring the
+// PNG spec: filtering always operates on raw bytes, never on unpacked pixels.
+function makePngSubByte(w, h, depth, colorType, values, { palette = null, trns = null, filter = 0, padValue = 0 } = {}) {
+  const bytesPerScanline = Math.ceil(w * depth / 8);
+  const bpp = Math.max(1, Math.floor(depth / 8));
+  const unfiltered = Buffer.alloc(h * bytesPerScanline);
+  for (let y = 0; y < h; y++) {
+    packScanline(values.slice(y * w, y * w + w), w, depth, padValue).copy(unfiltered, y * bytesPerScanline);
+  }
+
+  const raw = Buffer.alloc(h * (bytesPerScanline + 1));
+  for (let y = 0; y < h; y++) {
+    raw[y * (bytesPerScanline + 1)] = filter;
+    const dst = raw.slice(y * (bytesPerScanline + 1) + 1, (y + 1) * (bytesPerScanline + 1));
+    for (let x = 0; x < bytesPerScanline; x++) {
+      const a = x >= bpp ? unfiltered[y * bytesPerScanline + x - bpp] : 0;
+      const b = y > 0 ? unfiltered[(y - 1) * bytesPerScanline + x] : 0;
+      const c = (x >= bpp && y > 0) ? unfiltered[(y - 1) * bytesPerScanline + x - bpp] : 0;
+      let v = unfiltered[y * bytesPerScanline + x];
+      if (filter === 1) v = (v - a) & 0xff;
+      else if (filter === 2) v = (v - b) & 0xff;
+      else if (filter === 3) v = (v - ((a + b) >> 1)) & 0xff;
+      else if (filter === 4) {
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        const pr = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+        v = (v - pr) & 0xff;
+      }
+      dst[x] = v;
+    }
+  }
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = depth;
+  ihdr[9] = colorType;
+  ihdr[12] = 0;
+
+  const chunks = [
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+  ];
+  if (colorType === 3 && palette) chunks.push(chunk('PLTE', palette));
+  if (trns) chunks.push(chunk('tRNS', trns));
+  chunks.push(chunk('IDAT', zlib.deflateSync(raw, { level: 9 })));
+  chunks.push(chunk('IEND', Buffer.alloc(0)));
+  return Buffer.concat(chunks);
+}
+
+function paletteBuffer(colors) {
+  const buf = Buffer.alloc(colors.length * 3);
+  colors.forEach(([r, g, b], i) => { buf[i * 3] = r; buf[i * 3 + 1] = g; buf[i * 3 + 2] = b; });
+  return buf;
+}
+
+test('depth-4 indexed PNG decodes to exact expected RGBA pixels', () => {
+  const palette = [[10, 20, 30], [200, 150, 90], [0, 255, 0], [255, 0, 255]];
+  const values = [0, 1, 2, 3, 3, 2, 1, 0]; // w=4, h=2
+  const img = decodePng(makePngSubByte(4, 2, 4, 3, values, { palette: paletteBuffer(palette) }));
+  assert.ok(img && !img.unsupported, 'expected a decoded image');
+  assert.strictEqual(img.w, 4);
+  assert.strictEqual(img.h, 2);
+  for (let i = 0; i < values.length; i++) {
+    const [r, g, b] = palette[values[i]];
+    assert.strictEqual(img.rgba[i * 4], r, `pixel ${i} R`);
+    assert.strictEqual(img.rgba[i * 4 + 1], g, `pixel ${i} G`);
+    assert.strictEqual(img.rgba[i * 4 + 2], b, `pixel ${i} B`);
+    assert.strictEqual(img.rgba[i * 4 + 3], 255, `pixel ${i} A`);
+  }
+});
+
+test('depth-2 indexed PNG decodes correctly (4 values per byte)', () => {
+  const palette = [[0, 0, 0], [85, 85, 85], [170, 170, 170], [255, 255, 255]];
+  const values = [0, 1, 2, 3, 3, 1, 0, 2]; // w=8, h=1 -> exactly 2 bytes, no padding
+  const img = decodePng(makePngSubByte(8, 1, 2, 3, values, { palette: paletteBuffer(palette) }));
+  assert.ok(img && !img.unsupported, 'expected a decoded image');
+  assert.strictEqual(img.w, 8);
+  for (let i = 0; i < values.length; i++) {
+    const [r, g, b] = palette[values[i]];
+    assert.strictEqual(img.rgba[i * 4], r, `pixel ${i} R`);
+    assert.strictEqual(img.rgba[i * 4 + 1], g, `pixel ${i} G`);
+    assert.strictEqual(img.rgba[i * 4 + 2], b, `pixel ${i} B`);
+  }
+});
+
+test('depth-1 indexed PNG decodes correctly (8 values per byte)', () => {
+  const palette = [[255, 255, 255], [0, 0, 0]];
+  const values = [0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0]; // w=16, h=1 -> exactly 2 bytes
+  const img = decodePng(makePngSubByte(16, 1, 1, 3, values, { palette: paletteBuffer(palette) }));
+  assert.ok(img && !img.unsupported, 'expected a decoded image');
+  assert.strictEqual(img.w, 16);
+  for (let i = 0; i < values.length; i++) {
+    const [r, g, b] = palette[values[i]];
+    assert.strictEqual(img.rgba[i * 4], r, `pixel ${i} R`);
+    assert.strictEqual(img.rgba[i * 4 + 1], g, `pixel ${i} G`);
+    assert.strictEqual(img.rgba[i * 4 + 2], b, `pixel ${i} B`);
+  }
+});
+
+test('depth-4 greyscale PNG scales levels correctly to 0-255', () => {
+  const values = [0, 1, 8, 15, 7, 15, 0, 8]; // w=8, h=1, colour type 0
+  const img = decodePng(makePngSubByte(8, 1, 4, 0, values));
+  assert.ok(img && !img.unsupported, 'expected a decoded image');
+  const expected = values.map(v => Math.round(v * 255 / 15));
+  for (let i = 0; i < values.length; i++) {
+    assert.strictEqual(img.rgba[i * 4], expected[i], `pixel ${i} grey R`);
+    assert.strictEqual(img.rgba[i * 4 + 1], expected[i], `pixel ${i} grey G`);
+    assert.strictEqual(img.rgba[i * 4 + 2], expected[i], `pixel ${i} grey B`);
+    assert.strictEqual(img.rgba[i * 4 + 3], 255, `pixel ${i} alpha`);
+  }
+  assert.strictEqual(img.rgba[3 * 4], 255, 'level 15 -> 255');
+  assert.strictEqual(img.rgba[0 * 4], 0, 'level 0 -> 0');
+});
+
+test('depth-4 indexed PNG with width not a multiple of pixels-per-byte discards padding', () => {
+  // w=3 at depth 4: 2 pixels/byte, so the last byte holds one real pixel (index 2)
+  // plus 4 padding bits. Seed the padding with 0b1111 -- a decoder that reads it as
+  // part of a value, or as a phantom 4th pixel, will diverge from the assertions.
+  const palette = Array.from({ length: 16 }, (_, i) => [i * 15, 255 - i * 15, (i * 41) % 256]);
+  const values = [2, 5, 9];
+  const buf = makePngSubByte(3, 1, 4, 3, values, { palette: paletteBuffer(palette), padValue: 0b1111 });
+  const img = decodePng(buf);
+  assert.ok(img && !img.unsupported, 'expected a decoded image');
+  assert.strictEqual(img.w, 3);
+  assert.strictEqual(img.h, 1);
+  assert.strictEqual(img.rgba.length, 3 * 1 * 4, 'exactly w*h pixels -- padding is not a 4th pixel');
+  for (let i = 0; i < values.length; i++) {
+    const [r, g, b] = palette[values[i]];
+    assert.strictEqual(img.rgba[i * 4], r, `pixel ${i} R`);
+    assert.strictEqual(img.rgba[i * 4 + 1], g, `pixel ${i} G`);
+    assert.strictEqual(img.rgba[i * 4 + 2], b, `pixel ${i} B`);
+  }
+});
+
+test('depth-4 indexed PNG with Paeth filter (type 4) round-trips', () => {
+  // Non-uniform 5x4 grid (w=5 gives a 3-byte scanline with a partial last byte) so
+  // a !== b !== c for most pixels, proving Paeth runs on the packed bytes before
+  // unpacking rather than on already-unpacked pixel values.
+  const palette = Array.from({ length: 16 }, (_, i) => [i * 16, 255 - i * 16, (i * 37) % 256]);
+  const w = 5, h = 4;
+  const values = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) values.push((x * 3 + y * 5) % 16);
+  const img = decodePng(makePngSubByte(w, h, 4, 3, values, { palette: paletteBuffer(palette), filter: 4 }));
+  assert.ok(img && !img.unsupported, 'expected a decoded image');
+  assert.strictEqual(img.w, w);
+  assert.strictEqual(img.h, h);
+  for (let i = 0; i < values.length; i++) {
+    const [r, g, b] = palette[values[i]];
+    assert.strictEqual(img.rgba[i * 4], r, `pixel ${i} R (filter 4)`);
+    assert.strictEqual(img.rgba[i * 4 + 1], g, `pixel ${i} G (filter 4)`);
+    assert.strictEqual(img.rgba[i * 4 + 2], b, `pixel ${i} B (filter 4)`);
+  }
+});
+
+test('depth 16 stays unsupported for greyscale and indexed colour types too', () => {
+  // Greyscale depth 16: 2 bytes/pixel.
+  const wG = 4, hG = 2;
+  const rawG = Buffer.alloc(hG * (wG * 2 + 1));
+  const ihdrG = Buffer.alloc(13);
+  ihdrG.writeUInt32BE(wG, 0); ihdrG.writeUInt32BE(hG, 4);
+  ihdrG[8] = 16; ihdrG[9] = 0; ihdrG[12] = 0;
+  const bufG = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdrG),
+    chunk('IDAT', zlib.deflateSync(rawG, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  const imgG = decodePng(bufG);
+  assert.strictEqual(imgG.unsupported, true);
+  assert.strictEqual(imgG.w, wG);
+  assert.strictEqual(imgG.h, hG);
+
+  // Indexed depth 16 (not spec-legal, but must degrade to unsupported, not throw).
+  const wI = 4, hI = 2;
+  const rawI = Buffer.alloc(hI * (wI * 2 + 1));
+  const ihdrI = Buffer.alloc(13);
+  ihdrI.writeUInt32BE(wI, 0); ihdrI.writeUInt32BE(hI, 4);
+  ihdrI[8] = 16; ihdrI[9] = 3; ihdrI[12] = 0;
+  const bufI = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdrI),
+    chunk('PLTE', Buffer.from([0, 0, 0, 255, 255, 255])),
+    chunk('IDAT', zlib.deflateSync(rawI, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  const imgI = decodePng(bufI);
+  assert.strictEqual(imgI.unsupported, true);
+});
