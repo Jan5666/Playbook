@@ -1,6 +1,6 @@
 # Instrument logos in Holdings + Watchlist (design)
 
-**Status: designed 2026-07-27, approved by Jan. Not yet implemented.**
+**Status: implemented 2026-07-27 on branch `claude/instrument-logos`. Accepted by Jan as a working base, not final — see [LOGOS_STATUS.md](../LOGOS_STATUS.md) for what to improve next.**
 
 Show the company/fund mark beside the name in the Holdings rows and the Watchlist cards.
 Jan's decisions, taken against a rendered mockup of the real rows:
