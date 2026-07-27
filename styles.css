@@ -4264,20 +4264,24 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 
 /* ─── Instrument logos ──────────────────────────────────────────────────────
-   One 34px box in four states. The white tile is not decoration: the logo
-   sources return opaque-on-white, bright-transparent, and near-black-transparent
-   art, and only a light ground renders all three legibly. */
+   One 34px box, one radius, one state. Every file in logos/ is a full-bleed
+   square tile (tools/png-raster.mjs guarantees it), so the art reaches the edge
+   and this radius is what rounds it — every mark is rounded identically because
+   nothing about the rounding depends on the individual mark.
+
+   There is deliberately NO background colour here. Painting one behind art that
+   did not fill its box is what produced the white frame around ASML and Amazon:
+   the tile showed through the transparent margin the old pipeline padded on. */
 .pb-logo {
   flex: 0 0 auto; width: 34px; height: 34px;
   border-radius: 9.5px; overflow: hidden;
   display: grid; place-items: center; position: relative;
 }
-.pb-logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.pb-logo-bleed { background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08); }
-.pb-logo-backed { background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08); }
-.pb-logo-backed img { padding: 2px; }
-.pb-logo-plain { background: transparent; }
-.pb-logo-plain img { padding: 1px; }
+.pb-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* A hairline ring so a white tile still has an edge in light mode and a dark
+   tile still has one in dark mode. Inset, so it cannot grow the box. */
+.pb-logo-tile { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
+:root[data-theme="light"] .pb-logo-tile { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.10); }
 
 /* Monogram fallback — deterministic hue per ticker (--logo-h, set inline per
    element by LogoMark), so a symbol keeps its colour for good. Theme tokens
@@ -4312,6 +4316,18 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   font-family: var(--mono); font-weight: 700; font-size: 12px;
   letter-spacing: -0.02em; line-height: 1;
   color: hsl(var(--logo-h) var(--logo-mono-ink-s) var(--logo-mono-ink-l));
+}
+
+/* Brand-coloured monogram: the instrument has no legible mark, but the build
+   measured its real brand colour off the wordmark it had to reject. The
+   background is set inline per element; the build guarantees it is a deep
+   ground, so white letters read on it in both themes. */
+.pb-logo-brand {
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.10);
+}
+.pb-logo-brand > span {
+  font-family: var(--mono); font-weight: 700; font-size: 12px;
+  letter-spacing: -0.02em; line-height: 1; color: #fff;
 }
 
 /* The mark sits beside the two-line ticker/name block in both lists. */

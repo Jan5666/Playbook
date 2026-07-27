@@ -1,10 +1,12 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v90';
+const CACHE_NAME   = 'playbook-shell-v91';
 const CDN_CACHE    = 'playbook-cdn-v1';
-// Instrument logos: immutable per filename, so cache-first. Bumped only when
-// the pack is rebuilt. Deliberately NOT in SHELL_ASSETS — cache.addAll is
-// atomic, so one bad file there would fail the entire SW install.
-const LOGO_CACHE   = 'playbook-logos-v1';
+// Instrument logos: immutable per filename, so cache-first. Filenames are STABLE
+// across rebuilds, so without a bump an installed PWA keeps serving the old art
+// forever — `node tools/build-logos.mjs` bumps this line itself for exactly that
+// reason. Deliberately NOT in SHELL_ASSETS — cache.addAll is atomic, so one bad
+// file there would fail the entire SW install.
+const LOGO_CACHE   = 'playbook-logos-v4';
 
 // pb-core.js is the single source of truth for Yahoo symbols, the cent/pence
 // divisor, and alert evaluation (CLAUDE.md rule #6). importScripts populates

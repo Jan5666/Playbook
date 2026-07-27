@@ -94,15 +94,54 @@ test('anti-drift: the orchestrator builds no logo URL of its own', () => {
 });
 
 test('denied keys resolve to no candidate at all', () => {
-  // JSE:KIO — every provider returns the parent Anglo American mark for Kumba
-  // Iron Ore. The owner ruled it must be Kumba's own mark or nothing, so the key
-  // is denied and the UI falls back to a monogram. A rebuild must not silently
-  // reintroduce it.
+  // DENY is the escape hatch for a key whose every available source returns the
+  // WRONG company — a monogram beats another company's mark. Kumba Iron Ore is
+  // the standing case: it is an Anglo American subsidiary and every source,
+  // including angloamericankumba.com's own icon, returns the parent's blue/red
+  // triangle (re-verified by eye 2026-07-27). Also asserted on a key that WOULD
+  // resolve, so the test cannot pass vacuously if DENY is ever emptied.
   const { DENY } = chainForModule;
   assert.ok(DENY.has('JSE:KIO'), 'JSE:KIO must stay denied');
+  assert.ok(chainFor('JSE', 'SOL').length > 0, 'precondition: JSE:SOL normally resolves');
+  DENY.add('JSE:SOL');
+  try {
+    assert.deepStrictEqual(chainFor('JSE', 'SOL'), [], 'DENY did not suppress the chain');
+  } finally {
+    DENY.delete('JSE:SOL');
+  }
   for (const key of DENY) {
     const [market, ticker] = key.split(':');
     assert.deepStrictEqual(chainFor(market, ticker), [],
       `${key} is denied but still produced candidates`);
   }
+});
+
+test('non-US keys resolve through a domain, never a bare ticker', () => {
+  // The domain map is what replaced ISIN-only resolution for the non-US
+  // universe. A domain is human-checkable in the source file and a
+  // domain-keyed icon service can only answer with that company's own art.
+  const { DOMAIN_BY_KEY, domainFor } = chainForModule;
+  for (const key of ['JSE:CPI', 'JSE:SHP', 'LSE:HSBA', 'ASX:CBA', 'AMS:ASML', 'PAR:MC', 'FRA:SAP']) {
+    const [market, ticker] = key.split(':');
+    assert.ok(domainFor(market, ticker), `${key} has no domain`);
+    for (const c of chainFor(market, ticker)) {
+      assert.notStrictEqual(c.key, 'ticker', `${key} used a bare-ticker lookup`);
+    }
+  }
+  for (const [key, domain] of Object.entries(DOMAIN_BY_KEY)) {
+    assert.match(key, /^[A-Z]{3,6}:[A-Za-z0-9.\-]+$/, `malformed domain key: ${key}`);
+    assert.match(domain, /^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}$/,
+      `${key} maps to "${domain}", which is not a bare hostname`);
+  }
+});
+
+test('SA fund issuer prefixes never claim a US ticker', () => {
+  // GLD is NewGold on the JSE and SPDR Gold Shares in New York; CS*/CTOP are
+  // 10X funds in Johannesburg and unrelated symbols elsewhere. The prefix rules
+  // must be scoped to the markets that actually list those funds.
+  const { domainFor } = chainForModule;
+  for (const t of ['GLD', 'CSP500', 'ETF500', 'NFSWIX', 'STX40', 'SYGWD']) {
+    assert.strictEqual(domainFor('US', t), null, `US:${t} was claimed by an SA fund-issuer rule`);
+  }
+  assert.ok(domainFor('JSE', 'GLD'), 'JSE:GLD should still resolve to NewGold');
 });

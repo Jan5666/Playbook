@@ -2261,25 +2261,39 @@ function logoHue(s) {
 function LogoMark(_refLM) {
   const { ticker, market } = _refLM;
   const hit = logoFor(ticker, market);
-  if (!hit) {
+  if (!hit || !hit.f) {
     // Longer codes — fund tickers like STX40, SYGWD, ETF500 — read better on
     // three characters than two. (The old rule required a trailing digit, so
     // the wholly-alphabetic SYG* funds it names were getting two.)
     const t = String(ticker);
     const label = t.length >= 5 ? t.slice(0, 3) : t.slice(0, 2);
+    // Some strong brands publish only a wordmark, which is illegible at 34px and
+    // is refused by the build's legibility gate. `c` is the brand colour the
+    // build measured off that rejected art, so the chip is at least the right
+    // colour rather than a hash of the ticker. It is always a deep ground (see
+    // deepen() in tools/png-raster.mjs), so white letters always read on it.
+    if (hit && hit.c) {
+      return React.createElement("span", {
+        className: "pb-logo pb-logo-brand", style: { background: hit.c },
+        "aria-hidden": "true"
+      }, React.createElement("span", null, label));
+    }
     return React.createElement("span", {
       className: "pb-logo pb-logo-mono", style: { '--logo-h': logoHue(String(ticker)) },
       "aria-hidden": "true"
     }, React.createElement("span", null, label));
   }
-  const cls = "pb-logo" + (hit.b ? " pb-logo-bleed" : hit.k ? " pb-logo-backed" : " pb-logo-plain");
-  return React.createElement("span", { className: cls, "aria-hidden": "true" },
+  // Every mark in the pack is a full-bleed square tile, so there is one class and
+  // one radius: uniformity is structural, not per-mark. The old three-way split
+  // (bleed / backed / plain) existed because the pipeline emitted art in three
+  // shapes and painted #fff behind two of them — which is what produced the white
+  // frame around ASML and Amazon. See tools/png-raster.mjs.
+  return React.createElement("span", { className: "pb-logo pb-logo-tile", "aria-hidden": "true" },
     React.createElement("img", {
       src: "./logos/" + hit.f, alt: "", width: 34, height: 34,
       loading: "lazy", decoding: "async",
-      // A file that 404s must not leave a broken-image glyph — nor an empty
-      // white tile, which is what hiding the <img> alone leaves behind for
-      // bleed/backed art. Drop the tile classes so the row reads as blank.
+      // A file that 404s must not leave a broken-image glyph, nor an empty tile.
+      // Dropping the tile class leaves the row reading as blank.
       onError: e => {
         e.target.style.display = 'none';
         if (e.target.parentNode) e.target.parentNode.className = 'pb-logo';
