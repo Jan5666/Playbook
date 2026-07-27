@@ -11,6 +11,7 @@
 // 200 and looks perfect to every automated check. Only eyes catch it.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { analysePng } from './png-analyse.mjs';
@@ -99,6 +100,7 @@ function gate(a) {
   if (!a || a.unsupported) return 'undecodable';
   if (a.w < 64 || a.h < 64) return `too small (${a.w}x${a.h})`;
   if (a.alphaCoverage < 0.12) return `too sparse (${a.alphaCoverage} ink)`;
+  if (a.whiteOnly) return 'all-white art';
   return null;
 }
 function normalise(buf, a, cropBox) {
@@ -124,6 +126,7 @@ function normalise(buf, a, cropBox) {
 // ─── Main ───────────────────────────────────────────────────────────────────
 const universe = collectUniverse();
 const manifest = {};
+const writtenBufs = new Map(); // key -> outBuf, for the duplicate-art report
 const report = [];
 if (!DRY && !existsSync(LOGOS)) mkdirSync(LOGOS, { recursive: true });
 
@@ -146,6 +149,7 @@ for (const { ticker, market } of universe) {
     const finalA = analysePng(outBuf) || a;
     const file = `${market}-${ticker}.png`;
     if (!DRY) writeFileSync(join(LOGOS, file), outBuf);
+    writtenBufs.set(key, outBuf);
     manifest[key] = { f: file, ...(finalA.bleed ? { b: 1 } : {}), ...(finalA.needsBacking ? { k: 1 } : {}) };
     report.push({ key, status: 'ok', via, why: `${finalA.w}x${finalA.h}`, lookup: cand.key });
     done = true;
@@ -206,6 +210,25 @@ for (const s of ['ok', 'reject', 'miss', 'monogram']) {
   }
 }
 console.log(`\n${DRY ? 'DRY RUN — nothing written' : `wrote ${Object.keys(manifest).length} logos`}`);
+
+// ─── Duplicate-art report ───────────────────────────────────────────────────
+// Sharing art across one issuer's funds is CORRECT (e.g. a Satrix umbrella
+// logo used for every Satrix ETF) — but it went unnoticed last time one
+// issuer's ETFs silently rendered as three DIFFERENT marks instead. Surface
+// every group of 2+ tickers with byte-identical art so it can be checked
+// rather than assumed.
+{
+  const byHash = new Map(); // sha256 -> [key, ...]
+  for (const [key, buf] of writtenBufs) {
+    const h = createHash('sha256').update(buf).digest('hex');
+    (byHash.get(h) || byHash.set(h, []).get(h)).push(key);
+  }
+  const groups = [...byHash.values()].filter(g => g.length >= 2).sort((a, b) => b.length - a.length);
+  console.log(`\nSHARED ART (${groups.length} groups)`);
+  for (const g of groups) {
+    console.log(`  ${String(g.length).padStart(3)}x  ${g.slice().sort().join(' ')}`);
+  }
+}
 // Fail loudly if a non-US market ever resolved through a bare ticker.
 const illegal = report.filter(r => r.status === 'ok' && r.lookup === 'ticker' && !r.key.startsWith('US:'));
 if (illegal.length) {

@@ -59,13 +59,15 @@ export function chainFor(market, ticker) {
     return out;
   }
   if (market === 'US') {
-    out.push({ source: 'fmp', key: 'ticker', url: `https://financialmodelingprep.com/image-stock/${encodeURIComponent(ticker)}.png` });
-    out.push({ source: 'parqet', key: 'ticker', url: `https://assets.parqet.com/logos/symbol/${encodeURIComponent(ticker)}?format=png&size=128` });
+    // FMP removed: it is the source of the rejected art (three iShares variants,
+    // a bare cropped "i", blank-white QQQ/ARKK). Parqet at size=256 returns
+    // high-quality pre-composed brand tiles, verified 16/16 on the measured set.
+    out.push({ source: 'parqet', key: 'ticker', url: `https://assets.parqet.com/logos/symbol/${encodeURIComponent(ticker)}?format=png&size=256` });
     return out;
   }
   // Every other market: ISIN only, then the managing house.
   const isin = ISIN_BY_TICKER[`${market}:${ticker}`];
-  if (isin) out.push({ source: 'parqet-isin', key: 'isin', url: `https://assets.parqet.com/logos/isin/${isin}?format=png&size=128` });
+  if (isin) out.push({ source: 'parqet-isin', key: 'isin', url: `https://assets.parqet.com/logos/isin/${isin}?format=png&size=256` });
   const issuer = issuerFor(ticker);
   if (issuer) out.push({ source: 'issuer', key: 'issuer', url: ISSUERS[issuer].page, issuer });
   return out;
