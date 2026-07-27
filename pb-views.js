@@ -2262,8 +2262,11 @@ function LogoMark(_refLM) {
   const { ticker, market } = _refLM;
   const hit = logoFor(ticker, market);
   if (!hit) {
-    // Fund codes (STX40, SYGWD) read better on three characters than two.
-    const label = /^[A-Z]{3,}\d/.test(ticker) ? ticker.slice(0, 3) : String(ticker).slice(0, 2);
+    // Longer codes — fund tickers like STX40, SYGWD, ETF500 — read better on
+    // three characters than two. (The old rule required a trailing digit, so
+    // the wholly-alphabetic SYG* funds it names were getting two.)
+    const t = String(ticker);
+    const label = t.length >= 5 ? t.slice(0, 3) : t.slice(0, 2);
     return React.createElement("span", {
       className: "pb-logo pb-logo-mono", style: { '--logo-h': logoHue(String(ticker)) },
       "aria-hidden": "true"
@@ -2274,8 +2277,13 @@ function LogoMark(_refLM) {
     React.createElement("img", {
       src: "./logos/" + hit.f, alt: "", width: 34, height: 34,
       loading: "lazy", decoding: "async",
-      // A file that 404s must not leave a broken-image glyph in the row.
-      onError: e => { e.target.style.display = 'none'; }
+      // A file that 404s must not leave a broken-image glyph — nor an empty
+      // white tile, which is what hiding the <img> alone leaves behind for
+      // bleed/backed art. Drop the tile classes so the row reads as blank.
+      onError: e => {
+        e.target.style.display = 'none';
+        if (e.target.parentNode) e.target.parentNode.className = 'pb-logo';
+      }
     }));
 }
 const HoldingRow = React.memo(function HoldingRow(_refHR) {

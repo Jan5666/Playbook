@@ -73,3 +73,43 @@ test('no committed logo is whiteOnly', () => {
     assert.ok(!a.whiteOnly, `${key}: ${v.f} is all-white — renders as a blank tile`);
   }
 });
+
+// ─── logoFor: the runtime entry point ───────────────────────────────────────
+// The final review mutation-proved that the previous logoFor tests were all
+// null-cases: replacing the function with `() => null`, or swapping its two
+// arguments, kept every suite green. The feature could have been entirely dead
+// (every instrument monogramming) with CI none the wiser. These fail on both.
+test('logoFor resolves a known entry, market-scoped, arguments not swappable', () => {
+  assert.deepStrictEqual(logoFor('NPN', 'JSE'), LOGO_MANIFEST['JSE:NPN']);
+  assert.ok(logoFor('NPN', 'JSE'), 'a known holding must resolve — a dead logoFor fails here');
+  assert.strictEqual(logoFor('JSE', 'NPN'), null, 'arguments are (ticker, market), not (market, ticker)');
+});
+
+test('the same ticker in two markets ships DIFFERENT art on disk', () => {
+  // This feature exists because bare-ticker logo APIs return the wrong company:
+  // MTN resolved to Vail Resorts and SOL to ReneSola, both with HTTP 200. The
+  // guard belongs on the shipped bytes, not on the build-time URL.
+  const jse = logoFor('SOL', 'JSE'), crypto = logoFor('SOL', 'CRYPTO');
+  assert.ok(jse && crypto, 'both SOL entries must exist');
+  assert.notStrictEqual(jse.f, crypto.f, 'JSE SOL (Sasol) and CRYPTO SOL (Solana) share a filename');
+  const a = readFileSync(join(LOGOS, jse.f)), b = readFileSync(join(LOGOS, crypto.f));
+  assert.ok(!a.equals(b), 'Sasol and Solana ship byte-identical art');
+});
+
+test('denied keys resolve to nothing rather than another company mark', () => {
+  // JSE:KIO — every source returns the parent Anglo American mark for Kumba.
+  assert.strictEqual(logoFor('KIO', 'JSE'), null, 'KIO must monogram, not show Anglo American');
+});
+
+test('one issuer is never rendered as several different marks', () => {
+  // State Street shipped five variants across its nine funds, two of them
+  // generic clipart. Any issuer family listed here must share one file.
+  const FAMILIES = {
+    'State Street': ['SPY', 'DIA', 'GLD', 'XLB', 'XLC', 'XLI', 'XLK', 'XLP', 'XLRE', 'XLU', 'XLV', 'XLY'],
+  };
+  for (const [issuer, tickers] of Object.entries(FAMILIES)) {
+    const files = new Set(tickers.map(t => logoFor(t, 'US')).filter(Boolean).map(v => v.f));
+    assert.strictEqual(files.size, 1,
+      `${issuer} renders as ${files.size} different marks: ${[...files].join(', ')}`);
+  }
+});

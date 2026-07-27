@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { chainFor, ISIN_BY_TICKER, CRYPTO_ID } from '../../tools/logo-sources.mjs';
+import * as chainForModule from '../../tools/logo-sources.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -90,4 +91,18 @@ test('anti-drift: the orchestrator builds no logo URL of its own', () => {
   assert.match(src, /from\s+['"]\.\/logo-sources\.mjs['"]/,
     'build-logos.mjs must import its candidates from logo-sources.mjs');
   assert.match(src, /chainFor\s*\(/, 'build-logos.mjs must resolve candidates via chainFor()');
+});
+
+test('denied keys resolve to no candidate at all', () => {
+  // JSE:KIO — every provider returns the parent Anglo American mark for Kumba
+  // Iron Ore. The owner ruled it must be Kumba's own mark or nothing, so the key
+  // is denied and the UI falls back to a monogram. A rebuild must not silently
+  // reintroduce it.
+  const { DENY } = chainForModule;
+  assert.ok(DENY.has('JSE:KIO'), 'JSE:KIO must stay denied');
+  for (const key of DENY) {
+    const [market, ticker] = key.split(':');
+    assert.deepStrictEqual(chainFor(market, ticker), [],
+      `${key} is denied but still produced candidates`);
+  }
 });

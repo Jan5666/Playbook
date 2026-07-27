@@ -50,8 +50,28 @@ export function issuerFor(ticker) {
   return hit ? hit.issuer : null;
 }
 
+// Keys whose provider art is KNOWN WRONG. A denied key resolves to nothing, so the
+// UI falls back to its monogram rather than showing another company's mark.
+// JSE:KIO — every source returns the parent Anglo American "A" for Kumba Iron Ore.
+// A confidently wrong logo is worse than none; the owner ruled it must be Kumba or
+// nothing. Do not remove an entry here without new art verified by eye.
+export const DENY = new Set([
+  'JSE:KIO',
+]);
+
+// Tickers that must reuse another key's art, so one issuer is never rendered as
+// several different marks. Providers return five different State Street variants
+// across its nine funds — including two pieces of generic clipart (an orange brick
+// square for XLB, a newspaper for XLC) that are not brand marks at all.
+export const CANONICAL_ART = {
+  'US:DIA': 'US:SPY', 'US:GLD': 'US:SPY', 'US:XLB': 'US:SPY', 'US:XLC': 'US:SPY',
+  'US:XLI': 'US:SPY', 'US:XLK': 'US:SPY', 'US:XLP': 'US:SPY', 'US:XLRE': 'US:SPY',
+  'US:XLU': 'US:SPY', 'US:XLV': 'US:SPY', 'US:XLY': 'US:SPY',
+};
+
 export function chainFor(market, ticker) {
   const out = [];
+  if (DENY.has(`${market}:${ticker}`)) return out;
   if (market === 'CRYPTO') {
     const id = CRYPTO_ID[String(ticker).replace(/-USD$/i, '').toUpperCase()];
     // Stock APIs are deliberately absent here: FMP's SOL.png is ReneSola.

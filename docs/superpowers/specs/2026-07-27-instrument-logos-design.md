@@ -121,13 +121,27 @@ A dev script. `tools/` is not in the `static.yml` allowlist, so it never deploys
 
    | Market | Key | Chain |
    |---|---|---|
-   | `US` | ticker | FMP → Parqet |
+   | `US` | ticker | Parqet by symbol @256 (**FMP removed** — see the note below) |
    | `JSE`, `TFSA`, `LSE`, `FRA`, `PAR`, `AMS`, `ASX` | **ISIN** | Parqet by ISIN |
    | `CRYPTO` | coin symbol | `spothq/cryptocurrency-icons` (128px colour set, MIT) — **never a stock API** |
    | SA ETFs (`STX*`, `SYG*`, `ETF*`, `NFE*`, `CSP*`…) | fund ISIN, then issuer | fund mark → **manager mark** (Chrome-extracted + symbol-cropped) → monogram |
 
    A market outside the US column **never** falls back to a bare-ticker lookup. That fallback
    is precisely the Vail Resorts bug.
+
+   > **Amended during implementation (2026-07-27).** The US chain originally read
+   > "FMP → Parqet". Built that way, FMP won every US lookup and produced the pack Jan
+   > **rejected**: three different iShares variants, a bare cropped "i", and pure-white
+   > blank tiles for QQQ and ARKK. Parqet at `size=256` returns pre-composed brand tiles
+   > (verified 16/16), so **FMP was removed entirely** and `logo-collisions.test.mjs` now
+   > bans its hostname from the orchestrator. Any FMP reference below is a record of the
+   > original measurement, not a recommendation — do not reintroduce it.
+   >
+   > Two further amendments from the same rebuild: Parqet's best art is **4-bit indexed
+   > PNG**, so `png-decode.mjs` gained sub-byte bit depths (1/2/4); and `logo-sources.mjs`
+   > gained a `DENY` set (`JSE:KIO`, where every source returns the parent Anglo American
+   > mark) plus a `CANONICAL_ART` table forcing one mark per issuer (State Street shipped
+   > five variants across nine funds, two of them generic clipart).
 
    **ETFs resolve in a fixed order** (Jan's rule): the fund's own official mark → **the
    managing house's official logo** → monogram. In practice the second step is the common one,

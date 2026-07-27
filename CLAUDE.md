@@ -68,7 +68,11 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v89`), or installed PWAs serve stale assets offline.
+`playbook-shell-v90`), or installed PWAs serve stale assets offline.
+
+Rebuilding the **logo pack** (`node tools/build-logos.mjs`) also needs `LOGO_CACHE`
+bumped in sw.js: `logos/*.png` are served cache-first under stable filenames, so
+without it every installed PWA keeps the old marks forever.
 
 Adding a **new runtime file** additionally requires ALL of:
 1. `<script>` tag in `index.html` (real order, verified: pb-core → pb-data → pb-store →
@@ -170,7 +174,7 @@ kills pending timers on a backgrounded PWA, losing the last sweep), no max-wait,
 capture — all three now fixed behind `PBStore.createWriteScheduler` in `pb-store.js`, with the 1200 ms
 quiet period proven unchanged by a 7-scenario characterization matrix
 (`backend/test/write-scheduler.test.mjs`, 36 tests; suite 29 -> 30). app.js 4999 -> 5025 lines.
-`sw` `CACHE_NAME` = `playbook-shell-v89` (inc-39).
+`sw` `CACHE_NAME` = `playbook-shell-v90` (instrument logos).
 
 **inc-38** spec'd **Phase 5** and stopped at the gate: it touches rule #5, so it needs Jan's sign-off
 before any code, and none was written. Checking the premise first killed it —
