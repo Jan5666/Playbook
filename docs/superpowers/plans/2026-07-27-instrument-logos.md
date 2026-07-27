@@ -31,8 +31,9 @@
 
 | File | Status | Responsibility |
 |---|---|---|
-| `tools/png-analyse.mjs` | Create | Decode a PNG; report `w/h`, `alphaCoverage`, `meanLum`, `bleed`, `needsBacking`. Pure, no I/O. |
-| `tools/png-crop.mjs` | Create | Decode → ink-box → crop → square-pad → re-encode RGBA PNG. Pure, no I/O. |
+| `tools/png-decode.mjs` | Create (Task 2) | Sole owner of PNG bytes → flat RGBA: chunk walk, scanline unfilter, malformed-input guards. Pure, no I/O. |
+| `tools/png-analyse.mjs` | Create (Task 1), refactor onto the shared decoder (Task 2) | Measure only: `w/h`, `alphaCoverage`, `meanLum`, `bleed`, `needsBacking`. Pure, no I/O. |
+| `tools/png-crop.mjs` | Create (Task 2) | Transform only: ink-box → crop → square-pad → re-encode. Pure, no I/O. |
 | `tools/logo-sources.mjs` | Create | Per-market resolution chains + the curated ISIN / issuer / crop tables. Data + URL builders only, no fetching. |
 | `tools/build-logos.mjs` | Create | Orchestrator: collect universe → resolve → analyse → normalise → write `logos/` → rewrite manifest → emit contact sheet. |
 | `logos/` | Create | The committed PNG pack. |
@@ -286,23 +287,190 @@ git commit -m "feat(logos): PNG analyser for tile/backing decisions"
 
 ---
 
-### Task 2: PNG crop + square-pad
+### Task 2: Shared PNG decoder + crop / square-pad
+
+> **Plan revision (2026-07-27, Jan's ruling):** the original Task 2 had `png-crop.mjs`
+> re-implement the chunk-parse and unfilter math that Task 1 already built and hardened in
+> `png-analyse.mjs`. That duplication is now replaced by a shared `tools/png-decode.mjs` that
+> both modules import. Task 1's short-IDAT and missing-PLTE guards therefore apply everywhere,
+> and the filter math has one copy to pin rather than two.
 
 **Files:**
+- Create: `tools/png-decode.mjs`
 - Create: `tools/png-crop.mjs`
+- Modify: `tools/png-analyse.mjs` (import the shared decoder; keep measuring only)
 - Modify: `backend/test/logo-imaging.test.mjs` (append)
 
 **Interfaces:**
-- Consumes: the `makePng` helper exported from `backend/test/logo-imaging.test.mjs` (test-side only).
+- Consumes: nothing new.
 - Produces:
-  - `decodeRGBA(buf) => { w, h, rgba: Buffer } | null` — flat RGBA, 4 bytes per pixel.
-  - `encodeRGBA(w, h, rgba) => Buffer` — a valid 8-bit RGBA PNG.
-  - `inkBox(img) => { x, y, w, h } | null` — tight bounds of non-transparent, non-near-white pixels.
+  - `decodePng(buf)` from `tools/png-decode.mjs`, a **three-way** return that preserves both existing tested contracts:
+    - `null` — not a PNG at all (bad signature, too short, no IHDR)
+    - `{ w, h, depth, color, interlace, unsupported: true }` — recognisably a PNG but undecodable (depth ≠ 8, interlaced, unknown colour type, truncated IDAT, colour type 3 with no PLTE)
+    - `{ w, h, rgba }` — decoded; `rgba` is a flat 4-bytes-per-pixel Buffer
+  - `decodeRGBA(buf) => { w, h, rgba } | null` from `tools/png-crop.mjs` — thin wrapper over `decodePng` that collapses `unsupported` to `null`.
+  - `encodeRGBA(w, h, rgba) => Buffer`
+  - `inkBox(img) => { x, y, w, h } | null`
   - `crop(img, box) => img`
-  - `squarePad(img, margin = 0.08) => img` — centres on a transparent square canvas.
+  - `squarePad(img, margin = 0.08) => img`
   All consumed by Task 4. **No resampling function exists or is needed** — CSS scales the tile.
 
-- [ ] **Step 1: Write the failing test**
+**The regression gate for this task:** Task 1's 22 existing tests must pass *unchanged* after the refactor, and the real-art Apple values must be identical (`100x100`, `alphaCoverage 1`, `meanLum 0.892`, `bleed true`, `needsBacking false`). If any moved, the refactor changed behaviour and is wrong.
+
+- [ ] **Step 1: Create the shared decoder**
+
+Create `tools/png-decode.mjs`. Move the chunk walk, the inflate + guards, and the scanline unfilter out of `tools/png-analyse.mjs` verbatim — including the three guards Task 1's review added — and expand to flat RGBA at the end:
+
+```javascript
+// Shared PNG → RGBA decode. Owned here so the measuring path (png-analyse) and
+// the transforming path (png-crop) cannot drift: the chunk walk, the five
+// scanline filters, and the malformed-input guards exist exactly once.
+//
+// Three-way return, because callers need to tell "not a PNG" from "a PNG I
+// can't handle":
+//   null                        → not a PNG
+//   { ...ihdr, unsupported }    → a PNG, but undecodable
+//   { w, h, rgba }              → decoded, 4 bytes per pixel
+import zlib from 'node:zlib';
+
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+
+export function decodePng(buf) {
+  if (!buf || buf.length < 33 || !buf.slice(0, 8).equals(PNG_SIG)) return null;
+  let pos = 8, ihdr = null, idat = [], plte = null, trns = null;
+  while (pos + 8 <= buf.length) {
+    const len = buf.readUInt32BE(pos);
+    const type = buf.slice(pos + 4, pos + 8).toString('latin1');
+    const data = buf.slice(pos + 8, pos + 8 + len);
+    if (type === 'IHDR') {
+      ihdr = { w: data.readUInt32BE(0), h: data.readUInt32BE(4), depth: data[8], color: data[9], interlace: data[12] };
+    } else if (type === 'IDAT') idat.push(data);
+    else if (type === 'PLTE') plte = data;
+    else if (type === 'tRNS') trns = data;
+    else if (type === 'IEND') break;
+    pos += 12 + len;
+  }
+  if (!ihdr) return null;
+  const bad = { ...ihdr, unsupported: true };
+  if (ihdr.depth !== 8 || ihdr.interlace !== 0) return bad;
+  const bpp = CHANNELS[ihdr.color];
+  if (!bpp) return bad;
+  // An indexed PNG with no palette would throw on the palette reads below.
+  if (ihdr.color === 3 && !plte) return bad;
+
+  const stride = ihdr.w * bpp;
+  let raw;
+  try { raw = zlib.inflateSync(Buffer.concat(idat)); } catch { return bad; }
+  // A short IDAT must not decode silently: reading past `raw` yields
+  // `undefined & 0xff` === 0, which turns missing scanlines into transparent
+  // black and corrupts every measurement downstream.
+  if (raw.length < ihdr.h * (stride + 1)) return bad;
+
+  const out = Buffer.alloc(ihdr.h * stride);
+  let rp = 0;
+  for (let y = 0; y < ihdr.h; y++) {
+    const filter = raw[rp++];
+    const line = raw.slice(rp, rp + stride); rp += stride;
+    const o = y * stride, prev = (y - 1) * stride;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= bpp ? out[o + x - bpp] : 0;
+      const b = y > 0 ? out[prev + x] : 0;
+      const c = (x >= bpp && y > 0) ? out[prev + x - bpp] : 0;
+      let v = line[x];
+      if (filter === 1) v += a;
+      else if (filter === 2) v += b;
+      else if (filter === 3) v += ((a + b) >> 1);
+      else if (filter === 4) {
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        v += (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+      }
+      out[o + x] = v & 0xff;
+    }
+  }
+
+  const rgba = Buffer.alloc(ihdr.w * ihdr.h * 4);
+  for (let i = 0, n = ihdr.w * ihdr.h; i < n; i++) {
+    const s = i * bpp; let r, g, b, a = 255;
+    if (ihdr.color === 6) { r = out[s]; g = out[s + 1]; b = out[s + 2]; a = out[s + 3]; }
+    else if (ihdr.color === 2) { r = out[s]; g = out[s + 1]; b = out[s + 2]; }
+    else if (ihdr.color === 0) { r = g = b = out[s]; }
+    else if (ihdr.color === 4) { r = g = b = out[s]; a = out[s + 1]; }
+    else {
+      const ix = out[s];
+      r = plte[ix * 3]; g = plte[ix * 3 + 1]; b = plte[ix * 3 + 2];
+      a = trns && ix < trns.length ? trns[ix] : 255;
+    }
+    rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
+  }
+  return { w: ihdr.w, h: ihdr.h, rgba };
+}
+```
+
+- [ ] **Step 2: Refactor `png-analyse.mjs` onto the shared decoder**
+
+`tools/png-analyse.mjs` keeps its exact public contract — same return shape, same thresholds — but stops owning the decode. Replace its body with:
+
+```javascript
+// Measures a PNG for the two facts the logo pipeline needs:
+//   needsBacking : is the mark dark or sparse enough to vanish on #09090b?
+//   bleed        : is the art opaque and bright, i.e. already its own tile?
+// Decoding lives in png-decode.mjs so the measuring and transforming paths
+// cannot drift apart.
+import { decodePng } from './png-decode.mjs';
+
+export function analysePng(buf) {
+  const img = decodePng(buf);
+  if (!img) return null;
+  if (img.unsupported) return img;
+
+  let lumSum = 0, satSum = 0, opaque = 0;
+  for (let i = 0, n = img.w * img.h; i < n; i++) {
+    const o = i * 4;
+    const a = img.rgba[o + 3];
+    if (a < 128) continue;
+    opaque++;
+    const r = img.rgba[o], g = img.rgba[o + 1], b = img.rgba[o + 2];
+    lumSum += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    satSum += mx === 0 ? 0 : (mx - mn) / mx;
+  }
+  const total = img.w * img.h;
+  const cover = opaque / total;
+  const meanLum = opaque ? lumSum / opaque : 0;
+  return {
+    w: img.w, h: img.h,
+    alphaCoverage: +cover.toFixed(3),
+    meanLum: +meanLum.toFixed(3),
+    meanSat: +(opaque ? satSum / opaque : 0).toFixed(3),
+    // Near-black art vanishes on #09090b; sparse art is a smudge at 34px.
+    needsBacking: meanLum < 0.34 || cover < 0.15,
+    // Opaque + bright art already carries its own white ground — it IS the tile.
+    bleed: cover > 0.9 && meanLum > 0.6,
+  };
+}
+```
+
+**Do not change the thresholds, the luminance coefficients, the rounding, or the returned field names.** The comparisons must keep using the full-precision `meanLum` / `cover`, never the rounded display fields.
+
+- [ ] **Step 3: Prove the refactor changed no behaviour**
+
+Run: `node backend/test/logo-imaging.test.mjs`
+Expected: all of Task 1's existing tests still pass, **unmodified**. If a test needed editing to pass, the refactor changed behaviour — stop and report rather than editing the test.
+
+Then re-verify against real art:
+
+```bash
+node --input-type=module -e "
+import { analysePng } from './tools/png-analyse.mjs';
+const r = await fetch('https://financialmodelingprep.com/image-stock/AAPL.png');
+console.log(analysePng(Buffer.from(await r.arrayBuffer())));
+"
+```
+
+Expected, unchanged from Task 1: `w: 100, h: 100, alphaCoverage: 1, meanLum: 0.892, bleed: true, needsBacking: false`. If the network is unavailable, say so in the report — do not fabricate the values.
+
+- [ ] **Step 4: Write the failing tests for the crop functions**
 
 Append to `backend/test/logo-imaging.test.mjs`:
 
@@ -318,6 +486,15 @@ test('decode → encode round-trips pixel data exactly', () => {
   assert.deepStrictEqual(again.rgba, img.rgba);
 });
 
+test('encodeRGBA output survives a non-uniform gradient, exercising real filter math', () => {
+  // Uniform fills make every Paeth neighbour equal, which hides predictor bugs.
+  // A gradient gives a !== b !== c on most pixels.
+  const src = makePng(24, 24, (x, y) => [(x * 11) % 256, (y * 7) % 256, (x * y) % 256, 255]);
+  const a = decodeRGBA(src);
+  const b = decodeRGBA(encodeRGBA(a.w, a.h, a.rgba));
+  assert.deepStrictEqual(b.rgba, a.rgba);
+});
+
 test('inkBox finds the mark and ignores transparent padding', () => {
   const img = decodeRGBA(makePng(100, 100, (x, y) =>
     (x >= 30 && x < 70 && y >= 40 && y < 60) ? [10, 10, 200, 255] : [0, 0, 0, 0]));
@@ -325,7 +502,8 @@ test('inkBox finds the mark and ignores transparent padding', () => {
 });
 
 test('inkBox treats a near-white background as background, not ink', () => {
-  // FMP ships some logos opaque-on-white; the white ground must not widen the box.
+  // Several sources ship logos drawn on a solid white square; the white ground
+  // must not widen the box to the full canvas.
   const img = decodeRGBA(makePng(100, 100, (x, y) =>
     (x >= 20 && x < 40 && y >= 20 && y < 40) ? [0, 0, 0, 255] : [255, 255, 255, 255]));
   assert.deepStrictEqual(inkBox(img), { x: 20, y: 20, w: 20, h: 20 });
@@ -344,33 +522,48 @@ test('crop extracts exactly the requested region', () => {
 });
 
 test('squarePad centres a wide wordmark without distorting it', () => {
-  // The Satrix case: a 3.9:1 mark must become square by padding, never by stretching.
+  // The Satrix case: a 3.9:1 mark must become square by padding, never stretching.
   const img = decodeRGBA(makePng(40, 10, () => [0, 0, 255, 255]));
   const sq = squarePad(img, 0.1);
   assert.strictEqual(sq.w, sq.h, 'result must be square');
   assert.strictEqual(sq.w, 48); // round(40 * 1.2)
-  // Corners stay transparent; the mark sits centred.
-  assert.strictEqual(sq.rgba[3], 0);
+  assert.strictEqual(sq.rgba[3], 0, 'corners stay transparent');
   const cx = Math.floor(sq.w / 2), cy = Math.floor(sq.h / 2);
-  assert.strictEqual(sq.rgba[(cy * sq.w + cx) * 4 + 3], 255);
+  assert.strictEqual(sq.rgba[(cy * sq.w + cx) * 4 + 3], 255, 'mark sits centred');
+});
+
+test('decodeRGBA collapses an undecodable PNG to null', () => {
+  // png-decode reports {unsupported:true}; the crop path only cares yes/no.
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(4, 0); ihdr.writeUInt32BE(4, 4); ihdr[8] = 16; ihdr[9] = 6; // depth 16
+  const deep = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(Buffer.alloc(4 * (16 + 1)), { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  assert.strictEqual(decodeRGBA(deep), null);
+});
+
+test('decodeRGBA returns null for a non-PNG', () => {
+  assert.strictEqual(decodeRGBA(Buffer.from('definitely not a png')), null);
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 5: Run the tests to verify they fail**
 
 Run: `node backend/test/logo-imaging.test.mjs`
 Expected: FAIL — `Cannot find module '../../tools/png-crop.mjs'`
 
-- [ ] **Step 3: Write the implementation**
-
-Create `tools/png-crop.mjs`:
+- [ ] **Step 6: Write `tools/png-crop.mjs`**
 
 ```javascript
-// Dependency-free PNG crop: decode → slice → re-encode as RGBA.
-// Used to lift a square symbol mark out of a wide issuer wordmark (Satrix's X).
-// No resampling exists here and none is needed — CSS scales the tile — so a
-// decoder plus a plain encoder is the entire imaging requirement.
+// Crop / square-pad for the logo pack: lifts a square symbol mark out of a wide
+// issuer wordmark (Satrix's X) and centres any mark on a square canvas.
+// Decoding is delegated to png-decode.mjs — this module owns transformation only.
+// No resampling exists here and none is needed: CSS scales the tile.
 import zlib from 'node:zlib';
+import { decodePng } from './png-decode.mjs';
 
 function crc32(buf) {
   let c, crc = 0xffffffff;
@@ -388,55 +581,10 @@ function chunk(type, data) {
   return Buffer.concat([len, td, crc]);
 }
 
+// The transform path only needs "did it decode?", so undecodable collapses to null.
 export function decodeRGBA(buf) {
-  if (!buf || buf.length < 33 || buf[0] !== 0x89) return null;
-  let pos = 8, ihdr = null, idat = [], plte = null, trns = null;
-  while (pos + 8 <= buf.length) {
-    const len = buf.readUInt32BE(pos);
-    const type = buf.slice(pos + 4, pos + 8).toString('latin1');
-    const data = buf.slice(pos + 8, pos + 8 + len);
-    if (type === 'IHDR') ihdr = { w: data.readUInt32BE(0), h: data.readUInt32BE(4), depth: data[8], color: data[9], interlace: data[12] };
-    else if (type === 'IDAT') idat.push(data);
-    else if (type === 'PLTE') plte = data;
-    else if (type === 'tRNS') trns = data;
-    else if (type === 'IEND') break;
-    pos += 12 + len;
-  }
-  if (!ihdr || ihdr.depth !== 8 || ihdr.interlace !== 0) return null;
-  const CH = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[ihdr.color];
-  if (!CH) return null;
-  const stride = ihdr.w * CH;
-  const raw = zlib.inflateSync(Buffer.concat(idat));
-  const out = Buffer.alloc(ihdr.h * stride);
-  let rp = 0;
-  for (let y = 0; y < ihdr.h; y++) {
-    const f = raw[rp++], line = raw.slice(rp, rp + stride); rp += stride;
-    const o = y * stride, pv = (y - 1) * stride;
-    for (let x = 0; x < stride; x++) {
-      const a = x >= CH ? out[o + x - CH] : 0;
-      const b = y > 0 ? out[pv + x] : 0;
-      const c = (x >= CH && y > 0) ? out[pv + x - CH] : 0;
-      let v = line[x];
-      if (f === 1) v += a; else if (f === 2) v += b;
-      else if (f === 3) v += ((a + b) >> 1);
-      else if (f === 4) {
-        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-        v += (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
-      }
-      out[o + x] = v & 0xff;
-    }
-  }
-  const rgba = Buffer.alloc(ihdr.w * ihdr.h * 4);
-  for (let i = 0, n = ihdr.w * ihdr.h; i < n; i++) {
-    const s = i * CH; let r, g, b, a = 255;
-    if (ihdr.color === 6) { r = out[s]; g = out[s + 1]; b = out[s + 2]; a = out[s + 3]; }
-    else if (ihdr.color === 2) { r = out[s]; g = out[s + 1]; b = out[s + 2]; }
-    else if (ihdr.color === 0) { r = g = b = out[s]; }
-    else if (ihdr.color === 4) { r = g = b = out[s]; a = out[s + 1]; }
-    else { const ix = out[s]; r = plte[ix * 3]; g = plte[ix * 3 + 1]; b = plte[ix * 3 + 2]; a = trns && ix < trns.length ? trns[ix] : 255; }
-    rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
-  }
-  return { w: ihdr.w, h: ihdr.h, rgba };
+  const img = decodePng(buf);
+  return (img && !img.unsupported) ? img : null;
 }
 
 export function encodeRGBA(w, h, rgba) {
@@ -495,19 +643,17 @@ export function squarePad(img, margin = 0.08) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `node backend/test/logo-imaging.test.mjs`
-Expected: PASS — 13 tests total (6 from Task 1 + 7 here).
+Expected: PASS, `fail 0`, output pristine — Task 1's tests plus the 9 added here. Assert on "all passing", not a fixed total.
 
-- [ ] **Step 5: Verify against the real Satrix wordmark**
-
-Run:
+- [ ] **Step 8: Verify against the real Satrix wordmark**
 
 ```bash
 node --input-type=module -e "
-import {writeFileSync} from 'node:fs';
-import {decodeRGBA,encodeRGBA,inkBox,crop,squarePad} from './tools/png-crop.mjs';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { decodeRGBA, encodeRGBA, inkBox, crop, squarePad } from './tools/png-crop.mjs';
 const r = await fetch('https://satrix.co.za/assets/logo-nav.png');
 const img = decodeRGBA(Buffer.from(await r.arrayBuffer()));
 console.log('source', img.w + 'x' + img.h);
@@ -520,14 +666,15 @@ console.log('squared ->', sq.w + 'x' + sq.h);
 "
 ```
 
-Expected: `source 768x196`, `squared -> 240x240`, and `satrix-mark.png` opens as the cyan/blue Satrix **X** on transparency. Delete the file afterwards — it is a check, not an artefact.
+Expected: `source 768x196` and `squared -> 240x240`. Open `satrix-mark.png` and confirm it is the cyan/blue Satrix **X** on transparency, not a slice of the "SATRIX" wordmark. **Then delete the file** — it is a check, not an artefact. If the network is unavailable, report the step skipped.
 
-- [ ] **Step 6: Commit** 
+- [ ] **Step 9: Commit**
 
 ```bash
-git add tools/png-crop.mjs backend/test/logo-imaging.test.mjs
-git commit -m "feat(logos): dependency-free PNG crop + square-pad"
+git add tools/png-decode.mjs tools/png-crop.mjs tools/png-analyse.mjs backend/test/logo-imaging.test.mjs
+git commit -m "feat(logos): shared PNG decoder + dependency-free crop/square-pad"
 ```
+
 
 ---
 
