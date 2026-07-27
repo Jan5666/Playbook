@@ -1,6 +1,10 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v89';
+const CACHE_NAME   = 'playbook-shell-v90';
 const CDN_CACHE    = 'playbook-cdn-v1';
+// Instrument logos: immutable per filename, so cache-first. Bumped only when
+// the pack is rebuilt. Deliberately NOT in SHELL_ASSETS — cache.addAll is
+// atomic, so one bad file there would fail the entire SW install.
+const LOGO_CACHE   = 'playbook-logos-v1';
 
 // pb-core.js is the single source of truth for Yahoo symbols, the cent/pence
 // divisor, and alert evaluation (CLAUDE.md rule #6). importScripts populates
@@ -54,7 +58,7 @@ self.addEventListener('activate', (e) => {
     caches.keys()
       .then(keys => Promise.all(
         keys
-          .filter(k => k !== CACHE_NAME && k !== CDN_CACHE)
+          .filter(k => k !== CACHE_NAME && k !== CDN_CACHE && k !== LOGO_CACHE)
           .map(k => caches.delete(k))
       ))
       .then(() => self.clients.claim())
@@ -67,6 +71,13 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(request.url);
 
   if (request.method !== 'GET') return;
+
+  // Logos are content-stable per filename → cache-first, so a scrolled list
+  // never refetches. Must precede the same-origin network-first rule below.
+  if (url.origin === self.location.origin && url.pathname.includes('/logos/')) {
+    e.respondWith(cacheFirst(request, LOGO_CACHE));
+    return;
+  }
 
   // Same-origin assets → Network-First
   // Always try the network so deploys take effect immediately.
@@ -90,6 +101,15 @@ self.addEventListener('fetch', (e) => {
 });
 
 // ─── Cache strategies ─────────────────────────────────────────────────────────
+
+function cacheFirst(request, cacheName) {
+  return caches.open(cacheName).then(cache =>
+    cache.match(request).then(cached => cached || fetch(request).then(response => {
+      if (response.ok) cache.put(request, response.clone());
+      return response;
+    }).catch(() => cached))
+  );
+}
 
 function networkFirst(request, cacheName) {
   return fetch(request)
