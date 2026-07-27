@@ -382,3 +382,77 @@ test('short IDAT buffer returns unsupported', () => {
   assert.strictEqual(result.w, w);
   assert.strictEqual(result.h, h);
 });
+
+import { decodeRGBA, encodeRGBA, inkBox, crop, squarePad } from '../../tools/png-crop.mjs';
+
+test('decode → encode round-trips pixel data exactly', () => {
+  const src = makePng(16, 8, (x, y) => [x * 8, y * 8, 128, 255]);
+  const img = decodeRGBA(src);
+  assert.strictEqual(img.w, 16);
+  assert.strictEqual(img.h, 8);
+  const again = decodeRGBA(encodeRGBA(img.w, img.h, img.rgba));
+  assert.deepStrictEqual(again.rgba, img.rgba);
+});
+
+test('encodeRGBA output survives a non-uniform gradient, exercising real filter math', () => {
+  // Uniform fills make every Paeth neighbour equal, which hides predictor bugs.
+  // A gradient gives a !== b !== c on most pixels.
+  const src = makePng(24, 24, (x, y) => [(x * 11) % 256, (y * 7) % 256, (x * y) % 256, 255]);
+  const a = decodeRGBA(src);
+  const b = decodeRGBA(encodeRGBA(a.w, a.h, a.rgba));
+  assert.deepStrictEqual(b.rgba, a.rgba);
+});
+
+test('inkBox finds the mark and ignores transparent padding', () => {
+  const img = decodeRGBA(makePng(100, 100, (x, y) =>
+    (x >= 30 && x < 70 && y >= 40 && y < 60) ? [10, 10, 200, 255] : [0, 0, 0, 0]));
+  assert.deepStrictEqual(inkBox(img), { x: 30, y: 40, w: 40, h: 20 });
+});
+
+test('inkBox treats a near-white background as background, not ink', () => {
+  // Several sources ship logos drawn on a solid white square; the white ground
+  // must not widen the box to the full canvas.
+  const img = decodeRGBA(makePng(100, 100, (x, y) =>
+    (x >= 20 && x < 40 && y >= 20 && y < 40) ? [0, 0, 0, 255] : [255, 255, 255, 255]));
+  assert.deepStrictEqual(inkBox(img), { x: 20, y: 20, w: 20, h: 20 });
+});
+
+test('inkBox returns null for a fully transparent image', () => {
+  assert.strictEqual(inkBox(decodeRGBA(makePng(8, 8, () => [0, 0, 0, 0]))), null);
+});
+
+test('crop extracts exactly the requested region', () => {
+  const img = decodeRGBA(makePng(10, 10, (x) => [x * 25, 0, 0, 255]));
+  const c = crop(img, { x: 4, y: 0, w: 3, h: 2 });
+  assert.strictEqual(c.w, 3);
+  assert.strictEqual(c.h, 2);
+  assert.strictEqual(c.rgba[0], 100); // x=4 → 4*25
+});
+
+test('squarePad centres a wide wordmark without distorting it', () => {
+  // The Satrix case: a 3.9:1 mark must become square by padding, never stretching.
+  const img = decodeRGBA(makePng(40, 10, () => [0, 0, 255, 255]));
+  const sq = squarePad(img, 0.1);
+  assert.strictEqual(sq.w, sq.h, 'result must be square');
+  assert.strictEqual(sq.w, 48); // round(40 * 1.2)
+  assert.strictEqual(sq.rgba[3], 0, 'corners stay transparent');
+  const cx = Math.floor(sq.w / 2), cy = Math.floor(sq.h / 2);
+  assert.strictEqual(sq.rgba[(cy * sq.w + cx) * 4 + 3], 255, 'mark sits centred');
+});
+
+test('decodeRGBA collapses an undecodable PNG to null', () => {
+  // png-decode reports {unsupported:true}; the crop path only cares yes/no.
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(4, 0); ihdr.writeUInt32BE(4, 4); ihdr[8] = 16; ihdr[9] = 6; // depth 16
+  const deep = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(Buffer.alloc(4 * (16 + 1)), { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  assert.strictEqual(decodeRGBA(deep), null);
+});
+
+test('decodeRGBA returns null for a non-PNG', () => {
+  assert.strictEqual(decodeRGBA(Buffer.from('definitely not a png')), null);
+});
