@@ -73,3 +73,21 @@ test('anti-drift: build-logos.mjs contains no bare-ticker URL builder', () => {
   assert.ok(!/logos\/symbol\/\$\{/.test(src),
     'build-logos.mjs builds a Parqet symbol URL directly — it must go through chainFor()');
 });
+
+test('anti-drift: the orchestrator builds no logo URL of its own', () => {
+  // The Vail Resorts bug returns HTTP 200, so nothing downstream can catch it.
+  // The only defence is that build-logos.mjs never constructs a provider URL —
+  // every candidate must come from chainFor(), which enforces the market rule.
+  // Grepping for one string shape is dodgeable (proven in Task 3 review); assert
+  // the absence of provider hosts entirely, in any spelling.
+  const src = readFileSync(join(ROOT, 'tools', 'build-logos.mjs'), 'utf8');
+  const HOSTS = ['financialmodelingprep', 'assets.parqet.com', 'parqet.com', 'cryptocurrency-icons', 'jsdelivr'];
+  for (const h of HOSTS) {
+    assert.ok(!src.includes(h),
+      `build-logos.mjs names the provider host "${h}" — provider URLs must come from chainFor() only`);
+  }
+  // And it must actually import the resolver rather than rolling its own.
+  assert.match(src, /from\s+['"]\.\/logo-sources\.mjs['"]/,
+    'build-logos.mjs must import its candidates from logo-sources.mjs');
+  assert.match(src, /chainFor\s*\(/, 'build-logos.mjs must resolve candidates via chainFor()');
+});

@@ -259,5 +259,18 @@ const ROTATION_SECTOR_SHORT = {
   'Utilities': 'Utilities',
 };
 
-return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS, ROTATION_COPY, ROTATION_SECTOR_SHORT };
+// Instrument logo pack. GENERATED — do not hand-edit; run `node tools/build-logos.mjs`.
+// Keys are `MARKET:TICKER`. `f` = filename under ./logos/, `b` = bleed (art is
+// its own tile), `k` = needs a white backing. No flag = plain, no tile.
+// <<< LOGO_MANIFEST_START
+const LOGO_MANIFEST = {};
+// <<< LOGO_MANIFEST_END
+
+// Market-scoped so `SOL` cannot resolve Sasol art for Solana (see the logo spec).
+function logoFor(ticker, market) {
+  if (!ticker || !market) return null;
+  return LOGO_MANIFEST[market + ':' + ticker] || null;
+}
+
+return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS, ROTATION_COPY, ROTATION_SECTOR_SHORT, LOGO_MANIFEST, logoFor };
 });

@@ -22,3 +22,6 @@ scratchpad/
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Logo pack contact sheet (human-review artifact, not shipped)
+logos/contact-sheet.html
