@@ -114,10 +114,19 @@ async function shot(ws, name) {
   console.log(`  shot holdings-${name}.png`);
 }
 
-// Click a Holdings sub-tab (US / JSE / TFSA) by its visible label.
+// Click a Holdings sub-tab (US / JSE / TFSA) by its visible label, then wait for
+// its rows. Polling rather than a fixed sleep: on a slow or loaded machine the app
+// can still be booting when the tab is clicked, and every check below then runs
+// against zero rows — a false red that looks exactly like a real regression.
 const clickMarket = (label) => `
-  const b=[...document.querySelectorAll('.toggle-opt-market')].find(x=>x.textContent.trim().startsWith(${JSON.stringify(label)}));
-  if(!b) return false; b.click(); return true;`;
+  const dl=Date.now()+20000;
+  while(Date.now()<dl){
+    const b=[...document.querySelectorAll('.toggle-opt-market')].find(x=>x.textContent.trim().startsWith(${JSON.stringify(label)}));
+    if(b){ b.click(); await new Promise(r=>setTimeout(r,250));
+           if(document.querySelector('.holding-row')) return true; }
+    await new Promise(r=>setTimeout(r,200));
+  }
+  return false;`;
 
 // Inspect every holding row currently rendered.
 const inspect = `
@@ -161,8 +170,11 @@ try {
   await sleep(800);
 
   // Go to Holdings tab.
-  await evals(ws, `const b=document.querySelector('[data-tab="current"]'); if(b) b.click(); return true;`);
-  await sleep(600);
+  await evals(ws, `
+    const dl=Date.now()+20000;
+    while(Date.now()<dl){ const b=document.querySelector('[data-tab="current"]'); if(b){ b.click(); return true; } await new Promise(r=>setTimeout(r,200)); }
+    return false;`);
+  await sleep(300);
 
   let allHeights = [];
   let allRows = [];
