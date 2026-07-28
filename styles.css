@@ -4103,18 +4103,19 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
    bar/sheen/wordmark animation timing are unchanged from the source; the only
    additions are the opacity transition for the fade-out and a wordmark font
    swapped to the app's brand serif (var(--serif)) so we don't pull a second
-   web font just for the splash. Theme follows the OS via prefers-color-scheme,
-   as in the source. The global reset already sets box-sizing/margins, so the
-   source's `*` and `html,body` rules are intentionally omitted. */
-:root {
+   web font just for the splash. Theme follows the app's own data-theme (set
+   pre-paint by the inline script in index.html), NOT prefers-color-scheme as in
+   the source: the splash and the app must never disagree, or the handoff flashes
+   for anyone whose OS preference differs from their saved pb.theme.v2. The global
+   reset already sets box-sizing/margins, so the source's `*` and `html,body`
+   rules are intentionally omitted. */
+:root, :root[data-theme="dark"] {
   --pb-bg: #070709; --pb-tile: #0E0E16; --pb-border: #1C1C28;
   --pb-word: #F2F2F7; --pb-sheen: rgba(255,255,255,0.16);
 }
-@media (prefers-color-scheme: light) {
-  :root {
-    --pb-bg: #F4F4F2; --pb-tile: #FFFFFF; --pb-border: #E6E4DD;
-    --pb-word: #13131A; --pb-sheen: rgba(110,110,240,0.14);
-  }
+:root[data-theme="light"] {
+  --pb-bg: #F4F4F2; --pb-tile: #FFFFFF; --pb-border: #E6E4DD;
+  --pb-word: #13131A; --pb-sheen: rgba(110,110,240,0.14);
 }
 .pb-loader {
   position: fixed; inset: 0; z-index: 9999;
@@ -4133,9 +4134,17 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   width: 13px; height: 50px; border-radius: 4px; transform-origin: bottom center;
   animation: pb-wave 1.4s ease-in-out infinite;
 }
-.pb-bar:nth-child(1) { background: linear-gradient(180deg,#8A8AFF,#6E6EF0); animation-delay: 0s; }
-.pb-bar:nth-child(2) { background: linear-gradient(180deg,#7C7CF5,#5A5AD0); animation-delay: .16s; }
-.pb-bar:nth-child(3) { background: linear-gradient(180deg,#9A9AFF,#6E6EF0); animation-delay: .32s; }
+/* Delays are NEGATIVE on purpose - do not "tidy" them back to 0/.16/.32s.
+   pb-wave has no animation-fill-mode, so during a POSITIVE delay a bar renders in
+   its un-animated state (scaleY(1), full opacity): taller and brighter than the
+   one bar already moving. That left bars 2 and 3 frozen for the first 160/320ms of
+   every animation start, which read as "only one bar moves". A negative delay -D
+   starts the animation immediately at phase D, and since the period is 1.4s these
+   values are congruent to the old 0 / -.16 / -.32 stagger (mod 1.4) - identical
+   look, but all three bars are mid-wave on the very first painted frame. */
+.pb-bar:nth-child(1) { background: linear-gradient(180deg,#8A8AFF,#6E6EF0); animation-delay: -1.40s; }
+.pb-bar:nth-child(2) { background: linear-gradient(180deg,#7C7CF5,#5A5AD0); animation-delay: -1.24s; }
+.pb-bar:nth-child(3) { background: linear-gradient(180deg,#9A9AFF,#6E6EF0); animation-delay: -1.08s; }
 .pb-sheen {
   position: absolute; top: 0; left: 0; width: 42%; height: 100%;
   background: linear-gradient(105deg,transparent,var(--pb-sheen),transparent);
