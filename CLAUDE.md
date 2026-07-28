@@ -77,6 +77,15 @@ Rebuilding the **logo pack** (`node tools/build-logos.mjs`) also needs `LOGO_CAC
 bumped in sw.js: `logos/*.png` are served cache-first under stable filenames, so
 without it every installed PWA keeps the old marks forever.
 
+Rebuilding the **iOS launch images** (`node tools/build-splash.mjs` -> `brand/splash/*.png`)
+means re-wiring the `apple-touch-startup-image` links in index.html to match: that generator
+owns the device list, the media queries and the fill colours, and `splash-boot.test.mjs`
+fails if index.html, the built files' actual pixel dimensions, or `--pb-bg` in styles.css
+drift apart. These are what stop iOS flashing a white screen on launch (Safari ignores the
+manifest's `background_color`), and iOS silently ignores any image whose size isn't an exact
+device match — so every failure mode here is invisible except as "the flicker is back".
+They are deliberately NOT in `SHELL_ASSETS` (see the note there).
+
 Adding a **new runtime file** additionally requires ALL of:
 1. `<script>` tag in `index.html` (real order, verified: pb-core → pb-data → pb-store →
    pb-content → pb-import → **pb-views → pb-modals** → data.js → demo-data.js → app.js —
