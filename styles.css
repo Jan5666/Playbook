@@ -25,6 +25,15 @@
      loaded, so this is also one fewer font to fetch. */
   --mono: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  /* Shared list-row figure scale. ONE definition for both lists: the Holdings
+     row (current value / P&L) and the Watchlist card (price / day move) read as
+     one system, so neither tab can drift away from the other. */
+  --row-figure: 13.5px;
+  --row-figure-sub: 10.5px;
+  /* Width of the trailing disclosure column on a holding row. The list header
+     reserves the same width (.hlh-more) so its "Current value" label stays over
+     the value column. */
+  --row-more: 24px;
   --safe-top: env(safe-area-inset-top);
   --safe-bottom: env(safe-area-inset-bottom);
   --safe-left: env(safe-area-inset-left);
@@ -502,9 +511,8 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .btn-edit-inline:active { background: color-mix(in srgb, var(--text-dim) 14%, transparent); color: var(--text); }
-/* Holding-row action buttons sit on their own line under the meta */
-.row-actions { display: flex; gap: 6px; margin-top: 8px; }
-.row-actions .btn-sell-inline, .row-actions .btn-buy-inline, .row-actions .btn-edit-inline { margin-left: 0; padding: 4px 5px; font-size: 11px; }
+/* Holding-row action buttons live in the row's drawer (see .row-actions below) */
+.row-actions .btn-sell-inline, .row-actions .btn-buy-inline, .row-actions .btn-edit-inline { margin-left: 0; padding: 5px 6px; font-size: 11.5px; }
 /* Sell-by-percentage quick chips in the Sell modal */
 .sell-pct-chips { display: flex; gap: 8px; }
 .sell-pct-chip {
@@ -526,20 +534,41 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
   color: var(--text-dim); font-size: 14px; pointer-events: none;
 }
-/* Three-zone holding row: name (left, main) · gain/loss (middle) · value (right),
-   with a full-width action strip beneath. */
-.holding-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px 12px; align-items: center; }
-/* Bottom strip spans the full width: the Buy / Sell / Edit cluster sits in the
-   left corner (~30% of the card width, the three sharing it equally so they stay
-   identical on every card), and the Avg cost figure is pushed to the right edge,
-   on the same row as Edit. */
-.holding-row .row-actions { grid-column: 1 / -1; width: 100%; margin-top: 2px; gap: 10px; align-items: center; }
-.holding-row .row-actions-btns { display: flex; gap: 5px; width: 30%; min-width: 116px; flex-shrink: 0; }
-.holding-row .row-actions-btns > button { flex: 1 1 0; justify-content: center; min-width: 0; }
-.holding-row .row-actions .hold-avg { margin-left: auto; font-size: 12px; }
+/* Four-zone holding row: name (left, main) · gain/loss (middle) · value (right) ·
+   a trailing disclosure chevron, with the action drawer rolling down beneath.
+   Row-gap is 0 on purpose: a closed drawer must add no height at all, so the
+   drawer supplies its own top padding once it is open. */
+.holding-row { grid-template-columns: minmax(0, 1fr) auto auto var(--row-more); gap: 0 12px; align-items: center; }
+/* Buy / Sell / Edit live in a drawer that is collapsed by default — a list of 20
+   positions shows 20 rows of numbers, not 60 buttons. The chevron opens it with a
+   0fr -> 1fr roll-down (the modern accordion idiom: no magic max-height, and it
+   degrades to a snap on engines that can't interpolate it). */
+.holding-row .row-actions {
+  grid-column: 1 / -1; width: 100%;
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows 0.34s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.holding-row .row-actions.open { grid-template-rows: 1fr; }
+.row-actions-clip { overflow: hidden; min-height: 0; }
+.holding-row .row-actions-btns {
+  display: flex; gap: 6px; width: 100%; padding-top: 10px;
+  opacity: 0; transform: translateY(-4px); pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.holding-row .row-actions.open .row-actions-btns { opacity: 1; transform: none; pointer-events: auto; }
+.holding-row .row-actions-btns > button { flex: 1 1 0; justify-content: center; min-width: 0; min-height: 28px; }
+/* The disclosure itself — muted until opened, then it flips to point up. */
+.row-more {
+  width: var(--row-more); height: 32px; padding: 0; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; color: var(--text-dim);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), color 0.18s;
+}
+.row-more.open { transform: rotate(180deg); color: var(--text-muted); }
 /* Ticker leads (main heading) with a small market badge beside it; the company
-   name sits underneath. Both the ticker line and the name/avg-cost line are a
-   single fixed-height row, so every holding box shares one compact height. */
+   name sits underneath. Both lines are a single fixed-height row, so every
+   holding box shares one compact height. */
 .holding-row { padding: 11px 13px; }
 .hold-id { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .hold-tkr-main {
@@ -559,22 +588,22 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   color: var(--text-muted);
 }
-.hold-avg { flex: 0 0 auto; white-space: nowrap; color: var(--text-dim); }
 .holding-gl { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; text-align: right; margin-left: 10px; }
 /* Gain/loss amount matches the current-value figure size so the two primary
-   numbers on a row carry equal weight. */
-.holding-gl-amt { font-size: 15px; font-weight: 700; }
-.holding-gl-pct { font-size: 11px; font-weight: 600; }
+   numbers on a row carry equal weight — one var drives both. */
+.holding-gl-amt { font-size: var(--row-figure); font-weight: 700; }
+.holding-gl-pct { font-size: var(--row-figure-sub); font-weight: 600; }
 /* Right zone: current value large, the day's move small underneath.
    Extra left margin sets the value apart from the gain/loss column. */
 .holding-row .row-right { margin-left: 14px; }
-.holding-value { font-family: var(--mono); font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
-/* Today's move as a flat, solid green/red box with white numerals — matches the
-   watchlist day-move box so the two lists read as one system. */
+.holding-value { font-family: var(--mono); font-size: var(--row-figure); font-weight: 700; letter-spacing: -0.01em; }
+/* Today's move as a flat, solid green/red box with white numerals. Same spec as
+   the watchlist day-move box (.watch-today) — font, padding, radius and min-width
+   all match on purpose so the two lists read as one system. */
 .holding-day {
-  font-family: var(--mono); font-size: 11px; font-weight: 700; margin-top: 5px;
+  font-family: var(--mono); font-size: var(--row-figure-sub); font-weight: 700; margin-top: 5px;
   display: inline-flex; align-items: center; justify-content: center;
-  padding: 4px 9px; border-radius: 7px; line-height: 1; letter-spacing: -0.01em; min-width: 62px;
+  padding: 4px 9px; border-radius: 7px; line-height: 1; letter-spacing: -0.01em; min-width: 58px;
 }
 .holding-day.text-up { color: #fff; background: var(--emerald); }
 .holding-day.text-down { color: #fff; background: var(--rose); }
@@ -634,7 +663,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
    the P/L / value margins so the labels sit over their columns and the value
    column's right edge lines up exactly. */
 .holding-list-head {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto var(--row-more);
   gap: 0 12px; align-items: baseline;
   padding: 0 13px 8px; margin-top: 2px;
   font-family: var(--mono); font-size: 10px; font-weight: 600;
@@ -642,11 +671,14 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .holding-list-head .hlh-gl { text-align: right; margin-left: 10px; }
 .holding-list-head .hlh-val { text-align: right; margin-left: 14px; white-space: nowrap; }
+/* Empty cell mirroring the row's disclosure column, so the value label keeps
+   sitting exactly over the value figures. */
+.holding-list-head .hlh-more { width: var(--row-more); }
 @media (max-width: 380px) {
-  .holding-row { gap: 8px; }
+  .holding-row { gap: 0 8px; }
   .holding-row .row-right { margin-left: 8px; }
-  .holding-value { font-size: 14px; }
-  .holding-gl-amt { font-size: 14px; }
+  .holding-value { font-size: 12.5px; }
+  .holding-gl-amt { font-size: 12.5px; }
 }
 /* Buy-more preview card */
 .buy-preview { border-color: color-mix(in srgb, var(--blue) 25%, transparent); background: color-mix(in srgb, var(--blue) 5%, var(--bg-raised)); }
@@ -2303,15 +2335,19 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
    with margin-left:auto so it lines up down the whole list. */
 .watch-body { display: flex; align-items: center; gap: 10px; }
 .watchlist-list .pos-head .price-block-wrap { text-align: right; }
+/* The card price shares the Holdings row's figure scale (--row-figure) so the
+   price/day-move block is the same size on both tabs. */
+.watchlist-list .price-lg { font-size: var(--row-figure); }
 .watch-today {
   margin-left: auto; white-space: nowrap; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: flex-end; gap: 1px; line-height: 1;
 }
-/* Day's move rendered as a flat, solid green/red box with crisp white numerals. */
+/* Day's move rendered as a flat, solid green/red box with crisp white numerals.
+   Same spec as the Holdings row's .holding-day box — keep the two in step. */
 .watch-today.up, .watch-today.down {
-  justify-content: center; padding: 5px 11px; border-radius: 7px; min-width: 76px;
+  justify-content: center; padding: 4px 9px; border-radius: 7px; min-width: 58px;
 }
-.watch-today-pct { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+.watch-today-pct { font-size: var(--row-figure-sub); font-weight: 700; letter-spacing: -0.01em; }
 .watch-today-amt { font-size: 11px; font-weight: 600; }
 .watch-today.up { background: var(--emerald); }
 .watch-today.down { background: var(--rose); }
@@ -2344,9 +2380,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .watchlist-list .ath-badge { padding: 2px 6px; }
   .watchlist-list .ath-badge-label { font-size: 7px; }
   .watchlist-list .ath-badge-val { font-size: 10px; }
-  .watchlist-list .price-lg { font-size: 17px; }
   .watch-body { gap: 8px; }
-  .watch-today-pct { font-size: 13px; }
   .watch-today-amt { font-size: 10px; }
   .watch-body .card-alert-bell { width: 28px; height: 28px; }
   .watchlist-list .market-badge { font-size: 8px; padding: 1px 5px; }

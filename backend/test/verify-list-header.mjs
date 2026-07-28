@@ -117,7 +117,10 @@ const inspect = `
   const head=document.querySelector('.holding-list-head');
   const row=document.querySelector('.holding-row');
   if(!head||!row) return JSON.stringify({head:!!head,row:!!row});
-  const labels=[...head.children].map(c=>c.textContent);
+  // The trailing cell is the empty spacer over the row's actions chevron, so the
+  // labels are read without it (its width is asserted separately).
+  const labels=[...head.children].map(c=>c.textContent).filter(t=>t.trim());
+  const spacer=head.querySelector('.hlh-more');
   const valLabel=head.querySelector('.hlh-val');
   const glLabel=head.querySelector('.hlh-gl');
   const rowVal=row.querySelector('.holding-value');
@@ -126,6 +129,8 @@ const inspect = `
   const glBox=row.querySelector('.holding-gl');
   return JSON.stringify({
     labels,
+    spacerW: spacer ? Math.round(spacer.getBoundingClientRect().width) : null,
+    moreW: row.querySelector('.row-more') ? Math.round(row.querySelector('.row-more').getBoundingClientRect().width) : null,
     valFont: cs(rowVal).fontSize,
     glAmtFont: cs(rowGlAmt).fontSize,
     glMarginLeft: cs(glBox).marginLeft,
@@ -165,6 +170,9 @@ try {
     if (!data.labels) { check(`${name}: header + row present`, false, JSON.stringify(data)); continue; }
     check(`${name}: header labels`, JSON.stringify(data.labels) === JSON.stringify(['Holding', 'P/L', 'Current value']), data.labels.join(' / '));
     check(`${name}: P/L amount == value font size`, data.valFont === data.glAmtFont, `value ${data.valFont} vs P/L ${data.glAmtFont}`);
+    // The header's spacer must be exactly as wide as the row's chevron, or the
+    // value label drifts off its column.
+    check(`${name}: header spacer matches the row chevron`, data.spacerW != null && data.spacerW === data.moreW, `spacer ${data.spacerW} vs chevron ${data.moreW}`);
     check(`${name}: extra Holding↔P/L space`, parseFloat(data.glMarginLeft) >= 8, `margin-left ${data.glMarginLeft}`);
     check(`${name}: value label aligned to value column`, Math.abs(data.valLabelRight - data.rowValRight) <= 2, `label ${data.valLabelRight} vs col ${data.rowValRight}`);
     await shot(ws, name);

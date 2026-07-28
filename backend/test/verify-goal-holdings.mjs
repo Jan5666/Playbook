@@ -160,6 +160,10 @@ try {
   await sleep(400);
 
   // ── 1. Edit does NOT auto-open the live-ticker dropdown ──
+  // Buy/Sell/Edit live in a drawer behind the row's chevron, so open it first —
+  // that is the real user path to Edit.
+  await evals(ws, `const m=document.querySelector('.row-more'); if(m) m.click(); return true;`);
+  await sleep(450); // the drawer's 340ms roll-down
   await evals(ws, `const e=document.querySelector('.btn-edit-inline'); if(e) e.click(); return true;`);
   await sleep(900); // longer than the 280ms remote-search debounce
   const editState = await evals(ws, `
