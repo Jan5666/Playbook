@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { analysePng } from '../../tools/png-analyse.mjs';
+import { DENY } from '../../tools/logo-sources.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LOGOS = join(ROOT, 'logos');
@@ -21,11 +22,31 @@ const { LOGO_MANIFEST, logoFor } = createRequire(import.meta.url)(join(ROOT, 'pb
 const onDisk = existsSync(LOGOS)
   ? readdirSync(LOGOS).filter(f => f.endsWith('.png'))
   : [];
-// Two entry shapes: { f } is a tile in logos/, { c } is the brand colour for the
-// monogram of an instrument that has no legible mark anywhere. Anything else is
-// drift — see the shape test below.
-const tiles = Object.entries(LOGO_MANIFEST).filter(([, v]) => v.f);
-const chips = Object.entries(LOGO_MANIFEST).filter(([, v]) => !v.f);
+// Entries are read through logoFor, NOT off the raw manifest. Most rows are the
+// compact `1` ("art is at the default path for this key"), which has no `.f` of
+// its own — reading raw would classify every one of them as a chip and quietly
+// skip the file-integrity tests for the bulk of the pack. logoFor is also the
+// thing the app actually calls, so testing through it tests what ships.
+const resolved = Object.keys(LOGO_MANIFEST).map((key) => {
+  const [market, ticker] = key.split(':');
+  return [key, logoFor(ticker, market)];
+});
+const tiles = resolved.filter(([, v]) => v && v.f);
+const chips = resolved.filter(([, v]) => v && !v.f);
+
+test('the compact encoding resolves, and the pack is mostly compact', () => {
+  // Guards the encoding both ways: `1` must expand to the default path, and the
+  // saving must be real. If a change ever stopped emitting `1`, every test above
+  // would still pass while pb-content.js silently doubled.
+  const compact = Object.values(LOGO_MANIFEST).filter(v => v === 1).length;
+  assert.ok(compact > tiles.length * 0.5,
+    `only ${compact} of ${tiles.length} tiles use the compact form — the encoding regressed`);
+  for (const [key, v] of resolved) {
+    if (LOGO_MANIFEST[key] !== 1) continue;
+    assert.strictEqual(v.f, `${key.replace(':', '-')}.png`,
+      `${key}: compact entry did not expand to its default path`);
+  }
+});
 
 test('every manifest entry has a file on disk', () => {
   for (const [key, v] of tiles) {
@@ -34,7 +55,7 @@ test('every manifest entry has a file on disk', () => {
 });
 
 test('every PNG on disk is listed in the manifest', () => {
-  const listed = new Set(Object.values(LOGO_MANIFEST).map(v => v.f));
+  const listed = new Set(tiles.map(([, v]) => v.f));
   for (const f of onDisk) {
     assert.ok(listed.has(f), `${f} is deployed but unlisted — dead weight`);
   }
@@ -78,9 +99,10 @@ test('the manifest carries no per-mark rendering flags', () => {
   // what made the pack look like three styles at once. A tile names its file and
   // nothing else; a chip names its brand colour and nothing else.
   for (const [key, v] of Object.entries(LOGO_MANIFEST)) {
+    if (v === 1) continue; // the compact default-path form carries no flags at all
     const shape = Object.keys(v).sort().join(',');
     assert.ok(shape === 'f' || shape === 'c',
-      `${key}: manifest entry is ${JSON.stringify(v)} — expected exactly { f } or { c }`);
+      `${key}: manifest entry is ${JSON.stringify(v)} — expected 1, { f } or { c }`);
   }
 });
 
@@ -115,8 +137,14 @@ test('no committed logo is whiteOnly', () => {
 // arguments, kept every suite green. The feature could have been entirely dead
 // (every instrument monogramming) with CI none the wiser. These fail on both.
 test('logoFor resolves a known entry, market-scoped, arguments not swappable', () => {
-  assert.deepStrictEqual(logoFor('NPN', 'JSE'), LOGO_MANIFEST['JSE:NPN']);
-  assert.ok(logoFor('NPN', 'JSE'), 'a known holding must resolve — a dead logoFor fails here');
+  // Asserts the RESOLVED shape, not the stored one. Comparing against the raw
+  // manifest entry stopped meaning anything once most rows became the compact
+  // `1`: `deepStrictEqual(logoFor(...), 1)` would only ever restate the encoding.
+  // Callers depend on { f: <path> }, so that is what is pinned.
+  const npn = logoFor('NPN', 'JSE');
+  assert.ok(npn, 'a known holding must resolve — a dead logoFor fails here');
+  assert.strictEqual(npn.f, 'JSE-NPN.png');
+  assert.ok(existsSync(join(LOGOS, npn.f)), 'the resolved path must exist on disk');
   assert.strictEqual(logoFor('JSE', 'NPN'), null, 'arguments are (ticker, market), not (market, ticker)');
 });
 
@@ -132,8 +160,29 @@ test('the same ticker in two markets ships DIFFERENT art on disk', () => {
 });
 
 test('denied keys resolve to nothing rather than another company mark', () => {
-  // JSE:KIO — every source returns the parent Anglo American mark for Kumba.
-  assert.strictEqual(logoFor('KIO', 'JSE'), null, 'KIO must monogram, not show Anglo American');
+  // DENY suppresses a key whose only art is another company's. It is empty now
+  // (see logo-sources.mjs), so this asserts the rule it exists to serve rather
+  // than a specific ticker: nothing in DENY may carry a manifest entry.
+  for (const key of DENY) {
+    const [market, ticker] = key.split(':');
+    assert.strictEqual(logoFor(ticker, market), null,
+      `${key} is denied but still ships art`);
+  }
+});
+
+test('Kumba carries its OWN mark, not its parent Anglo American\'s', () => {
+  // The owner's standing ruling on JSE:KIO was "Kumba's own mark or nothing".
+  // It was denied for as long as every source returned the parent's blue/red
+  // triangle. It ships art again only because a Kumba-specific mark exists, so
+  // the thing worth pinning is not that KIO HAS art — it is that the art is not
+  // Anglo's. If a future rebuild silently falls back to the parent, this fails.
+  const kio = logoFor('KIO', 'JSE');
+  const agl = logoFor('AGL', 'JSE');
+  if (!kio) return; // legitimately denied again; the DENY test covers that path
+  assert.ok(agl, 'precondition: Anglo American resolves, so the two are comparable');
+  assert.notStrictEqual(kio.f, agl.f, 'Kumba is pointed at Anglo American\'s file');
+  const a = readFileSync(join(LOGOS, kio.f)), b = readFileSync(join(LOGOS, agl.f));
+  assert.ok(!a.equals(b), 'Kumba and Anglo American ship byte-identical art');
 });
 
 test('one issuer is never rendered as several different marks', () => {

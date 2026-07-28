@@ -40,10 +40,11 @@
      the width, so there is one number to change. */
   --day-chip-w: 46px;
   --day-chip-fs: 10px;
-  /* Left indent of a watchlist card's text column: .pb-logo's 34px plus .wl-id's
-     11px gap. The bell in .watch-body uses it to line up under the company name,
-     so all three must move together. */
-  --wl-id-indent: 45px;
+  /* Alert-bell track on a watchlist card. Used twice in the card's foot row: once
+     for the bell itself and once for the empty spacer cell opposite it, which is
+     what keeps the session / extended-hours readout centred on the card. Change it
+     in one place or the readout drifts off-centre. */
+  --wl-bell: 30px;
   /* Column widths shared by a holding row and its list header. The header is a
      SEPARATE grid, so a label only sits over its column when both grids size that
      column identically — the row's content width would otherwise differ from the
@@ -2391,17 +2392,13 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   display: flex; flex-direction: column; align-items: flex-end;
   gap: 5px; flex-shrink: 0;
 }
-/* Watchlist card body: now ONE row — alert bell (left, under the company name)
-   and the 52W-high badge (right, under the day's move). `align-items:center` is
-   what lines the 30px bell track up with the badge beside it without a hand-tuned
-   offset. The left padding is the logo's width plus the .wl-id gap, so the bell
-   starts exactly where the ticker and company name start. */
-.watch-body {
-  display: grid; grid-template-columns: 1fr auto;
-  align-items: center; column-gap: 10px;
-  padding-left: var(--wl-id-indent);
-}
-.watch-body .ath-badge { grid-column: 2; grid-row: 1; justify-self: end; }
+/* 52W-high badge, now in the HEADER immediately left of the money column (Jan,
+   2026-07-28) — it used to sit a row lower, in a .watch-body row it shared with
+   the alert bell. That row no longer exists: the bell moved to the card's foot and
+   the badge came up here. `.pos-head`'s align-items:flex-start is what squares the
+   badge's top edge with the price beside it; flex-shrink:0 stops a long company
+   name from squeezing it. */
+.watchlist-list .pos-head .ath-badge { flex-shrink: 0; }
 /* Ticker + company name a shade smaller than the shared .tkr/.tkr-name scale, so
    longer names reach further before ellipsising. Scoped to the card: .tkr is
    shared with Hot Topics, the TFSA targets and the ticker-suggestion list. */
@@ -2430,22 +2427,31 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .watch-today.down { background: var(--rose); }
 .watch-today.up .watch-today-pct, .watch-today.up .watch-today-amt,
 .watch-today.down .watch-today-pct, .watch-today.down .watch-today-amt { color: #fff; }
-/* Bell in a fixed track so it never shifts the day-change column; badge floats.
-   Pinned to the body grid's first cell, hard against the left edge of the text
-   column — the row's align-items:center is what squares it with the day chip. */
-.watch-body .card-alert-bell {
-  position: relative; top: auto; right: auto;
-  grid-column: 1; grid-row: 1; justify-self: start;
-  width: 30px; height: 30px; padding: 0; justify-content: center;
-}
-.watch-body .card-alert-bell .card-alert-count { position: absolute; top: -3px; right: -3px; }
-/* Pre/after-hours line: centered at the foot of the card, divided from the body
-   row above so it reads as a tidy secondary detail. */
+/* Card foot — the session badge or the pre/after-hours readout, plus the alert
+   bell hard against the right edge. THREE columns: an empty spacer exactly the
+   bell's width, the readout, then the bell. The spacer is load-bearing — without
+   it the readout centres on the room left beside the bell and sits visibly off the
+   card's midline. The bell rides here (rather than in a row of its own, as it did
+   until 2026-07-28) for free: its 30px track is what sets this row's height. */
 .watch-ext {
-  display: flex; justify-content: center; flex-wrap: nowrap; gap: 5px;
+  display: grid; grid-template-columns: var(--wl-bell) 1fr var(--wl-bell);
+  align-items: center;
   margin-top: 8px; padding-top: 8px;
   border-top: 1px solid var(--border);
 }
+.watch-ext-main {
+  grid-column: 2; min-width: 0;
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: nowrap; gap: 5px;
+}
+/* Bell in a fixed track so a long readout beside it never shifts it off the edge.
+   Overrides the shared .card-alert-bell absolute pinning (top-right of the card). */
+.watch-ext .card-alert-bell {
+  position: relative; top: auto; right: auto;
+  grid-column: 3; justify-self: end;
+  width: var(--wl-bell); height: var(--wl-bell); padding: 0; justify-content: center;
+}
+.watch-ext .card-alert-bell .card-alert-count { position: absolute; top: -3px; right: -3px; }
 /* Smaller amber pill here than in detail rows — the card is compact. */
 .watch-ext .ext-label {
   font-size: 8px; padding: 1px 5px; letter-spacing: 0.1em;
@@ -2460,9 +2466,10 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .watchlist-list .ath-badge { padding: 2px 6px; }
   .watchlist-list .ath-badge-label { font-size: 7px; }
   .watchlist-list .ath-badge-val { font-size: 10px; }
-  .watch-body { column-gap: 8px; row-gap: 5px; }
   .watch-today-amt { font-size: 10px; }
-  .watch-body .card-alert-bell { width: 28px; height: 28px; }
+  /* Drives the bell AND the spacer cell opposite it, so the foot readout stays
+     centred at this size too (see --wl-bell). */
+  .watchlist-list .pos-card { --wl-bell: 28px; }
   .watchlist-list .market-badge { font-size: 8px; padding: 1px 5px; }
 }
 

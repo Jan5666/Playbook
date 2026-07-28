@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import {
   rgbToHsl, hslToRgb, lumOf, isNearWhite, deepen, soften,
   colourStats, knockOutWhite, tintOpaque, strokeRuns,
-  resample, solid, over, planTile, composeTile, TILE,
+  resample, solid, over, planTile, composeTile, borderRing, TILE,
 } from '../../tools/png-raster.mjs';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -249,4 +249,62 @@ test('a wide mark is centred, never stretched', () => {
   // A stretch would fill the full height; centred, the top rows stay ground.
   assert.strictEqual(inkInRow(1), 0, 'the mark reached the top edge — it was stretched');
   assert.ok(inkInRow(32) > 20, `the mark is missing from the centre row (${inkInRow(32)} px)`);
+});
+
+// ─── a gradient ground is still a finished tile ─────────────────────────────
+// Regression pin for the blank-white-square bug (2026-07-28). The TradingView
+// source ships many marks on a dark GRADIENT ground. A gradient has no modal
+// colour, so `modalShare` never reached PLATE_SHARE, the art fell through to
+// the symbol branch, and an opaque full-canvas image was measured as one giant
+// mark and flattened to a solid white silhouette. Anglo American and Naspers
+// both shipped as plain white squares.
+const gradientTile = (size, glyph) => surface(size, size, (x, y) => {
+  // A diagonal charcoal ramp, the shape TradingView's dark tiles use.
+  const t = (x + y) / (2 * size);
+  const v = Math.round(42 - 30 * t);
+  if (glyph && x > size * 0.3 && x < size * 0.7 && y > size * 0.3 && y < size * 0.7) {
+    return [30, 120, 240, 255];
+  }
+  return [v, v + 4, v + 7, 255];
+});
+
+test('borderRing sees an opaque, gently-varying edge as a filled canvas', () => {
+  const r = borderRing(gradientTile(64, true));
+  assert.strictEqual(r.opaqueShare, 1, 'a full-bleed tile has a fully opaque edge');
+  assert.ok(r.lumRange < 0.22, `a gradient edge drifts gently, got ${r.lumRange.toFixed(3)}`);
+});
+
+test('borderRing does NOT see a symbol on transparency as a filled canvas', () => {
+  // The discriminator that keeps this rule from swallowing real symbols.
+  const floating = surface(64, 64, (x, y) => (
+    x > 20 && x < 44 && y > 20 && y < 44 ? [200, 30, 30, 255] : [0, 0, 0, 0]
+  ));
+  assert.ok(borderRing(floating).opaqueShare < 0.98, 'a floating mark must not read as a plate');
+});
+
+test('a mark on a GRADIENT ground is passed through, not flattened to a silhouette', () => {
+  const plan = planTile(gradientTile(64, true));
+  assert.strictEqual(plan.kind, 'plate', 'a gradient-ground tile must plan as a plate');
+  assert.strictEqual(plan.ink, null, 'a plate is never re-inked — that is what erased the mark');
+});
+
+test('the gradient tile keeps its mark once composed', () => {
+  // The bug was only visible in the OUTPUT: the plan looked plausible and the
+  // tile came out uniformly white. Assert the composed tile still has contrast
+  // and still carries the blue glyph.
+  const tile = composeTile(gradientTile(64, true), TILE);
+  const st = colourStats(tile);
+  assert.ok(st.lumRange > 0.08, `composed tile is blank (lumRange ${st.lumRange.toFixed(3)})`);
+  const mid = px(tile, TILE >> 1, TILE >> 1);
+  assert.ok(mid[2] > mid[0], `centre should still be the blue glyph, got ${mid.join(',')}`);
+});
+
+test('a flat-ground plate is unaffected by the border rule', () => {
+  // PLATE_SHARE still decides first; the border test only runs when it fails.
+  const flat = surface(64, 64, (x, y) => (
+    x > 24 && x < 40 && y > 24 && y < 40 ? [10, 10, 10, 255] : [240, 243, 250, 255]
+  ));
+  const plan = planTile(flat);
+  assert.strictEqual(plan.kind, 'plate');
+  assert.deepStrictEqual(plan.ground, [240, 243, 250], 'flat plates keep their modal ground');
 });

@@ -251,8 +251,58 @@ export function over(base, top, ox, oy) {
 // ─── the tile rule ──────────────────────────────────────────────────────────
 // Returns { kind, ground, ink } describing how a piece of art becomes a tile.
 // Split out from composeTile so the decision can be asserted directly in tests.
+// Does the art already reach its own canvas edge in a single steady colour?
+//
+// `modalShare` answers that only for a FLAT ground. A gradient has no modal
+// colour — TradingView's dark tiles run #2A2E31 to #0D0F11 across the canvas,
+// so every bin is tiny — and the art fell through to the symbol branch, where
+// an opaque full-canvas "mark" was flattened into a solid white square. Anglo
+// American and Naspers shipped as blank white squares for exactly this reason.
+//
+// The border ring is the honest test of "this is already a tile": sample the
+// outermost pixels, and if they are opaque and vary only gently, the ground
+// covers the canvas whatever its colour does in the middle.
+export function borderRing(img, frac = 0.06) {
+  const t = Math.max(1, Math.round(Math.min(img.w, img.h) * frac));
+  let opaque = 0, n = 0, lumMin = Infinity, lumMax = -Infinity;
+  let rS = 0, gS = 0, bS = 0;
+  for (let y = 0; y < img.h; y++) {
+    const edgeRow = y < t || y >= img.h - t;
+    for (let x = 0; x < img.w; x++) {
+      if (!edgeRow && x >= t && x < img.w - t) { x = img.w - t - 1; continue; }
+      n++;
+      const o = (y * img.w + x) * 4;
+      if (img.rgba[o + 3] < 200) continue;
+      opaque++;
+      const rgb = [img.rgba[o], img.rgba[o + 1], img.rgba[o + 2]];
+      rS += rgb[0]; gS += rgb[1]; bS += rgb[2];
+      const lum = lumOf(rgb);
+      if (lum < lumMin) lumMin = lum;
+      if (lum > lumMax) lumMax = lum;
+    }
+  }
+  if (!opaque) return { opaqueShare: 0, lumRange: 1, mean: [0, 0, 0] };
+  return {
+    opaqueShare: opaque / n,
+    lumRange: lumMax - lumMin,
+    mean: [Math.round(rS / opaque), Math.round(gS / opaque), Math.round(bS / opaque)],
+  };
+}
+const BORDER_OPAQUE = 0.98;  // a tile's edge is solid; a symbol's is transparent
+const BORDER_RANGE = 0.22;   // a gradient drifts; a mark crossing the edge jumps
+
 export function planTile(img) {
   const st = colourStats(img);
+  // 1a. A gradient ground: not flat enough for modalShare, but the canvas edge
+  //     is opaque and steady, so the art is a finished tile. Passed through
+  //     whole — its own gradient is the ground, which is why `ground` is only
+  //     the ring's mean (used for the corners it already fills).
+  if (st.modalShare < PLATE_SHARE) {
+    const ring = borderRing(img);
+    if (ring.opaqueShare >= BORDER_OPAQUE && ring.lumRange <= BORDER_RANGE) {
+      return { kind: 'plate', ground: ring.mean, ink: null, stats: st };
+    }
+  }
   // 1. The art is already a finished tile: a solid ground covering a large share
   //    of the canvas. Circles and rounded squares qualify too — the ground colour
   //    is extended into the corners, which is what makes a round coin icon and a

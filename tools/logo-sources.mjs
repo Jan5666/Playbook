@@ -1,3 +1,5 @@
+import { TV_SLUG } from './logo-tv-ids.mjs';
+
 // Per-market logo resolution. The ONE rule this file exists to enforce:
 // outside the US market, a bare ticker is never a lookup key. Bare-ticker
 // endpoints are US-centric and return the US listing with a 200 — MTN resolves
@@ -260,20 +262,31 @@ export function domainFor(market, ticker) {
 // the UI falls back to its monogram rather than showing another company's mark.
 // Do not remove an entry here without new art verified by eye.
 //
-// JSE:KIO — Kumba Iron Ore is an Anglo American subsidiary and every source,
-// including angloamericankumba.com's own icon, returns the parent Anglo American
-// blue/red triangle. Verified again by eye on 2026-07-27. The owner ruled it
-// must be Kumba's own mark or nothing.
+// JSE:KIO was denied here until 2026-07-28. The reason was that every source,
+// including angloamericankumba.com's own icon, returned the parent Anglo
+// American triangle, and the owner ruled it must be Kumba's own mark or
+// nothing. The TradingView source added on 2026-07-28 carries a Kumba-specific
+// mark (`kumba-iron-ore-ltd`), which is a different file from `anglo-american`
+// — so the condition of that ruling is now met and the entry is lifted rather
+// than overridden. It is called out on the contact sheet for confirmation.
 export const DENY = new Set([
-  'JSE:KIO',
+  // PortfolioMetrix: its slug is 10x Genomics' (see TV_SLUG_DENY) and its own
+  // site icon is a near-black tile whose few faint dots vanish at 34px. That
+  // tile clears the blank-tile floor on measurement but not by eye, and this
+  // pack's rule is that a legible monogram beats an illegible mark.
+  'JSE:PCWGE', 'TFSA:PCWGE',
 ]);
 
 // Tickers that must reuse another key's art, so one issuer is never rendered as
 // several different marks. Providers return five different State Street variants
 // across its nine funds — including two pieces of generic clipart (an orange brick
 // square for XLB, a newspaper for XLC) that are not brand marks at all.
+// XLE, XLF and XBI were missing from this list, which is how the generic
+// `sector/*` art reached the pack unnoticed — the other nine were pinned here
+// and so never showed what their slug actually resolved to.
 export const CANONICAL_ART = {
   'US:DIA': 'US:SPY', 'US:GLD': 'US:SPY', 'US:XLB': 'US:SPY', 'US:XLC': 'US:SPY',
+  'US:XLE': 'US:SPY', 'US:XLF': 'US:SPY', 'US:XBI': 'US:SPY',
   'US:XLI': 'US:SPY', 'US:XLK': 'US:SPY', 'US:XLP': 'US:SPY', 'US:XLRE': 'US:SPY',
   'US:XLU': 'US:SPY', 'US:XLV': 'US:SPY', 'US:XLY': 'US:SPY',
 };
@@ -295,13 +308,131 @@ export const WELL_KNOWN_ICON_PATHS = [
 ];
 export const siteUrl = (domain, path = '/') => `https://www.${domain}${path}`;
 
+// TradingView's symbol art, keyed by the curated slug harvested into
+// logo-tv-ids.mjs. This is a VECTOR, which is the whole reason it was added:
+// the SA and UK corporate sites publish nothing bigger than a 32x32 favicon
+// (measured — Anglo, Sanlam, Implats, Satrix, Nedbank and Woolworths all cap
+// there), so every one of them failed the 48px floor no matter which icon
+// service asked. An SVG rasterises crisp at any size, so the floor stops being
+// the binding constraint.
+//
+// This does NOT reintroduce the bare-ticker hazard rule #1 exists to prevent.
+// The lookup key is a slug, and the slug was resolved by asking the screener
+// for one exchange at a time, so JSE:SOL can only carry Sasol's slug. An
+// unknown slug returns HTTP 403 from S3 rather than a generated placeholder,
+// which is the same property that made Google's favicon service acceptable and
+// icon.horse not.
+export const tvUrl = (slug) => `https://s3-symbol-logo.tradingview.com/${slug}--big.svg`;
+
+// Slug namespaces that are CATEGORY art, not brand art. TradingView answers for
+// the SPDR sector funds with `sector/energy`, `sector/financial` and friends —
+// a generic pictogram for the sector, the same file for every issuer's energy
+// fund. XLE shipped a teal pinwheel that is not State Street's mark and not any
+// company's mark; the only reason the other nine sector funds looked right is
+// that CANONICAL_ART already pinned them to SPY, which masked the problem.
+//
+// `crypto/` is deliberately NOT here: those are per-coin marks, not a category.
+const GENERIC_SLUG_NS = /^(sector|country|provider|type)\//;
+export const isGenericSlug = (slug) => GENERIC_SLUG_NS.test(String(slug || ''));
+
+// Keys where TradingView's slug is a DIFFERENT COMPANY'S mark. Every entry was
+// found mechanically, not by eye: `logo-slug-conflicts.test.mjs` reports any
+// slug claimed by two keys whose own domains differ, which is the signature of
+// exactly this bug. A denied key falls back to its domain, then to its issuer
+// sibling — never to the wrong brand.
+//
+// This is the bare-ticker hazard wearing a different hat, so it gets the same
+// treatment: the fix is written down, human-readable, and guarded by a test
+// that fails when a re-harvest introduces a new one.
+// Slugs the harvester cannot find because the screener no longer LISTS the
+// instrument — suspended, taken private, or renamed — while the CDN still
+// carries its art. Hand-maintained on purpose: logo-tv-ids.mjs is generated and
+// a hand-edit there would be erased by the next harvest.
+//
+// Each was confirmed to exist (the CDN 403s on an unknown slug) and to be the
+// right company by eye on the contact sheet. Merged OVER the harvested map, so
+// a future harvest that learns the instrument takes precedence automatically.
+export const TV_SLUG_EXTRA = {
+  'JSE:BAW': 'barloworld-ltd',
+  'JSE:MUR': 'murray-and-roberts-hldgs',
+  'JSE:INV': 'invicta-holdings',
+  'JSE:PSV': 'psv-holdings',
+  'JSE:LHG': 'lighthouse-properties',
+  'JSE:ASR': 'assore',
+  'JSE:AVL': 'advanced-health',
+  'JSE:GPI': 'grand-parade-inv',     // the venue lists Grand Parade as GPL, the app holds GPI
+  // NOT pinned, deliberately. Both slugs exist and both are unverifiable: the
+  // screener cannot confirm a delisted line, and the art does not identify
+  // itself either — `tower-property-fund` renders an "RDC" wordmark (Tower was
+  // taken over by RDC Properties) and `kibo-energy` is an abstract mark naming
+  // no company. Every other entry above was accepted because the rendered mark
+  // states its own name. A monogram beats a mark nobody can vouch for.
+  //   'JSE:TWR': 'tower-property-fund',
+  //   'JSE:KGD': 'kibo-energy',
+  'LSE:FXPO': 'ferrexpo',
+  'LSE:HSV': 'homeserve',
+  'LSE:AVST': 'avast',
+};
+
+export const TV_SLUG_DENY = new Set([
+  // Valterra Platinum demerged from Anglo American in 2025; the slug is stale
+  // and still points at the former parent's mark.
+  'JSE:VAL',
+  // Porsche AG (P911) and Porsche SE (PAH3) are two listed entities sharing the
+  // holding company's slug. PAH3 keeps it; P911 is the operating carmaker.
+  'FRA:P911',
+]);
+
+// Marks that belong to a fund range's PARENT or to an unrelated firm, which the
+// screener hands out to South African funds. This is a slug list rather than a
+// key list on purpose: keyed entries had to be re-listed every time the harvest
+// covered another fund in the same range (FNB's ETFs alone arrived in three
+// waves), and the failure mode of forgetting is a wrong company's logo.
+//
+// Scoped to JSE/TFSA keys that `issuerFor()` recognises as funds, so the parent
+// itself is untouched: `JSE:FSR` IS FirstRand and keeps `firstrand-ltd`, while
+// `JSE:FNB500` and `JSE:NFETNQ` do not. The denied funds fall back to their
+// issuer's domain and then to the domain-sibling pass, which is where the real
+// FNB, NewFunds, Coronation and EasyETFs marks come from.
+export const SLUG_NEVER_FOR_SA_FUND = new Set([
+  'firstrand-ltd',            // FNB's and NewFunds' ranges -> the parent bank
+  'absa-bank-ltd-pref',       // NewFunds' dollar tracker -> an Absa pref share
+  'vge-actively-managed-etf', // one placeholder across Coronation, Reitway, Vunani
+  '10x-genomics',             // 10x Genomics Inc, a US biotech — not 10X Investments
+  'paribas',                  // EasyETFs' BNP-managed fund, sold as an EasyETFs fund
+]);
+
+// The single answer to "which slug does this key actually use". chainFor and the
+// conflict test both read it, so the test can never disagree with the pipeline
+// about what shipped.
+export function effectiveSlugFor(market, ticker) {
+  const key = `${market}:${ticker}`;
+  if (DENY.has(key) || TV_SLUG_DENY.has(key)) return null;
+  const slug = TV_SLUG_EXTRA[key] || TV_SLUG[key];
+  if (!slug || isGenericSlug(slug)) return null;
+  if (FUND_MARKETS.has(market) && issuerFor(ticker) && SLUG_NEVER_FOR_SA_FUND.has(slug)) return null;
+  return slug;
+}
+
+// Sources marked round 2 are only fetched for keys that round 1 left without
+// good art. That is what keeps an already-accepted mark from being churned:
+// the US pack is Parqet's and stays Parqet's, and TradingView only fills the
+// holes it left (the ETFs the owner reported as missing).
 export function chainFor(market, ticker) {
   const out = [];
-  if (DENY.has(`${market}:${ticker}`)) return out;
+  const key = `${market}:${ticker}`;
+  if (DENY.has(key)) return out;
+  const slug = effectiveSlugFor(market, ticker);
+  const tv = slug ? { source: 'tradingview', key: 'slug', url: tvUrl(slug) } : null;
   if (market === 'CRYPTO') {
     const id = CRYPTO_ID[String(ticker).replace(/-USD$/i, '').toUpperCase()];
     // Stock APIs are deliberately absent here: FMP's SOL.png is ReneSola.
     if (id) out.push({ source: 'cryptocurrency-icons', key: 'coin', url: `${CRYPTO_CDN}/${id}.png` });
+    // The spothq icon set stopped being updated years ago, so every coin newer
+    // than about 2021 (Sui, Celestia, Sei, Aptos, Bittensor...) has no entry at
+    // all. TradingView carries them and is checked second so the existing 26
+    // coin marks are left exactly as they are.
+    if (tv) out.push({ ...tv, round: 2 });
     return out;
   }
   if (market === 'US') {
@@ -309,16 +440,18 @@ export function chainFor(market, ticker) {
     // a bare cropped "i", blank-white QQQ/ARKK). Parqet at size=256 returns
     // high-quality pre-composed brand tiles.
     out.push({ source: 'parqet', key: 'ticker', url: `https://assets.parqet.com/logos/symbol/${encodeURIComponent(ticker)}?format=png&size=256` });
+    if (tv) out.push({ ...tv, round: 2 });
     return out;
   }
-  // Every other market: the company's own domain first, then ISIN, then the
-  // managing house. Never a bare ticker.
+  // Every other market: the curated vector first, then the company's own
+  // domain, then ISIN, then the managing house. Never a bare ticker.
+  if (tv) out.push(tv);
   const domain = domainFor(market, ticker);
   if (domain) {
     out.push({ source: 'favicon', key: 'domain', url: faviconUrl(domain), domain });
-    out.push({ source: 'site', key: 'domain', domain });
+    out.push({ source: 'site', key: 'domain', domain, round: 2 });
   }
-  const isin = ISIN_BY_TICKER[`${market}:${ticker}`];
+  const isin = ISIN_BY_TICKER[key];
   if (isin) out.push({ source: 'parqet-isin', key: 'isin', url: `https://assets.parqet.com/logos/isin/${isin}?format=png&size=256` });
   return out;
 }

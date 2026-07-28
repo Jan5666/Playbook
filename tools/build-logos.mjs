@@ -27,6 +27,7 @@ import { decodeBatch } from './chrome-decode.mjs';
 import {
   chainFor, CANONICAL_ART, issuerFor, domainFor, siteUrl, WELL_KNOWN_ICON_PATHS,
 } from './logo-sources.mjs';
+import { collectUniverse } from './logo-universe.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const LOGOS = join(ROOT, 'logos');
@@ -42,72 +43,10 @@ const ONLY = opt('--only') ? new Set(opt('--only').split(',')) : null;
 const LIMIT = opt('--limit') ? +opt('--limit') : 0;
 
 // ─── 1. Collect the universe ────────────────────────────────────────────────
-// data.js is evaluated rather than regex-scraped. The old regex only matched
-// `ticker:'X'`, which saw 155 symbols and silently missed the 1412-entry
-// _US_SECTORS map — that is why Broadcom, Caterpillar, Meta and Micron had no
-// logo while their art was sitting on the provider the whole time.
-const SECTION_MARKET = {
-  HOLDINGS: 'US', NEW_PICKS: 'US', HEDGES: 'US', US_SUGGESTIONS: 'US',
-  JSE_SUGGESTIONS: 'JSE', TFSA_SUGGESTIONS: 'TFSA', LSE_SUGGESTIONS: 'LSE',
-  ASX_SUGGESTIONS: 'ASX', EU_SUGGESTIONS: 'FRA', CRYPTO_SUGGESTIONS: 'CRYPTO',
-};
-// Sections that carry no instruments at all. Anything NOT listed in either map
-// is a hard error: a new *_SUGGESTIONS block must state its market, or it would
-// be silently routed down the US bare-ticker path and mislabel every mark.
-const NON_INSTRUMENT = new Set([
-  'DEPLOYMENT_PHASES', 'RISKS', 'PILLARS', 'HEATMAPS', 'MACRO', 'CALENDAR',
-  'SECTOR_CANON',
-]);
-
-function loadData() {
-  const g = { window: {} };
-  const src = readFileSync(join(ROOT, 'data.js'), 'utf8');
-  new Function('window', src)(g.window);
-  return g.window.PB_DATA;
-}
-
-function collectUniverse() {
-  const D = loadData();
-  const set = new Map(); // 'MARKET:TICKER' -> { ticker, market }
-  const add = (ticker, market) => {
-    if (!ticker || !market || !/^[A-Z0-9][A-Z0-9.\-]*$/i.test(ticker)) return;
-    set.set(`${market}:${ticker}`, { ticker, market });
-  };
-  for (const [name, val] of Object.entries(D)) {
-    if (name === '_US_SECTORS') continue;
-    if (!Array.isArray(val)) continue;
-    if (NON_INSTRUMENT.has(name)) continue;
-    const market = SECTION_MARKET[name];
-    if (!market) {
-      throw new Error(`data.js section ${name} has no market in SECTION_MARKET — ` +
-        'add it there (or to NON_INSTRUMENT), otherwise every ticker in it is ' +
-        'treated as US and resolves another company\'s logo.');
-    }
-    // EU_SUGGESTIONS spans three venues and says which on each row; the app
-    // stores that value as the holding's market, so the manifest key must use it.
-    for (const row of val) if (row && row.ticker) add(row.ticker, row.exchange || market);
-  }
-  // The curated sector maps are the real breadth of the app: any of these can be
-  // typed into search, so any of them can appear in a row that needs a mark.
-  for (const t of Object.keys(D._US_SECTORS || {})) add(t, 'US');
-  // _INTL_SECTORS is already keyed MARKET:TICKER in the app's own market codes.
-  for (const k of Object.keys(D._INTL_SECTORS || {})) {
-    const i = k.indexOf(':');
-    if (i > 0) add(k.slice(i + 1), k.slice(0, i));
-  }
-  // The heatmap blocks carry `t:` inside `constituents`, and each grid names its
-  // own market — the FTSE/JSE/DAX grids are not US.
-  for (const grid of D.HEATMAPS || []) {
-    for (const row of grid.constituents || []) if (row && row.t) add(row.t, grid.market || 'US');
-  }
-  if (BACKUP) {
-    const raw = JSON.parse(readFileSync(BACKUP, 'utf8'));
-    const keys = raw.keys || raw;
-    const parse = (k) => { try { return JSON.parse(keys[k]); } catch { return []; } };
-    for (const p of parse('pb.positions.v1') || []) add(p.ticker, p.market);
-    for (const w of parse('pb.watchlist.v1') || []) add(w.ticker, w.market);
-  }
-  let out = [...set.values()].map(v => ({ ...v, key: `${v.market}:${v.ticker}` }));
+// The universe itself lives in logo-universe.mjs so that tv-harvest.mjs resolves
+// exactly the same keys this builder asks for; only the CLI filtering is here.
+function selectUniverse() {
+  let out = collectUniverse({ backupPath: BACKUP });
   if (ONLY) out = out.filter(v => ONLY.has(v.key));
   if (LIMIT) out = out.slice(0, LIMIT);
   return out;
@@ -259,7 +198,7 @@ function gateArt(img) {
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
-const universe = collectUniverse();
+const universe = selectUniverse();
 console.log(`universe: ${universe.length} keys`);
 
 const jobs = universe.map(u => ({ ...u, chain: chainFor(u.market, u.ticker) }));
@@ -371,26 +310,34 @@ async function round(work, label) {
 // keys end here, which is the point: expanding every domain's icon set up front
 // meant ~400 site fetches plus a blocking Chrome launch per bot-walled host,
 // for art that was about to be thrown away anyway.
-const r1 = await round(jobs.map(j => ({ key: j.key, cands: j.chain.filter(c => c.source !== 'site') })), 'lookup');
+const r1 = await round(jobs.map(j => ({ key: j.key, cands: j.chain.filter(c => c.round !== 2) })), 'lookup');
 console.log(`round 1 resolved ${r1.size} keys`);
 
 // Round 2 — only for keys with nothing good yet. "Good" means big enough that a
-// site icon could not meaningfully beat it.
+// round-2 source could not meaningfully beat it. Because this round is skipped
+// whenever round 1 already produced solid art, a source marked round 2 can only
+// ever ADD a mark where there was none; it can never replace an accepted one.
 const GOOD_EDGE = 96;
 const needMore = jobs.filter((j) => {
   const hit = r1.get(j.key);
   if (!hit) return true;
   const b = bestOf(hit);
   return Math.min(b.img.w, b.img.h) < GOOD_EDGE || b.aspect > 1.35;
-}).filter(j => j.chain.some(c => c.source === 'site'));
+}).filter(j => j.chain.some(c => c.round === 2));
 console.log(`round 2 for ${needMore.length} keys`);
 const r2 = await round(needMore.map(j => ({
-  key: j.key, cands: j.chain.filter(c => c.source === 'site').map(c => ({ ...c, expand: true })),
-})), 'sites');
+  key: j.key,
+  cands: j.chain.filter(c => c.round === 2).map(c => (c.source === 'site' ? { ...c, expand: true } : c)),
+})), 'round2');
 
 const manifest = {};
 const writtenBufs = new Map();
+const fileByDigest = new Map();
 if (!DRY && !existsSync(LOGOS)) mkdirSync(LOGOS, { recursive: true });
+
+// Sorted so the key that OWNS a shared tile's filename is a property of the
+// pack, not of whatever order the universe happened to be collected in.
+jobs.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
 for (const job of jobs) {
   const usable = [...(r1.get(job.key) || []), ...(r2.get(job.key) || [])];
@@ -421,8 +368,17 @@ for (const job of jobs) {
     continue;
   }
   const outBuf = tileToPng(tile);
-  const file = `${job.market}-${job.ticker}.png`;
-  if (!DRY) writeFileSync(join(LOGOS, file), outBuf);
+  // Identical bytes are stored ONCE. Whole issuer families compose to the same
+  // tile — 101 iShares funds, 52 Satrix funds — and writing a private copy per
+  // ticker was 458 redundant files. The first key (in sorted order, so it is
+  // stable across rebuilds) owns the filename; the rest point at it.
+  const digest = createHash('sha256').update(outBuf).digest('hex');
+  let file = fileByDigest.get(digest);
+  if (!file) {
+    file = `${job.market}-${job.ticker}.png`;
+    fileByDigest.set(digest, file);
+    if (!DRY) writeFileSync(join(LOGOS, file), outBuf);
+  }
   writtenBufs.set(job.key, outBuf);
   manifest[job.key] = { f: file };
   report.push({ key: job.key, status: 'ok', via: best.via, why: `${best.img.w}x${best.img.h} ${tile.kind}${tile.inked ? '+ink' : ''}`, url: best.url });
@@ -436,6 +392,41 @@ for (const [alias, src] of Object.entries(CANONICAL_ART)) {
   manifest[alias] = { f: manifest[src].f };
 }
 
+// ─── Same company, same mark ────────────────────────────────────────────────
+// A key with no art of its own inherits the art of a key that resolved and
+// shares its DOMAIN. Domain equality is the definition of "same company" used
+// everywhere else in this pipeline, so this cannot merge two brands: Capitec's
+// preference share (CPIP) takes Capitec's mark, Absa's (ABSP, BGA) take Absa's,
+// and every Satrix fund that upstream had no slug for takes the Satrix mark its
+// siblings already carry.
+//
+// It only ever FILLS a gap — a key that resolved keeps exactly what it resolved
+// — and domainFor() returns null for US keys, so the US pack cannot be touched.
+// Alternate JSE codes and the SA fund ranges are almost the whole population.
+{
+  const fileByDomain = new Map(); // domain -> file, from keys that DID resolve
+  for (const job of jobs) {
+    const entry = manifest[job.key];
+    if (!entry || !entry.f) continue;
+    const d = domainFor(job.market, job.ticker);
+    if (d && !fileByDomain.has(d)) fileByDomain.set(d, entry.f);
+  }
+  let filled = 0;
+  for (const job of jobs) {
+    if (manifest[job.key] && manifest[job.key].f) continue;
+    const d = domainFor(job.market, job.ticker);
+    const f = d && fileByDomain.get(d);
+    if (!f) continue;
+    manifest[job.key] = { f };
+    // Reported as `alias`, not `ok`: these keys resolved no art of their own, so
+    // counting them under ok would inflate the tile-kind histogram with entries
+    // that have no tile of their own.
+    report.push({ key: job.key, status: 'alias', via: 'domain-sibling', why: `shares ${d}` });
+    filled++;
+  }
+  console.log(`domain-sibling fallback filled ${filled} keys`);
+}
+
 // ─── 4. Rewrite the manifest block, bytes-exact outside the markers ─────────
 const START = '// <<< LOGO_MANIFEST_START';
 const END = '// <<< LOGO_MANIFEST_END';
@@ -445,8 +436,16 @@ if (!DRY) {
   const s = buf.indexOf(Buffer.from(START));
   const e = buf.indexOf(Buffer.from(END));
   if (s < 0 || e < 0) throw new Error('LOGO_MANIFEST markers not found in pb-content.js');
-  const entries = Object.keys(manifest).sort()
-    .map(k => `  ${JSON.stringify(k)}: ${JSON.stringify(manifest[k])},`).join('\n');
+  // Compact encoding: an entry whose file is the DEFAULT path for its key is
+  // written as a bare 1 and rebuilt by logoFor(). The manifest is ~78% of
+  // pb-content.js, which the app parses on every cold start, and spelling out
+  // "US-AAPL.png" next to the key "US:AAPL" was pure repetition.
+  const defaultFile = k => `${k.replace(':', '-')}.png`;
+  const entries = Object.keys(manifest).sort().map((k) => {
+    const v = manifest[k];
+    const encoded = (v.f && v.f === defaultFile(k)) ? '1' : JSON.stringify(v);
+    return `  ${JSON.stringify(k)}: ${encoded},`;
+  }).join('\n');
   const block = Buffer.from(`${START}\nconst LOGO_MANIFEST = {\n${entries}\n};\n`);
   writeFileSync(pcPath, Buffer.concat([buf.slice(0, s), block, buf.slice(e)]));
 
@@ -500,7 +499,8 @@ for (const s of ['reject', 'monogram']) {
   for (const r of rows.slice(0, 120)) console.log('  ', r.key.padEnd(16), (r.via || '').padEnd(24), r.why || '');
   if (rows.length > 120) console.log(`   ...${rows.length - 120} more`);
 }
-console.log(`\nOK ${(byStatus.ok || []).length}`);
+console.log(`\nOK ${(byStatus.ok || []).length} + ${(byStatus.alias || []).length} alias` +
+  ` = ${(byStatus.ok || []).length + (byStatus.alias || []).length} instruments with a mark`);
 const kinds = {};
 for (const r of byStatus.ok || []) { const k = r.why.split(' ')[1] || '?'; kinds[k] = (kinds[k] || 0) + 1; }
 console.log('  tile kinds:', JSON.stringify(kinds));

@@ -10,7 +10,7 @@
 // new script can never be wired into the app but left out of the deploy.
 import assert from 'node:assert';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -56,4 +56,21 @@ test('every local <script src> in index.html is staged by static.yml', () => {
 test('every local <script src> in index.html is precached in SHELL_ASSETS', () => {
   const missing = htmlScripts.filter(a => !shellAssets.includes(a));
   assert.deepStrictEqual(missing, [], 'loaded by index.html but not offline-cached: ' + missing.join(', '));
+});
+
+// ─── the logo-pack sentinel ─────────────────────────────────────────────────
+// Guard 1 in static.yml probes one file inside logos/ to prove `cp -r logos`
+// actually staged the pack. That sentinel is a real filename, and the pack now
+// de-duplicates identical tiles — whole issuer families share one file — so a
+// rebuild CAN legitimately delete the file the workflow names. The deploy would
+// then fail with nothing having gone wrong locally. Tie the two together here.
+test('every logos/ sentinel named by the deploy workflow exists on disk', () => {
+  const yml = readFileSync(join(root, '.github', 'workflows', 'static.yml'), 'utf8');
+  const sentinels = [...yml.matchAll(/logos\/[A-Za-z0-9.\-]+\.png/g)].map(m => m[0]);
+  assert.ok(sentinels.length > 0, 'static.yml no longer probes the logo pack at all');
+  for (const rel of sentinels) {
+    assert.ok(existsSync(join(root, rel)),
+      `${rel} is the deploy sentinel but no longer exists — the pack de-duplicated it. ` +
+      'Point Guard 1 at a file that survives, or the deploy fails on a healthy build.');
+  }
 });

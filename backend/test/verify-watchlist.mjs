@@ -157,21 +157,26 @@ try {
     const card = document.querySelector('.watchlist-list .pos-card');
     if (!card) return '(no card)';
     const head = card.querySelector('.pos-head');
-    const body = card.querySelector('.watch-body');
+    const foot = card.querySelector('.watch-ext');
     const price = card.querySelector('.price-block-wrap');
     const badge = card.querySelector('.ath-badge');
     const bell  = card.querySelector('.card-alert-bell');
     const pct   = card.querySelector('.watch-today-pct');
     const amt   = card.querySelector('.watch-today-amt');
+    const money = card.querySelector('.wl-head-money');
+    const main  = card.querySelector('.watch-ext-main');
     const inHead = (el) => !!el && head.contains(el);
-    const inBody = (el) => !!el && body.contains(el);
+    const inFoot = (el) => !!el && !!foot && foot.contains(el);
     const rb = (el) => el ? el.getBoundingClientRect() : null;
     const cr = card.getBoundingClientRect();
     const out = {
       priceInHead: inHead(price),
-      badgeInBody: inBody(badge),
-      bellInBody:  inBody(bell),
-      // The day's move now rides in the HEADER, stacked under the price — the card
+      // The 52W badge came UP into the header beside the price; the bell went DOWN
+      // into the foot row. Between them they emptied .watch-body, which is gone.
+      badgeInHead: inHead(badge),
+      bellInFoot:  inFoot(bell),
+      bodyGone:    card.querySelector('.watch-body') === null,
+      // The day's move rides in the HEADER, stacked under the price — the card
       // used to spend a whole row on it with the left half of that row empty.
       pctInHead:   inHead(pct),
       amtGone:     amt === null,
@@ -179,49 +184,53 @@ try {
       pctText:     pct ? pct.textContent.trim() : null,
       cardH:       Math.round(cr.height),
     };
-    // Geometry: everything money still reads down ONE right-hand column (price,
-    // day's move, 52W high), with the bell alone on the left under the company name.
-    if (badge && bell) { out.bellLeftOfBadge = rb(bell).right < rb(badge).left + 1; out.badgeOnRight = rb(badge).right > cr.right - cr.width * 0.45; }
     if (price) out.priceOnRight = rb(price).right > cr.right - cr.width * 0.45;
     if (pct) out.pctOnRight = rb(pct).right > cr.right - cr.width * 0.45;
     // The chip sits directly UNDER the price inside the header's money column…
     if (price && pct) out.pctBelowPrice = rb(pct).top >= rb(price).bottom - 1;
-    // …and the 52W badge stays under the chip, one body row further down.
-    if (badge && pct) out.badgeBelowPct = rb(badge).top >= rb(pct).bottom - 1;
-    // Compare against the CHIP, not the % text inside it: the chip carries its own
-    // padding, so the text's right edge is inset from the column the badge tracks.
-    const chip = card.querySelector('.watch-today');
-    if (badge && chip) out.badgeRightEdgeMatchesChip = Math.abs(rb(badge).right - rb(chip).right) <= 2;
-    // Bell and 52W badge now share ONE body row — that collapsed row is the whole
-    // point of the change, so pin it.
-    if (bell && badge) {
-      const mid = (el) => { const r = rb(el); return r.top + r.height / 2; };
-      out.bellCentredOnBadge = Math.abs(mid(bell) - mid(badge)) <= 2;
+    // …and the 52W badge is BESIDE that column now, not under it: clear of the
+    // money column's left edge, in the same band of the card as the price itself.
+    if (badge && money && price) {
+      out.badgeLeftOfMoney = rb(badge).right <= rb(money).left + 1;
+      out.badgeBesidePrice = rb(badge).top < rb(price).bottom;
     }
-    // The bell starts where the ticker/company name starts, not under the logo.
-    const nameEl = card.querySelector('.wl-idtxt');
-    if (bell && nameEl) out.bellIndentMatchesName = Math.abs(rb(bell).left - rb(nameEl).left) <= 2;
+    // The bell is pinned to the foot row's right edge, squared up with the readout
+    // beside it. Compare against the READOUT, not the .watch-ext box: that box
+    // carries an 8px padding-top under its divider, so its border-box midline sits
+    // 4px above the content the bell actually shares a line with.
+    if (bell && foot && main) {
+      const mid = (el) => { const r = rb(el); return r.top + r.height / 2; };
+      out.bellOnRight = Math.abs(rb(bell).right - rb(foot).right) <= 2;
+      out.bellCentredOnReadout = Math.abs(mid(bell) - mid(main)) <= 2;
+    }
+    // …while the readout sharing that row with it stays centred on the CARD. That
+    // only holds because of the spacer cell opposite the bell (see --wl-bell); drop
+    // the spacer and this drifts left by half a bell.
+    if (main) {
+      const m = rb(main);
+      out.footMainCentred = Math.abs((m.left + m.right) / 2 - (cr.left + cr.right) / 2) <= 2;
+    }
     return JSON.stringify(out);
   `);
   console.log('  layout:', layout);
   const L = JSON.parse(layout);
   ok('price moved into header (top-right)', L.priceInHead === true);
-  ok('52W badge in body', L.badgeInBody === true);
-  ok('bell in body', L.bellInBody === true);
-  ok('bell sits to the LEFT of the 52W badge', L.bellLeftOfBadge === true);
-  ok('52W badge on the right', L.badgeOnRight === true);
+  ok('52W badge moved up into the header', L.badgeInHead === true);
+  ok('52W badge sits beside the price, left of the money column',
+     L.badgeLeftOfMoney === true && L.badgeBesidePrice === true);
+  ok('bell moved down into the card foot', L.bellInFoot === true);
+  ok('bell pinned to the right edge of the foot row', L.bellOnRight === true && L.bellCentredOnReadout === true);
+  ok('foot readout still centred on the card', L.footMainCentred === true);
+  ok('the .watch-body row is gone entirely', L.bodyGone === true);
   ok('day move moved into the header, under the price', L.pctInHead === true && L.pctBelowPrice === true);
-  ok('52W badge still sits underneath the day move', L.badgeBelowPct === true);
-  ok('52W badge right edge lines up with the day move', L.badgeRightEdgeMatchesChip === true);
-  ok('bell and 52W badge share one body row', L.bellCentredOnBadge === true);
-  ok('bell starts where the company name starts', L.bellIndentMatchesName === true);
   ok('price hugs the right of the header', L.priceOnRight === true);
   ok('% change on the right', L.pctOnRight === true);
   ok('"+$ today" amount line removed', L.amtGone === true);
   ok('badge shows 52W Hi value', /52W Hi/i.test(L.badgeText || '') && /%|ATH/.test(L.badgeText || ''));
-  // The whole point: one fewer row. Baseline before this change was ~148px at
-  // 440x1100; anything at or under 130 means the row really did collapse.
-  ok('card lost a row of height (<=130px)', L.cardH > 0 && L.cardH <= 130, L.cardH + 'px');
+  // The whole point: one fewer row again. The bell/52W row cost ~30px, and the
+  // bell's track re-spends some of it in the foot; measured 107px at 440x1100
+  // after the change (the bound before it was 130), so 115 is a real bound.
+  ok('card lost another row of height (<=115px)', L.cardH > 0 && L.cardH <= 115, L.cardH + 'px');
 
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);

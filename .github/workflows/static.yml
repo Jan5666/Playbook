@@ -61,8 +61,12 @@ jobs:
             if [ -e "_site/$bad" ]; then echo "::error::secret leaked into deploy: $bad"; missing=1; fi
           done
           [ "$missing" = "0" ] || { echo "Deploy staging failed — aborting."; exit 1; }
-          echo "Staged $(find _site -type f | wc -l) files for deploy:"
-          (cd _site && find . -type f | sort)
+          # The logo pack is thousands of tiles; listing each one buries the
+          # runtime files this log exists to let a human eyeball. Count them
+          # instead, and still print every non-logo file.
+          echo "Staged $(find _site -type f | wc -l) files for deploy \
+($(find _site/logos -type f | wc -l) of them logo tiles):"
+          (cd _site && find . -type f -not -path './logos/*' | sort)
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

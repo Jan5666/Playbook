@@ -2351,14 +2351,19 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
   return React.createElement("button", {
     key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
   },
-    // LEFT — ticker + market badge (main), company name (sub). Avg cost lives on
-    // the position detail now, not on the row (Jan, 2026-07-28).
+    // LEFT — ticker (main), company name (sub). Avg cost lives on the position
+    // detail now, not on the row (Jan, 2026-07-28).
     React.createElement("div", { className: "row-main" },
       React.createElement(LogoMark, { ticker: p.ticker, market: market }),
       React.createElement("div", { className: "hold-txt" },
         React.createElement("div", { className: "hold-id" },
           React.createElement("span", { className: "hold-tkr-main" }, mainLabel),
-          React.createElement("span", { className: "mkt-badge" }, isUT ? "fund" : market)),
+          // No market chip (Jan, 2026-07-28): both views that render this row are
+          // already segmented by market — Holdings by its sub-tabs, TFSA by being
+          // the TFSA tab — so the badge only repeated the header above it. The
+          // "fund" chip stays: it marks a unit trust, whose main label is a NAME
+          // rather than a ticker, which is instrument info, not market info.
+          isUT ? React.createElement("span", { className: "mkt-badge" }, "fund") : null),
         React.createElement("div", { className: "row-meta" },
           (hasName && !isUT) ? React.createElement("span", { className: "hold-co-name" }, name) : null))),
     // MIDDLE — today's move, alone in its own column. The wrapper renders even
@@ -3383,6 +3388,12 @@ function WatchlistView(_ref8) {
                   activeList === 'all'
                     ? customListsOf(w).map(id => React.createElement("span", { key: id, className: "wl-card-list" }, listNameById(id))) : null),
                 displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null)),
+              // 52W-high badge, immediately LEFT of the money column (Jan,
+              // 2026-07-28). It used to sit a row lower, in .watch-body; pulling it
+              // up here — beside the price rather than under it — is what let that
+              // row go away entirely, since the bell (its only other occupant) moved
+              // down to the foot in the same change.
+              athBadge,
               // Money column, top-right: the price with the day's move stacked
               // directly under it. The chip used to sit in the body below, with the
               // whole left half of that row left empty — moving it up costs no height
@@ -3399,30 +3410,35 @@ function WatchlistView(_ref8) {
                       React.createElement("div", { className: "watch-today-pct mono" },
                         (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
                   : React.createElement("div", { className: "watch-today" }))),
-            // Body is a single 2-column row (see .watch-body): the bell sits left
-            // under the company name, the 52W high right under the day's move.
-            // Everything money still reads down ONE right-hand column: price, day,
-            // 52W high. Source order is the visual order; the grid pins the columns.
-            React.createElement("div", { className: "watch-body" },
+            // FOOT — one row, three cells: an empty spacer, the centered session /
+            // extended-hours readout, and the alert bell hard against the card's
+            // right edge (Jan, 2026-07-28). The bell used to own the left of its own
+            // .watch-body row, with only the 52W badge for company; that badge went
+            // up beside the price and the bell came down here, so the row itself is
+            // gone and every card is shorter again. The spacer cell is what keeps
+            // the readout centred on the CARD rather than on the room left over
+            // beside the bell.
+            React.createElement("div", {
+              className: "watch-ext" + (hasExt ? " ext-hours" : "") + (extFinal ? " ext-closed" : "")
+            },
+              React.createElement("div", { className: "watch-ext-main" },
+                // The pre/after-hours readout when the symbol has one, otherwise the
+                // session badge (Open/Closed/Pre/After) so a quiet card reads as
+                // market state rather than blank.
+                hasExt
+                  ? React.createElement(React.Fragment, null,
+                      React.createElement("span", { className: "ext-label" }, extLabel),
+                      React.createElement("span", { className: "ext-price mono" }, extSym, fmtNum(q.extPrice)),
+                      React.createElement("span", { className: `ext-chg mono ${extUp ? 'up' : 'down'}` },
+                        (extUp ? '+' : '') + q.extChangePct.toFixed(2) + '%'))
+                  : React.createElement(SessionBadge, { market: w.market, quote: q })),
               React.createElement("button", {
                 className: "card-alert-bell",
                 "data-no-drag": true,
                 onClick: e => { e.stopPropagation(); openAlertPopup(w.ticker, w.market); },
                 "aria-label": "Alerts"
               }, React.createElement(Icon, { name: "bell", size: 13 }),
-                ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)),
-              athBadge),
-            // Session badge (Open/Closed/Pre/After) so a quiet card reads as
-            // market state, not blank. Shown only when the ext-price chip isn't.
-            !hasExt && React.createElement("div", { className: "watch-ext" },
-              React.createElement(SessionBadge, { market: w.market, quote: q })),
-            // Pre/after-hours readout on its own centered line at the foot of the
-            // card so it reads as a secondary detail without crowding the name.
-            hasExt && React.createElement("div", { className: "watch-ext ext-hours" + (extFinal ? " ext-closed" : "") },
-              React.createElement("span", { className: "ext-label" }, extLabel),
-              React.createElement("span", { className: "ext-price mono" }, extSym, fmtNum(q.extPrice)),
-              React.createElement("span", { className: `ext-chg mono ${extUp ? 'up' : 'down'}` },
-                (extUp ? '+' : '') + q.extChangePct.toFixed(2) + '%'))));
+                ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)))));
       })),
 
     alertPopup && React.createElement("div", { className: "alert-popup-overlay" },
@@ -4021,9 +4037,11 @@ function TFSAView({ positions, onOpenDetail, onAddPosition, onEditPosition, onBu
       : React.createElement(Collapsible, {
           title: "Your holdings", icon: "briefcase", defaultOpen: true, badge: positions.length
         },
-          React.createElement("div", { style: { display: 'flex', justifyContent: 'flex-end', marginBottom: 10 } },
-            React.createElement("button", { className: "btn btn-primary btn-xs", onClick: onAddPosition },
-              React.createElement(Icon, { name: "plus", size: 12 }), " Add holding")),
+          // No "Add holding" button here (Jan, 2026-07-28). Adding a TFSA position
+          // is done from the Holdings tab's TFSA sub-tab, which carries the full
+          // Add + Import cluster; this list is for reading. The empty state below
+          // keeps its own Add, since with no positions there is nothing to read and
+          // its copy points straight at that button.
           React.createElement(HoldingsListHead, null),
           React.createElement("div", { className: "row-list" },
           sortedPositions.map(p => React.createElement(HoldingRow, {

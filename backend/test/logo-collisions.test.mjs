@@ -95,13 +95,17 @@ test('anti-drift: the orchestrator builds no logo URL of its own', () => {
 
 test('denied keys resolve to no candidate at all', () => {
   // DENY is the escape hatch for a key whose every available source returns the
-  // WRONG company — a monogram beats another company's mark. Kumba Iron Ore is
-  // the standing case: it is an Anglo American subsidiary and every source,
-  // including angloamericankumba.com's own icon, returns the parent's blue/red
-  // triangle (re-verified by eye 2026-07-27). Also asserted on a key that WOULD
-  // resolve, so the test cannot pass vacuously if DENY is ever emptied.
+  // WRONG company — a monogram beats another company's mark. Kumba Iron Ore was
+  // the standing case: as an Anglo American subsidiary, every source then
+  // available (including angloamericankumba.com's own icon) returned the
+  // parent's blue/red triangle, and the owner ruled it must be Kumba's own mark
+  // or nothing. The TradingView source added 2026-07-28 supplies a
+  // Kumba-specific mark, so the ruling's condition is met and the entry was
+  // lifted; DENY is now empty and that is a legitimate state.
+  //
+  // So this asserts the MECHANISM, not any particular ticker: an empty DENY must
+  // not make it pass vacuously, which is what the injected key below proves.
   const { DENY } = chainForModule;
-  assert.ok(DENY.has('JSE:KIO'), 'JSE:KIO must stay denied');
   assert.ok(chainFor('JSE', 'SOL').length > 0, 'precondition: JSE:SOL normally resolves');
   DENY.add('JSE:SOL');
   try {
