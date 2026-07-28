@@ -465,11 +465,27 @@ resolution note at the top of this entry), so **this entry is fully closed**.
   at the call sites — a newcomer can't tell which to use. Fix: one comment block
   above `usePersistedState` stating the rule ("view-local UI state only; durable
   domain state goes in a schema"). (Now also stated in CLAUDE.md.)
-- **`launch.json` at repo root** — a default VS Code debug config, belongs in
-  `.vscode/launch.json` or deleted. It is not deployed (not in allowlist). 
-- **`test/` at repo root** contains only a stray `node_modules` (http_ece) left
-  from the Phase-0 relocation of tests to `backend/test/`; gitignored but
-  confusing on disk. Safe to delete the directory locally.
+- ~~**`launch.json` at repo root**~~ — **DELETED 2026-07-29.** A default VS Code
+  debug config with an empty `configurations` block; VS Code reads
+  `.vscode/launch.json`, not the root, so it did nothing. Zero references.
+- ~~**`test/` at repo root**~~ — **DELETED 2026-07-29**, along with the root
+  `node_modules/` (this entry missed that second copy). Both held nothing but a
+  stray vendored `http_ece`, byte-identical to `backend/test/node_modules`'s copy.
+  This entry also claimed they were "gitignored… safe to delete locally" — wrong:
+  both were **tracked** (committed before `node_modules/` entered `.gitignore`),
+  so they shipped to every clone and removing them was a commit, not a local tidy.
+  Nothing resolved them — `require.resolve('http_ece')` from `backend/test` lands
+  in `backend/test/node_modules`, which stays.
+- ~~**Root `icon-180/192/512.png`**~~ — **DELETED 2026-07-29.** They were
+  byte-identical duplicates of `brand/icon-*.png` and `SHELL_ASSETS` precached
+  **both** sets, so every installed PWA downloaded all three icons twice.
+  `icon-180`/`icon-512` had no reader at all beyond their own precache entry;
+  `icon-192` was the notification icon, now repointed to `./brand/icon-192.png`
+  (6 sites in app.js, 4 in sw.js) with `brand/icon-192.png` added to the Guard-1
+  loop so the deploy fails if it ever goes missing. `CACHE_NAME` → `v98`.
+- **`test-screenshots/*.png`** — **UNTRACKED 2026-07-29** (50 files, 4.95 MB).
+  Regenerable output from the 14 `verify-*.mjs` harnesses; now gitignored, with
+  `README.md` kept tracked so the directory still exists in a fresh clone.
 - **`tools/`** (`gen-light-icons.mjs`, `icongen`) is undocumented — one README
   line saying "one-shot icon generation scripts, not part of the app" would do.
 - **Root worker duplicates** (the old A-audit finding) are confirmed gone; no

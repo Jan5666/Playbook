@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v97';
+const CACHE_NAME   = 'playbook-shell-v98';
 const CDN_CACHE    = 'playbook-cdn-v1';
 // Instrument logos: immutable per filename, so cache-first. Filenames are STABLE
 // across rebuilds, so without a bump an installed PWA keeps serving the old art
@@ -31,10 +31,9 @@ const SHELL_ASSETS = [
   './demo-data.js',
   './manifest.json',
   './manifest-light.json',
-  './icon-180.png',
-  './icon-192.png',
-  './icon-512.png',
   // Brand icons — dark (default) + light home-screen variants, favicon.
+  // These are the ONLY icon copies: root icon-180/192/512.png were byte-identical
+  // duplicates of brand/icon-*.png and every installed PWA precached both sets.
   './brand/favicon.svg',
   './brand/favicon-32.png',
   './brand/apple-touch-icon.png',
@@ -189,8 +188,8 @@ self.addEventListener('push', (e) => {
     self.registration.showNotification(data.title || 'Playbook alert', {
       body: data.body || '',
       tag: data.tag || 'playbook-push',
-      icon: data.icon || './icon-192.png',
-      badge: data.badge || './icon-192.png',
+      icon: data.icon || './brand/icon-192.png',
+      badge: data.badge || './brand/icon-192.png',
       data: data.data || { url: '/' },
       vibrate: [100, 50, 100],
       renotify: !!data.tag
@@ -314,8 +313,8 @@ async function swRunAlertCheck() {
     await self.registration.showNotification(`${t.ticker} ${t.direction} ${sym}${t.targetPrice.toFixed(2)}`, {
       body: `Now at ${sym}${t.triggerPrice.toFixed(2)}${t.note ? ` — ${t.note}` : ''}`,
       tag: 'alert-' + t.id,
-      icon: './icon-192.png',
-      badge: './icon-192.png',
+      icon: './brand/icon-192.png',
+      badge: './brand/icon-192.png',
       data: { url: '/' },
       vibrate: [100, 50, 100],
     });

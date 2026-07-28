@@ -42,16 +42,14 @@ jobs:
           set -euo pipefail
           mkdir -p _site
           cp index.html sw.js app.js data.js demo-data.js pb-core.js pb-data.js pb-store.js pb-content.js pb-import.js pb-views.js pb-modals.js styles.css \
-             manifest.json manifest-light.json \
-             icon-180.png icon-192.png icon-512.png _site/
+             manifest.json manifest-light.json _site/
           cp -r brand _site/
           cp -r logos _site/
           # Guard 1: fail the deploy if any expected runtime asset is missing.
           missing=0
           for f in index.html sw.js app.js data.js demo-data.js pb-core.js pb-data.js pb-store.js pb-content.js pb-import.js pb-views.js pb-modals.js styles.css \
                    manifest.json manifest-light.json \
-                   icon-180.png icon-192.png icon-512.png \
-                   brand/favicon.svg brand/apple-touch-icon.png \
+                   brand/favicon.svg brand/apple-touch-icon.png brand/icon-192.png \
                    brand/splash/dark-393x852@3x.png brand/splash/light-393x852@3x.png \
                    logos/CRYPTO-AAVE.png; do
             if [ ! -e "_site/$f" ]; then echo "::error::missing runtime asset $f"; missing=1; fi

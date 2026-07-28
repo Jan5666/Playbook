@@ -26,3 +26,10 @@ Thumbs.db
 # Logo pack contact sheet (human-review artifact, not shipped)
 logos/contact-sheet.html
 .logo-cache/
+
+# Browser-harness output. 14 verify-*.mjs scripts dump PNGs here and the folder
+# also takes drop-in EE screenshots for ee-ocr-image.mjs - all regenerable, none
+# shipped. README.md stays tracked so the directory exists in a fresh clone.
+test-screenshots/*.png
+test-screenshots/*.jpg
+test-screenshots/*.jpeg

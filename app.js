@@ -3113,8 +3113,8 @@ function App() {
           title,
           body,
           tag: 'alert-' + trig.id,
-          icon: './icon-192.png',
-          badge: './icon-192.png'
+          icon: './brand/icon-192.png',
+          badge: './brand/icon-192.png'
         });
         return;
       }
@@ -3125,7 +3125,7 @@ function App() {
         await reg.showNotification(title, {
           body,
           tag: 'alert-' + trig.id,
-          icon: './icon-192.png'
+          icon: './brand/icon-192.png'
         });
         return;
       }
@@ -3135,7 +3135,7 @@ function App() {
         new Notification(title, {
           body,
           tag: 'alert-' + trig.id,
-          icon: './icon-192.png'
+          icon: './brand/icon-192.png'
         });
         return;
       }
@@ -3176,12 +3176,12 @@ function App() {
             await reg.showNotification('Playbook', {
               body: 'Alerts are active',
               tag: 'welcome',
-              icon: './icon-192.png'
+              icon: './brand/icon-192.png'
             });
           } else {
             new Notification('Playbook', {
               body: 'Alerts are active',
-              icon: './icon-192.png'
+              icon: './brand/icon-192.png'
             });
           }
         } catch (e) {}
