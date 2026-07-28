@@ -2733,8 +2733,18 @@ function BrandMark({ theme }) {
 // the app while it bootstraps. Driven by a `visible` prop: when it flips false we
 // add `.pb-hiding` to fade opacity to 0 over 300ms (see styles.css), then unmount
 // once the fade finishes so it doesn't pop. CSS (keyframes, light/dark via
-// prefers-color-scheme, reduced-motion) lives in styles.css.
+// data-theme, reduced-motion) lives in styles.css.
 function LoadingScreen({ visible }) {
+  // index.html already painted this exact `.pb-loader` markup as #pb-splash before
+  // React existed. When it is there we do NOT mount a second copy: a fresh element
+  // restarts the pb-wave keyframes from zero, and the bars visibly jumped mid-boot.
+  // Instead that one element rides the whole boot and we only tell it when to go.
+  // Captured once at mount so the render path cannot change underneath us. The
+  // React-rendered loader below is still the path for contexts with no splash in
+  // the page - the verify-*.mjs harness shells, which embed their own HTML.
+  const [ownsSplash] = useState(() =>
+    typeof document !== 'undefined' && !!document.getElementById('pb-splash'));
+  const splashHiddenRef = useRef(false);
   const [mounted, setMounted] = useState(visible);
   const [hiding, setHiding] = useState(false);
   // The loader is a fixed full-screen overlay rendered *over* the already-mounted
@@ -2748,12 +2758,19 @@ function LoadingScreen({ visible }) {
       setHiding(false);
       return;
     }
+    // Retire the pre-React splash HERE, when the dashboard is actually ready -
+    // not on React's first commit. That is what keeps its animation unbroken.
+    // Latched so the re-render at the end of the fade cannot fire it twice.
+    if (ownsSplash && !splashHiddenRef.current) {
+      splashHiddenRef.current = true;
+      if (typeof window.hidePbSplash === 'function') window.hidePbSplash();
+    }
     if (!mounted) return;
     setHiding(true);
     const t = setTimeout(() => setMounted(false), 320); // just past the 300ms fade
     return () => clearTimeout(t);
-  }, [visible, mounted]);
-  if (!mounted) return null;
+  }, [visible, mounted, ownsSplash]);
+  if (!mounted || ownsSplash) return null;
   return React.createElement("div", {
     className: "pb-loader" + (hiding ? " pb-hiding" : ""),
     role: "status", "aria-label": "Loading Playbook"
@@ -5003,7 +5020,12 @@ function InstallBanner(_ref13) {
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(error) { return { error }; }
-  componentDidCatch(error, info) { console.error('React crash:', error, info.componentStack); }
+  componentDidCatch(error, info) {
+    console.error('React crash:', error, info.componentStack);
+    // The splash is no longer retired by a MutationObserver on #root, so a crash
+    // during the first render would otherwise hide this error behind it for 8s.
+    if (typeof window.hidePbSplash === 'function') window.hidePbSplash();
+  }
   render() {
     if (this.state.error) return React.createElement("div", {
       style: { position: 'fixed', inset: 0, overflow: 'auto', padding: 24, background: '#09090b',
