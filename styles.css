@@ -26,14 +26,25 @@
   --mono: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   /* Shared list-row figure scale. ONE definition for both lists: the Holdings
-     row (current value / P&L) and the Watchlist card (price / day move) read as
-     one system, so neither tab can drift away from the other. */
+     row's current value and the Watchlist card's price are THE primary figure on
+     their row, so neither tab can drift away from the other. Everything else on
+     the row is deliberately below this weight — the Holdings P/L (which now sits
+     under the value, not beside it) and both day-move chips. */
   --row-figure: 13.5px;
   --row-figure-sub: 10.5px;
-  /* Width of the trailing disclosure column on a holding row. The list header
-     reserves the same width (.hlh-more) so its "Current value" label stays over
-     the value column. */
+  /* Left indent of a watchlist card's text column: .pb-logo's 34px plus .wl-id's
+     11px gap. The bell in .watch-body uses it to line up under the company name,
+     so all three must move together. */
+  --wl-id-indent: 45px;
+  /* Column widths shared by a holding row and its list header. The header is a
+     SEPARATE grid, so a label only sits over its column when both grids size that
+     column identically — the row's content width would otherwise differ from the
+     label's text width and shove every column left of it out of true. Measured:
+     "Current value" is 95px, the day chip 52px.
+     --row-more is the trailing disclosure column (.row-more / .hlh-more). */
   --row-more: 24px;
+  --row-day: 52px;
+  --row-val: 96px;
   --safe-top: env(safe-area-inset-top);
   --safe-bottom: env(safe-area-inset-bottom);
   --safe-left: env(safe-area-inset-left);
@@ -572,7 +583,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .holding-row { padding: 11px 13px; }
 .hold-id { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .hold-tkr-main {
-  font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--text);
+  font-family: var(--mono); font-weight: 700; font-size: 14px; color: var(--text);
   letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mkt-badge {
@@ -582,28 +593,41 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   border: 1px solid var(--border); border-radius: 5px; padding: 2px 5px;
 }
 /* Sub-line: company name only (ellipsised). min-height reserves the line even
-   when a holding has no resolved name, so every box stays the same height. */
-.holding-row .row-meta { flex-wrap: nowrap; gap: 5px; margin-top: 3px; min-width: 0; min-height: 14px; }
+   when a holding has no resolved name, so every box stays the same height. Set a
+   size shade under .row-meta's 11px so longer names ("Micron Technology") reach
+   further before the ellipsis. */
+.holding-row .row-meta { font-size: 10.5px; flex-wrap: nowrap; gap: 5px; margin-top: 3px; min-width: 0; min-height: 14px; }
 .hold-co-name {
   min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   color: var(--text-muted);
 }
-.holding-gl { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; text-align: right; margin-left: 10px; }
-/* Gain/loss amount matches the current-value figure size so the two primary
-   numbers on a row carry equal weight — one var drives both. */
-.holding-gl-amt { font-size: var(--row-figure); font-weight: 700; }
-.holding-gl-pct { font-size: var(--row-figure-sub); font-weight: 600; }
-/* Right zone: current value large, the day's move small underneath.
-   Extra left margin sets the value apart from the gain/loss column. */
-.holding-row .row-right { margin-left: 14px; }
+/* Middle zone: the day's move and nothing else, centred in a fixed-width column
+   so the header's "Today" label sits over it. */
+.holding-today { min-width: var(--row-day); display: flex; align-items: center; justify-content: center; margin-left: 10px; }
+/* Right zone: current value large, the total gain/loss smaller underneath it.
+   Extra left margin sets the value column apart from the day's move. */
+.holding-row .row-right { min-width: var(--row-val); margin-left: 14px; }
 .holding-value { font-family: var(--mono); font-size: var(--row-figure); font-weight: 700; letter-spacing: -0.01em; }
-/* Today's move as a flat, solid green/red box with white numerals. Same spec as
-   the watchlist day-move box (.watch-today) — font, padding, radius and min-width
-   all match on purpose so the two lists read as one system. */
+/* Gain/loss sits UNDER the value it belongs to, at a step below its weight: one
+   primary figure per row, with the up/down colours carrying the P/L instead of
+   size. min-height reserves both lines so a position with no cost basis (a bare
+   "—") leaves the row exactly as tall as its neighbours — the right column is
+   what sets row height now. */
+.holding-gl {
+  display: flex; flex-direction: column; gap: 1px; align-items: flex-end;
+  text-align: right; margin-top: 3px; min-height: 26px;
+}
+.holding-gl-amt { font-size: 11.5px; font-weight: 700; }
+.holding-gl-pct { font-size: 10px; font-weight: 600; }
+/* Today's move as a flat, solid green/red box with white numerals — the same
+   idiom as the watchlist day-move box (.watch-today): flat fill, white numerals,
+   7px radius. It is deliberately a size smaller here: on a watchlist card the
+   day's move IS the headline, on a holding row it is a middle-column accent
+   beside the value and the P/L. Keep the idiom in step, not the metrics. */
 .holding-day {
-  font-family: var(--mono); font-size: var(--row-figure-sub); font-weight: 700; margin-top: 5px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
-  padding: 4px 9px; border-radius: 7px; line-height: 1; letter-spacing: -0.01em; min-width: 58px;
+  padding: 4px 8px; border-radius: 7px; line-height: 1; letter-spacing: -0.01em; min-width: var(--row-day);
 }
 .holding-day.text-up { color: #fff; background: var(--emerald); }
 .holding-day.text-down { color: #fff; background: var(--rose); }
@@ -659,8 +683,8 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
    so right-align it and give it breathing room before the positions list. */
 .holdings-actions-bar { justify-content: flex-end; margin: 0 0 12px; }
 /* Subtle column header above a holdings list — labels the three zones
-   (Holding · P/L · Current value). Mirrors the row's horizontal padding and
-   the P/L / value margins so the labels sit over their columns and the value
+   (Holding · Today · Current value). Mirrors the row's horizontal padding and
+   the day / value margins so the labels sit over their columns and the value
    column's right edge lines up exactly. */
 .holding-list-head {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto var(--row-more);
@@ -669,8 +693,8 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   font-family: var(--mono); font-size: 10px; font-weight: 600;
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
 }
-.holding-list-head .hlh-gl { text-align: right; margin-left: 10px; }
-.holding-list-head .hlh-val { text-align: right; margin-left: 14px; white-space: nowrap; }
+.holding-list-head .hlh-day { width: var(--row-day); text-align: center; margin-left: 10px; }
+.holding-list-head .hlh-val { width: var(--row-val); text-align: right; margin-left: 14px; white-space: nowrap; }
 /* Empty cell mirroring the row's disclosure column, so the value label keeps
    sitting exactly over the value figures. */
 .holding-list-head .hlh-more { width: var(--row-more); }
@@ -678,7 +702,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .holding-row { gap: 0 8px; }
   .holding-row .row-right { margin-left: 8px; }
   .holding-value { font-size: 12.5px; }
-  .holding-gl-amt { font-size: 12.5px; }
+  .holding-gl-amt { font-size: 11px; }
 }
 /* Buy-more preview card */
 .buy-preview { border-color: color-mix(in srgb, var(--blue) 25%, transparent); background: color-mix(in srgb, var(--blue) 5%, var(--bg-raised)); }
@@ -2330,20 +2354,37 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   touch-action: pan-y;
 }
 .watchlist-list .pos-head { margin-bottom: 8px; }
-/* Watchlist card body: 52W-high badge + alert bell (left) · today's move (right).
-   The price lives in the header now; the day change is pushed to the right edge
-   with margin-left:auto so it lines up down the whole list. */
-.watch-body { display: flex; align-items: center; gap: 10px; }
+/* Watchlist card body: alert bell (left, under the company name) · today's move
+   with the 52W-high badge stacked beneath it (right, under the price). Two rows,
+   two columns — the bell and the day's move share row 1, so `align-items:center`
+   is what lines the 30px bell track up with the ~18px chip beside it without a
+   hand-tuned offset. The left padding is the logo's width plus the .wl-id gap,
+   so the bell starts exactly where the ticker and company name start. */
+.watch-body {
+  display: grid; grid-template-columns: 1fr auto;
+  align-items: center; row-gap: 6px; column-gap: 10px;
+  padding-left: var(--wl-id-indent);
+}
+.watch-body .watch-today { grid-column: 2; grid-row: 1; justify-self: end; }
+.watch-body .ath-badge { grid-column: 2; grid-row: 2; justify-self: end; }
+/* Ticker + company name a shade smaller than the shared .tkr/.tkr-name scale, so
+   longer names reach further before ellipsising. Scoped to the card: .tkr is
+   shared with Hot Topics, the TFSA targets and the ticker-suggestion list. */
+.watchlist-list .pos-card .tkr { font-size: 14.5px; }
+.watchlist-list .pos-card .tkr-name { font-size: 11px; }
 .watchlist-list .pos-head .price-block-wrap { text-align: right; }
 /* The card price shares the Holdings row's figure scale (--row-figure) so the
-   price/day-move block is the same size on both tabs. */
+   primary figure is the same size on both tabs. */
 .watchlist-list .price-lg { font-size: var(--row-figure); }
+/* Right-column placement comes from the grid above; this only shapes the chip. */
 .watch-today {
-  margin-left: auto; white-space: nowrap; flex: 0 0 auto;
+  white-space: nowrap;
   display: inline-flex; align-items: center; justify-content: flex-end; gap: 1px; line-height: 1;
 }
 /* Day's move rendered as a flat, solid green/red box with crisp white numerals.
-   Same spec as the Holdings row's .holding-day box — keep the two in step. */
+   Same idiom as the Holdings row's .holding-day box — flat fill, white numerals,
+   7px radius — but a size up: here the day's move is the card's headline, there
+   it is a middle-column accent. Keep the idiom in step, not the metrics. */
 .watch-today.up, .watch-today.down {
   justify-content: center; padding: 4px 9px; border-radius: 7px; min-width: 58px;
 }
@@ -2353,9 +2394,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .watch-today.down { background: var(--rose); }
 .watch-today.up .watch-today-pct, .watch-today.up .watch-today-amt,
 .watch-today.down .watch-today-pct, .watch-today.down .watch-today-amt { color: #fff; }
-/* Bell in a fixed track so it never shifts the day-change column; badge floats. */
+/* Bell in a fixed track so it never shifts the day-change column; badge floats.
+   Pinned to the body grid's first cell, hard against the left edge of the text
+   column — the row's align-items:center is what squares it with the day chip. */
 .watch-body .card-alert-bell {
-  position: relative; top: auto; right: auto; flex: 0 0 auto;
+  position: relative; top: auto; right: auto;
+  grid-column: 1; grid-row: 1; justify-self: start;
   width: 30px; height: 30px; padding: 0; justify-content: center;
 }
 .watch-body .card-alert-bell .card-alert-count { position: absolute; top: -3px; right: -3px; }
@@ -2375,12 +2419,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 @media (max-width: 640px) {
   .watchlist-list .pos-card { padding: 10px 12px; }
   .watchlist-list .pos-head { margin-bottom: 6px; }
-  .watchlist-list .pos-card .tkr { font-size: 14px; }
-  .watchlist-list .pos-card .tkr-name { font-size: 11px; margin-top: 1px; }
+  .watchlist-list .pos-card .tkr { font-size: 13.5px; }
+  .watchlist-list .pos-card .tkr-name { font-size: 10.5px; margin-top: 1px; }
   .watchlist-list .ath-badge { padding: 2px 6px; }
   .watchlist-list .ath-badge-label { font-size: 7px; }
   .watchlist-list .ath-badge-val { font-size: 10px; }
-  .watch-body { gap: 8px; }
+  .watch-body { column-gap: 8px; row-gap: 5px; }
   .watch-today-amt { font-size: 10px; }
   .watch-body .card-alert-bell { width: 28px; height: 28px; }
   .watchlist-list .market-badge { font-size: 8px; padding: 1px 5px; }

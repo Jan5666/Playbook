@@ -1,6 +1,8 @@
 // Real-browser verification of the watchlist-card restyle:
 //  - stock price swapped to the top-right (where the 52W high used to be)
-//  - 52W-high badge swapped to the bottom-left, with the alert bell beside it
+//  - the money reads down one right-hand column: price, day's move, 52W high
+//  - the alert bell moved bottom-LEFT, under the company name and squared up
+//    with the day's move beside it
 //  - the "+$ today" cash line removed from under the % change
 // Run: node backend/test/verify-watchlist.mjs
 import http from 'node:http';
@@ -159,20 +161,38 @@ try {
       badgeText:   badge ? badge.textContent.replace(/\\s+/g,' ').trim() : null,
       pctText:     pct ? pct.textContent.trim() : null,
     };
-    // Geometry sanity: badge & bell on the left half, bell to the right of the badge,
-    // price hugging the right side of the header, pct hugging the right of the body.
-    if (badge && bell) { out.bellRightOfBadge = rb(bell).left > rb(badge).right - 1; out.badgeOnLeft = rb(badge).left - cr.left < cr.width * 0.5; }
+    // Geometry: everything money reads down ONE right-hand column (price, day's
+    // move, 52W high), with the bell alone on the left under the company name.
+    if (badge && bell) { out.bellLeftOfBadge = rb(bell).right < rb(badge).left + 1; out.badgeOnRight = rb(badge).right > cr.right - cr.width * 0.45; }
     if (price) out.priceOnRight = rb(price).right > cr.right - cr.width * 0.45;
     if (pct) out.pctOnRight = rb(pct).right > cr.right - cr.width * 0.45;
+    // The 52W badge sits UNDER the day's move, and the bell squares up with that
+    // same row — this is the layout Jan asked for, so pin both.
+    if (badge && pct) out.badgeBelowPct = rb(badge).top >= rb(pct).bottom - 1;
+    // Compare against the CHIP, not the % text inside it: the chip carries 9px of
+    // padding, so the text's right edge is inset from the column the badge tracks.
+    const chip = card.querySelector('.watch-today');
+    if (badge && chip) out.badgeRightEdgeMatchesChip = Math.abs(rb(badge).right - rb(chip).right) <= 2;
+    if (bell && pct) {
+      const mid = (el) => { const r = rb(el); return r.top + r.height / 2; };
+      out.bellCentredOnPct = Math.abs(mid(bell) - mid(pct)) <= 2;
+    }
+    // The bell starts where the ticker/company name starts, not under the logo.
+    const nameEl = card.querySelector('.wl-idtxt');
+    if (bell && nameEl) out.bellIndentMatchesName = Math.abs(rb(bell).left - rb(nameEl).left) <= 2;
     return JSON.stringify(out);
   `);
   console.log('  layout:', layout);
   const L = JSON.parse(layout);
   ok('price moved into header (top-right)', L.priceInHead === true);
-  ok('52W badge moved into body (bottom-left)', L.badgeInBody === true);
+  ok('52W badge in body', L.badgeInBody === true);
   ok('bell in body', L.bellInBody === true);
-  ok('bell sits to the right of the 52W badge', L.bellRightOfBadge === true);
-  ok('52W badge on the left half', L.badgeOnLeft === true);
+  ok('bell sits to the LEFT of the 52W badge', L.bellLeftOfBadge === true);
+  ok('52W badge on the right', L.badgeOnRight === true);
+  ok('52W badge sits underneath the day move', L.badgeBelowPct === true);
+  ok('52W badge right edge lines up with the day move', L.badgeRightEdgeMatchesChip === true);
+  ok('bell is vertically centred on the day move', L.bellCentredOnPct === true);
+  ok('bell starts where the company name starts', L.bellIndentMatchesName === true);
   ok('price hugs the right of the header', L.priceOnRight === true);
   ok('% change still in body, on the right', L.pctInBody === true && L.pctOnRight === true);
   ok('"+$ today" amount line removed', L.amtGone === true);

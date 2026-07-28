@@ -2238,7 +2238,9 @@ function DashboardView(_ref6) {
 function HoldingsListHead() {
   return React.createElement("div", { className: "holding-list-head" },
     React.createElement("span", { className: "hlh-name" }, "Holding"),
-    React.createElement("span", { className: "hlh-gl" }, "P/L"),
+    // Middle column is the day's move now; the total P/L rides under the value
+    // and is colour-coded, so it needs no label of its own.
+    React.createElement("span", { className: "hlh-day" }, "Today"),
     React.createElement("span", { className: "hlh-val" }, "Current value"),
     // Empty cell over the row's disclosure chevron, so "Current value" stays
     // aligned with the value column.
@@ -2347,21 +2349,27 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
           React.createElement("span", { className: "mkt-badge" }, isUT ? "fund" : market)),
         React.createElement("div", { className: "row-meta" },
           (hasName && !isUT) ? React.createElement("span", { className: "hold-co-name" }, name) : null))),
-    // MIDDLE — total gain/loss: amount on top, % below
-    React.createElement("div", { className: "holding-gl" },
-      gain != null
-        ? React.createElement(React.Fragment, null,
-            React.createElement("div", { className: `holding-gl-amt mono ${gainUp ? 'text-up' : 'text-down'}` },
-              (gainUp ? '+' : '−') + fmtCcy(gain, rowCcy)),
-            growthPct != null ? React.createElement("div", { className: `holding-gl-pct mono ${gainUp ? 'text-up' : 'text-down'}` },
-              (gainUp ? '+' : '') + growthPct.toFixed(2) + '%') : null)
-        : React.createElement("div", { className: "holding-gl-amt mono text-dim" }, "—")),
-    // RIGHT — current value, with the day's movement underneath
-    React.createElement("div", { className: "row-right" },
-      React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmtCcy(marketValue, rowCcy) : "—"),
+    // MIDDLE — today's move, alone in its own column. The wrapper renders even
+    // when there is no quote: the row is a four-column grid, so dropping the cell
+    // would slide the value and the chevron a column to the left.
+    React.createElement("div", { className: "holding-today" },
       dayPct != null ? React.createElement("div", {
         className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
       }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
+    // RIGHT — current value, with the total gain/loss smaller underneath it:
+    // amount on top, % below. Deliberately below the value's weight (see
+    // .holding-gl-amt) so the row has one primary figure, not two competing ones —
+    // the colours are what keep the P/L readable at a glance.
+    React.createElement("div", { className: "row-right" },
+      React.createElement("div", { className: "holding-value mono" }, marketValue != null ? fmtCcy(marketValue, rowCcy) : "—"),
+      React.createElement("div", { className: "holding-gl" },
+        gain != null
+          ? React.createElement(React.Fragment, null,
+              React.createElement("div", { className: `holding-gl-amt mono ${gainUp ? 'text-up' : 'text-down'}` },
+                (gainUp ? '+' : '−') + fmtCcy(gain, rowCcy)),
+              growthPct != null ? React.createElement("div", { className: `holding-gl-pct mono ${gainUp ? 'text-up' : 'text-down'}` },
+                (gainUp ? '+' : '') + growthPct.toFixed(2) + '%') : null)
+          : React.createElement("div", { className: "holding-gl-amt mono text-dim" }, "—"))),
     // ACTIONS — Buy/Sell/Edit, collapsed by default: a 20-row list should read
     // as figures, not as 60 buttons. The chevron sits in the row's trailing column and
     // rolls the drawer open; the drawer itself spans the full card width below.
@@ -3333,10 +3341,12 @@ function WatchlistView(_ref8) {
               // Stock price now sits top-right (swapped with the 52W high below).
               // The ext-hours chip is lifted out (hideExt) and shown in the body.
               React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, hideExt: true, market: w.market })),
+            // Body is a 2-column grid (see .watch-body): the bell sits bottom-left
+            // under the company name, sharing its row with the day's move, and the
+            // 52W high tucks underneath that move on the right. Everything money
+            // therefore reads down ONE right-hand column: price, day, 52W high.
+            // Source order is the visual order; the grid only pins the columns.
             React.createElement("div", { className: "watch-body" },
-              // 52W high now sits bottom-left (swapped with the price), with the
-              // alert bell directly beside it.
-              athBadge,
               React.createElement("button", {
                 className: "card-alert-bell",
                 "data-no-drag": true,
@@ -3344,12 +3354,15 @@ function WatchlistView(_ref8) {
                 "aria-label": "Alerts"
               }, React.createElement(Icon, { name: "bell", size: 13 }),
                 ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)),
-              // Day's move (% only) anchored to the right of the card.
+              // Day's move (% only) anchored to the right of the card. The empty
+              // fallback still has to render: it holds the grid cell the 52W badge
+              // aligns its right edge against.
               hasDay
                 ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
                     React.createElement("div", { className: "watch-today-pct mono" },
                       (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
-                : React.createElement("div", { className: "watch-today" })),
+                : React.createElement("div", { className: "watch-today" }),
+              athBadge),
             // Session badge (Open/Closed/Pre/After) so a quiet card reads as
             // market state, not blank. Shown only when the ext-price chip isn't.
             !hasExt && React.createElement("div", { className: "watch-ext" },
