@@ -2239,7 +2239,10 @@ function HoldingsListHead() {
   return React.createElement("div", { className: "holding-list-head" },
     React.createElement("span", { className: "hlh-name" }, "Holding"),
     React.createElement("span", { className: "hlh-gl" }, "P/L"),
-    React.createElement("span", { className: "hlh-val" }, "Current value"));
+    React.createElement("span", { className: "hlh-val" }, "Current value"),
+    // Empty cell over the row's disclosure chevron, so "Current value" stays
+    // aligned with the value column.
+    React.createElement("span", { className: "hlh-more" }));
 }
 // ─── Instrument logo ─────────────────────────────────────────────────────────
 // The mark shown beside a holding/watchlist name. Pure in (ticker, market) —
@@ -2301,8 +2304,12 @@ function LogoMark(_refLM) {
     }));
 }
 const HoldingRow = React.memo(function HoldingRow(_refHR) {
-  const { positionDisplayName, fmtCcy } = window.PBApp;
+  const { positionDisplayName, fmtCcy, Icon } = window.PBApp;
   let { position: p, market, quote: q, rates, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
+  // Buy/Sell/Edit are collapsed behind the trailing chevron. Row-local state: the
+  // rows are React.memo'd on props, so this neither leaks nor defeats the memo.
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const hasActions = !!(onBuyPosition || onSellPosition || onEditPosition);
   // Heading is the company/instrument name. Resolve it from every source — the
   // name saved on the holding, the live quote's company name, the curated lists,
   // then the learned name cache — and only fall back to the bare ticker when
@@ -2331,7 +2338,7 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
     key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
   },
     // LEFT — ticker + market badge (main), company name (sub). Avg cost lives on
-    // the bottom action strip beside Edit (see ACTIONS below).
+    // the position detail now, not on the row (Jan, 2026-07-28).
     React.createElement("div", { className: "row-main" },
       React.createElement(LogoMark, { ticker: p.ticker, market: market }),
       React.createElement("div", { className: "hold-txt" },
@@ -2355,23 +2362,32 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
       dayPct != null ? React.createElement("div", {
         className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
       }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
-    // ACTIONS — full-width strip beneath the three zones: the Buy/Sell/Edit cluster
-    // on the left (identically sized on every card), with Avg cost on the right.
-    React.createElement("div", { className: "row-actions" },
-      React.createElement("div", { className: "row-actions-btns" },
-        onBuyPosition ? React.createElement("button", {
-          className: "btn-buy-inline",
-          onClick: e => { e.stopPropagation(); onBuyPosition(p); }
-        }, "Buy") : null,
-        onSellPosition ? React.createElement("button", {
-          className: "btn-sell-inline",
-          onClick: e => { e.stopPropagation(); onSellPosition(p); }
-        }, "Sell") : null,
-        onEditPosition ? React.createElement("button", {
-          className: "btn-edit-inline",
-          onClick: e => { e.stopPropagation(); onEditPosition(p); }
-        }, "Edit") : null),
-      React.createElement("span", { className: "hold-avg" }, "Avg cost ", fmtCcy(p.costBasis, rowCcy))));
+    // ACTIONS — Buy/Sell/Edit, collapsed by default: a 20-row list should read
+    // as figures, not as 60 buttons. The chevron sits in the row's trailing column and
+    // rolls the drawer open; the drawer itself spans the full card width below.
+    hasActions ? React.createElement("button", {
+      className: "row-more" + (actionsOpen ? " open" : ""),
+      "aria-expanded": actionsOpen,
+      "aria-label": actionsOpen ? "Hide position actions" : "Show position actions",
+      onClick: e => { e.stopPropagation(); setActionsOpen(v => !v); }
+    }, React.createElement(Icon, { name: "chevron-down", size: 14 })) : null,
+    hasActions ? React.createElement("div", {
+      className: "row-actions" + (actionsOpen ? " open" : ""), "aria-hidden": !actionsOpen
+    },
+      React.createElement("div", { className: "row-actions-clip" },
+        React.createElement("div", { className: "row-actions-btns" },
+          onBuyPosition ? React.createElement("button", {
+            className: "btn-buy-inline", tabIndex: actionsOpen ? 0 : -1,
+            onClick: e => { e.stopPropagation(); onBuyPosition(p); }
+          }, "Buy") : null,
+          onSellPosition ? React.createElement("button", {
+            className: "btn-sell-inline", tabIndex: actionsOpen ? 0 : -1,
+            onClick: e => { e.stopPropagation(); onSellPosition(p); }
+          }, "Sell") : null,
+          onEditPosition ? React.createElement("button", {
+            className: "btn-edit-inline", tabIndex: actionsOpen ? 0 : -1,
+            onClick: e => { e.stopPropagation(); onEditPosition(p); }
+          }, "Edit") : null))) : null);
 });
 
 function CurrentView(_ref7) {

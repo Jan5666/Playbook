@@ -1,6 +1,7 @@
 // Real-browser verification of the Holdings/TFSA row redesign:
 //   • ticker is now the main heading with a small market badge beside it
-//   • company name + "Avg cost <price>" sit on the sub-line
+//   • the company name sits on the sub-line; Avg cost is NOT on the row
+//   • Buy/Sell/Edit are collapsed behind the trailing chevron and roll open
 //   • boxes are slightly shorter but still uniform height
 // Run: node backend/test/verify-holdings-redesign.mjs
 import http from 'node:http';
@@ -125,13 +126,17 @@ const inspect = `
     const tkr=r.querySelector('.hold-tkr-main');
     const badge=r.querySelector('.mkt-badge');
     const co=r.querySelector('.hold-co-name');
-    const avg=r.querySelector('.hold-avg');
+    const more=r.querySelector('.row-more');
+    const drawer=r.querySelector('.row-actions');
     return {
       h: Math.round(r.getBoundingClientRect().height),
       tkr: tkr?tkr.textContent:null,
       badge: badge?badge.textContent:null,
       co: co?co.textContent:null,
-      avg: avg?avg.textContent:null,
+      avgOnRow: /Avg cost/.test(r.textContent),
+      more: !!more,
+      drawerOpen: drawer?drawer.classList.contains('open'):null,
+      drawerH: drawer?Math.round(drawer.getBoundingClientRect().height):null,
     };
   }));`;
 
@@ -160,6 +165,7 @@ try {
   await sleep(600);
 
   let allHeights = [];
+  let allRows = [];
   // Sub-tab labels come from MARKET_LABELS (US→USA, JSE→SA, TFSA→TFSA).
   for (const [m, label] of [['US', 'USA'], ['JSE', 'SA'], ['TFSA', 'TFSA']]) {
     const ok = await evals(ws, clickMarket(label));
@@ -168,6 +174,7 @@ try {
     console.log(`\n  [${m}] tab clicked:`, ok, '— rows:', data.length);
     for (const r of data) console.log('   ', JSON.stringify(r));
     allHeights.push(...data.map(r => r.h));
+    allRows.push(...data);
     await shot(ws, m.toLowerCase());
   }
 
@@ -175,6 +182,44 @@ try {
   const spread = Math.max(...allHeights) - Math.min(...allHeights);
   console.log('\n  row heights:', JSON.stringify(allHeights), '— distinct:', JSON.stringify(uniq), '— spread:', spread + 'px');
   console.log(spread <= 1 ? '  PASS: holding boxes are uniform height' : '  WARN: holding boxes vary in height');
+
+  const noAvg = allRows.every(r => !r.avgOnRow);
+  console.log(noAvg ? '  PASS: no row shows Avg cost' : '  FAIL: a row still shows Avg cost');
+  const hasMore = allRows.length > 0 && allRows.every(r => r.more);
+  console.log(hasMore ? '  PASS: every row has the actions chevron' : '  FAIL: a row is missing the chevron');
+  const closed = allRows.every(r => r.drawerOpen === false && r.drawerH === 0);
+  console.log(closed ? '  PASS: action drawers start closed and add no height'
+                     : '  FAIL: a drawer starts open or reserves height — ' + JSON.stringify(allRows.map(r => [r.drawerOpen, r.drawerH])));
+
+  // The rollout itself: chevron opens the drawer, Buy/Sell/Edit become clickable,
+  // and the row grows by the drawer's height.
+  await evals(ws, clickMarket('USA'));
+  await sleep(500);
+  const roll = JSON.parse(await evals(ws, `
+    const row=document.querySelector('.holding-row');
+    const before=row.getBoundingClientRect().height;
+    row.querySelector('.row-more').click();
+    await new Promise(r=>setTimeout(r,600));
+    const drawer=row.querySelector('.row-actions');
+    const btns=[...row.querySelectorAll('.row-actions-btns > button')].map(b=>b.textContent);
+    return JSON.stringify({
+      before: Math.round(before),
+      after: Math.round(row.getBoundingClientRect().height),
+      drawerH: Math.round(drawer.getBoundingClientRect().height),
+      open: drawer.classList.contains('open'),
+      chevronOpen: row.querySelector('.row-more').classList.contains('open'),
+      btns,
+      modalOpen: !!document.querySelector('.modal-panel'),
+    });`));
+  console.log('\n  drawer rollout:', JSON.stringify(roll));
+  console.log(roll.open && roll.drawerH > 20 && roll.after > roll.before
+    ? '  PASS: chevron rolls the drawer open and the row grows'
+    : '  FAIL: drawer did not roll open');
+  console.log(JSON.stringify(roll.btns) === '["Buy","Sell","Edit"]'
+    ? '  PASS: drawer holds Buy / Sell / Edit' : '  FAIL: drawer contents — ' + JSON.stringify(roll.btns));
+  console.log(!roll.modalOpen ? '  PASS: tapping the chevron did not open the detail modal'
+                              : '  FAIL: the chevron click fell through to the row');
+  await shot(ws, 'drawer-open');
 
   ws.close();
   console.log('done');
