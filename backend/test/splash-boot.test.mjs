@@ -181,8 +181,10 @@ test('a first-render crash is not left hidden behind the splash', () => {
 test('shipped-file changes came with a CACHE_NAME bump', () => {
   // The wiring checklist in CLAUDE.md: any change to shipped files needs a bump,
   // or installed PWAs serve the old index.html/styles.css/app.js offline.
+  // The floor tracks whatever main last shipped: raise it whenever this branch is
+  // brought up to date, or a merge that silently took the older side would pass.
   const m = swSrc.match(/const CACHE_NAME\s*=\s*'playbook-shell-v(\d+)'/);
   assert.ok(m, 'sw.js must define CACHE_NAME as playbook-shell-vN');
-  assert.ok(Number(m[1]) >= 90,
-    `CACHE_NAME is v${m[1]}; this change set requires at least v90`);
+  assert.ok(Number(m[1]) >= 92,
+    `CACHE_NAME is v${m[1]}; this change set requires at least v92 (main shipped v91)`);
 });

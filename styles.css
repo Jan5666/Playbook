@@ -4271,3 +4271,76 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   .rot-foot { flex-direction: column; align-items: stretch; gap: 8px; }
   .rot-foot-right { justify-content: space-between; }
 }
+
+/* ─── Instrument logos ──────────────────────────────────────────────────────
+   One 34px box, one radius, one state. Every file in logos/ is a full-bleed
+   square tile (tools/png-raster.mjs guarantees it), so the art reaches the edge
+   and this radius is what rounds it — every mark is rounded identically because
+   nothing about the rounding depends on the individual mark.
+
+   There is deliberately NO background colour here. Painting one behind art that
+   did not fill its box is what produced the white frame around ASML and Amazon:
+   the tile showed through the transparent margin the old pipeline padded on. */
+.pb-logo {
+  flex: 0 0 auto; width: 34px; height: 34px;
+  border-radius: 9.5px; overflow: hidden;
+  display: grid; place-items: center; position: relative;
+}
+.pb-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* A hairline ring so a white tile still has an edge in light mode and a dark
+   tile still has one in dark mode. Inset, so it cannot grow the box. */
+.pb-logo-tile { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08); }
+:root[data-theme="light"] .pb-logo-tile { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.10); }
+
+/* Monogram fallback — deterministic hue per ticker (--logo-h, set inline per
+   element by LogoMark), so a symbol keeps its colour for good. Theme tokens
+   below hold only saturation/lightness, NOT the hue: a custom property's
+   var() references resolve using the scope where the property is DECLARED,
+   not where it's consumed, so a `--logo-mono-bg: hsl(var(--logo-h) ...)`
+   declared at :root would try to read --logo-h at :root — where it's unset
+   (it only exists inline on the .pb-logo-mono element) — making the whole
+   value invalid-at-computed-time (measured: fully transparent chip, in BOTH
+   themes, not just a too-pale one). Keeping --logo-h out of the root-scoped
+   tokens and combining it into hsl() only in the .pb-logo-mono rule itself
+   (same element that defines --logo-h) is what makes the substitution work. */
+:root, :root[data-theme="dark"] {
+  --logo-mono-s: 42%; --logo-mono-l: 17%;
+  --logo-mono-ring-s: 40%; --logo-mono-ring-l: 30%;
+  --logo-mono-ink-s: 78%; --logo-mono-ink-l: 72%;
+}
+:root[data-theme="light"] {
+  /* First pass (58/88, 42/70) measured invisible against a white card in a real
+     screenshot — at L88 the tint is within a couple of percent of #fff and the 1px
+     ring reads as anti-aliasing noise. Deepened until both the tint and the ring
+     are unmistakable next to white. */
+  --logo-mono-s: 60%; --logo-mono-l: 78%;
+  --logo-mono-ring-s: 55%; --logo-mono-ring-l: 48%;
+  --logo-mono-ink-s: 70%; --logo-mono-ink-l: 20%;
+}
+.pb-logo-mono {
+  background: hsl(var(--logo-h) var(--logo-mono-s) var(--logo-mono-l));
+  box-shadow: inset 0 0 0 1px hsl(var(--logo-h) var(--logo-mono-ring-s) var(--logo-mono-ring-l));
+}
+.pb-logo-mono > span {
+  font-family: var(--mono); font-weight: 700; font-size: 12px;
+  letter-spacing: -0.02em; line-height: 1;
+  color: hsl(var(--logo-h) var(--logo-mono-ink-s) var(--logo-mono-ink-l));
+}
+
+/* Brand-coloured monogram: the instrument has no legible mark, but the build
+   measured its real brand colour off the wordmark it had to reject. The
+   background is set inline per element; the build guarantees it is a deep
+   ground, so white letters read on it in both themes. */
+.pb-logo-brand {
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.10);
+}
+.pb-logo-brand > span {
+  font-family: var(--mono); font-weight: 700; font-size: 12px;
+  letter-spacing: -0.02em; line-height: 1; color: #fff;
+}
+
+/* The mark sits beside the two-line ticker/name block in both lists. */
+.holding-row .row-main { display: flex; align-items: center; gap: 11px; }
+.hold-txt { min-width: 0; flex: 1 1 auto; }
+.wl-id { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.wl-idtxt { min-width: 0; }

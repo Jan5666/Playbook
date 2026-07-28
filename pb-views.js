@@ -22,6 +22,8 @@ const valuePositionInCostCcy = PBCore.valuePositionInCostCcy;
 const parseDecimal = PBCore.parseDecimal;
 // PBData module global for the relocated shared holding rows (Phase 4 inc 28).
 const isUnitTrustId = PBData.isUnitTrustId;
+// PBContent module global for the instrument logo pack.
+const logoFor = PBContent.logoFor;
 // ─── Hot Topics ──────────────────────────────────────────────────────────────
 // Earnings countdown across mega-caps + your names + JSE, a scheduled macro
 // calendar (Fed/ECB/BOJ/BoE/SARB + data/energy), and AI-surfaced market-moving
@@ -2239,6 +2241,65 @@ function HoldingsListHead() {
     React.createElement("span", { className: "hlh-gl" }, "P/L"),
     React.createElement("span", { className: "hlh-val" }, "Current value"));
 }
+// ─── Instrument logo ─────────────────────────────────────────────────────────
+// The mark shown beside a holding/watchlist name. Pure in (ticker, market) —
+// no state, no effects — so HoldingRow's React.memo still skips unchanged rows.
+//
+// Four states, decided at build time by tools/build-logos.mjs and baked into
+// PBContent.LOGO_MANIFEST:
+//   b (bleed)       — opaque, bright art that IS the tile; fills it edge to edge
+//   k (needsBacking)— dark or sparse art; gets the white tile behind it
+//   neither         — bright transparent art; floats on the surface, no tile
+//   no entry        — monogram, deterministic hue per ticker
+// The white tile is what makes the set coherent: the sources return three
+// incompatible kinds of art (see the logo spec, §1 Claim C).
+function logoHue(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
+}
+function LogoMark(_refLM) {
+  const { ticker, market } = _refLM;
+  const hit = logoFor(ticker, market);
+  if (!hit || !hit.f) {
+    // Longer codes — fund tickers like STX40, SYGWD, ETF500 — read better on
+    // three characters than two. (The old rule required a trailing digit, so
+    // the wholly-alphabetic SYG* funds it names were getting two.)
+    const t = String(ticker);
+    const label = t.length >= 5 ? t.slice(0, 3) : t.slice(0, 2);
+    // Some strong brands publish only a wordmark, which is illegible at 34px and
+    // is refused by the build's legibility gate. `c` is the brand colour the
+    // build measured off that rejected art, so the chip is at least the right
+    // colour rather than a hash of the ticker. It is always a deep ground (see
+    // deepen() in tools/png-raster.mjs), so white letters always read on it.
+    if (hit && hit.c) {
+      return React.createElement("span", {
+        className: "pb-logo pb-logo-brand", style: { background: hit.c },
+        "aria-hidden": "true"
+      }, React.createElement("span", null, label));
+    }
+    return React.createElement("span", {
+      className: "pb-logo pb-logo-mono", style: { '--logo-h': logoHue(String(ticker)) },
+      "aria-hidden": "true"
+    }, React.createElement("span", null, label));
+  }
+  // Every mark in the pack is a full-bleed square tile, so there is one class and
+  // one radius: uniformity is structural, not per-mark. The old three-way split
+  // (bleed / backed / plain) existed because the pipeline emitted art in three
+  // shapes and painted #fff behind two of them — which is what produced the white
+  // frame around ASML and Amazon. See tools/png-raster.mjs.
+  return React.createElement("span", { className: "pb-logo pb-logo-tile", "aria-hidden": "true" },
+    React.createElement("img", {
+      src: "./logos/" + hit.f, alt: "", width: 34, height: 34,
+      loading: "lazy", decoding: "async",
+      // A file that 404s must not leave a broken-image glyph, nor an empty tile.
+      // Dropping the tile class leaves the row reading as blank.
+      onError: e => {
+        e.target.style.display = 'none';
+        if (e.target.parentNode) e.target.parentNode.className = 'pb-logo';
+      }
+    }));
+}
 const HoldingRow = React.memo(function HoldingRow(_refHR) {
   const { positionDisplayName, fmtCcy } = window.PBApp;
   let { position: p, market, quote: q, rates, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
@@ -2272,11 +2333,13 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
     // LEFT — ticker + market badge (main), company name (sub). Avg cost lives on
     // the bottom action strip beside Edit (see ACTIONS below).
     React.createElement("div", { className: "row-main" },
-      React.createElement("div", { className: "hold-id" },
-        React.createElement("span", { className: "hold-tkr-main" }, mainLabel),
-        React.createElement("span", { className: "mkt-badge" }, isUT ? "fund" : market)),
-      React.createElement("div", { className: "row-meta" },
-        (hasName && !isUT) ? React.createElement("span", { className: "hold-co-name" }, name) : null)),
+      React.createElement(LogoMark, { ticker: p.ticker, market: market }),
+      React.createElement("div", { className: "hold-txt" },
+        React.createElement("div", { className: "hold-id" },
+          React.createElement("span", { className: "hold-tkr-main" }, mainLabel),
+          React.createElement("span", { className: "mkt-badge" }, isUT ? "fund" : market)),
+        React.createElement("div", { className: "row-meta" },
+          (hasName && !isUT) ? React.createElement("span", { className: "hold-co-name" }, name) : null))),
     // MIDDLE — total gain/loss: amount on top, % below
     React.createElement("div", { className: "holding-gl" },
       gain != null
@@ -3242,13 +3305,15 @@ function WatchlistView(_ref8) {
             }
           },
             React.createElement("div", { className: "pos-head" },
-              React.createElement("div", { className: "flex-1" },
+              React.createElement("div", { className: "flex-1 wl-id" },
+                React.createElement(LogoMark, { ticker: w.ticker, market: w.market }),
+                React.createElement("div", { className: "wl-idtxt" },
                 React.createElement("div", { className: "flex items-center gap-2" },
                   React.createElement("span", { className: "tkr" }, w.ticker),
                   React.createElement("span", { className: "market-badge" }, w.market),
                   activeList === 'all'
                     ? customListsOf(w).map(id => React.createElement("span", { key: id, className: "wl-card-list" }, listNameById(id))) : null),
-                displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null),
+                displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null)),
               // Stock price now sits top-right (swapped with the 52W high below).
               // The ext-hours chip is lifted out (hideExt) and shown in the body.
               React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, hideExt: true, market: w.market })),
