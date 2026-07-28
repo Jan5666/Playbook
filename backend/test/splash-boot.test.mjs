@@ -30,9 +30,13 @@
 // would silently reintroduce each bug.
 import assert from 'node:assert';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+// The generator is the single source of truth for the device list, the media
+// queries and the fill colours; these guards assert index.html and the built
+// files still agree with it.
+import { DEVICES, THEMES, fileFor, mediaFor } from '../../tools/build-splash.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (f) => readFileSync(join(ROOT, f), 'utf8');
@@ -185,6 +189,97 @@ test('shipped-file changes came with a CACHE_NAME bump', () => {
   // brought up to date, or a merge that silently took the older side would pass.
   const m = swSrc.match(/const CACHE_NAME\s*=\s*'playbook-shell-v(\d+)'/);
   assert.ok(m, 'sw.js must define CACHE_NAME as playbook-shell-vN');
-  assert.ok(Number(m[1]) >= 92,
-    `CACHE_NAME is v${m[1]}; this change set requires at least v92 (main shipped v91)`);
+  assert.ok(Number(m[1]) >= 93,
+    `CACHE_NAME is v${m[1]}; this change set requires at least v93 (main shipped v92)`);
+});
+
+// ─── iOS launch images ───────────────────────────────────────────────────────
+// The fourth cause of "the app flickers on open", and the only one that lives
+// outside the page: Safari ignores the manifest's background_color, so an
+// installed PWA with no <link rel="apple-touch-startup-image"> gets a plain
+// WHITE screen for the 300-800ms WebKit takes to boot. The three guards above
+// are all in-page and could never have caught it.
+//
+// iOS honours ONLY an image whose pixel size matches the device exactly, so the
+// failure mode for every one of these is silent: a typo'd media query or a file
+// one pixel off does not error, it just goes back to flashing white.
+
+test('every device in the splash pack has a matching startup-image link', () => {
+  const links = [...indexSrc.matchAll(
+    /<link rel="apple-touch-startup-image" media="([^"]+)" href="([^"]+)">/g)]
+    .map(m => ({ media: m[1], href: m[2] }));
+
+  assert.strictEqual(links.length, DEVICES.length,
+    `index.html has ${links.length} startup-image links but tools/build-splash.mjs ` +
+    `builds ${DEVICES.length} sizes. Re-run \`node tools/build-splash.mjs\` and ` +
+    're-wire index.html - a device with no link falls back to the white screen.');
+
+  for (const d of DEVICES) {
+    const want = './brand/splash/' + fileFor('dark', d);
+    const hit = links.find(l => l.href === want);
+    assert.ok(hit, `no startup-image link for ${d.w}x${d.h}@${d.dpr}x (${d.note})`);
+    assert.strictEqual(hit.media, mediaFor(d),
+      `the media query for ${d.note} does not match tools/build-splash.mjs. iOS ` +
+      'ignores a launch image whose query does not match the device exactly.');
+  }
+});
+
+test('every referenced launch image exists at its exact declared size', () => {
+  for (const theme of ['dark', 'light']) {
+    for (const d of DEVICES) {
+      const rel = join('brand', 'splash', fileFor(theme, d));
+      const file = join(ROOT, rel);
+      assert.ok(existsSync(file), `missing ${rel} - run \`node tools/build-splash.mjs\``);
+
+      // Read the PNG IHDR directly: the filename is a claim, the header is the
+      // fact, and iOS only cares about the fact.
+      const buf = readFileSync(file);
+      assert.strictEqual(buf.toString('ascii', 12, 16), 'IHDR', `${rel} is not a PNG`);
+      assert.strictEqual(buf.readUInt32BE(16), d.w * d.dpr,
+        `${rel} is ${buf.readUInt32BE(16)}px wide, iOS needs exactly ${d.w * d.dpr}px`);
+      assert.strictEqual(buf.readUInt32BE(20), d.h * d.dpr,
+        `${rel} is ${buf.readUInt32BE(20)}px tall, iOS needs exactly ${d.h * d.dpr}px`);
+    }
+  }
+});
+
+test('launch-image fill colours match the loader background they hand off to', () => {
+  // The whole point of the pack is that the launch image and the loader's first
+  // painted frame are the SAME colour. If --pb-bg is retuned and these are not,
+  // the white flash is merely traded for a coloured one.
+  const block = stylesSrc.slice(stylesSrc.indexOf('--pb-bg'));
+  const scope = block.slice(0, block.indexOf('.pb-loader'));
+  const darkCss = scope.match(/--pb-bg:\s*(#[0-9A-Fa-f]{6})/)[1].toLowerCase();
+  const lightCss = scope.slice(scope.indexOf('data-theme="light"'))
+    .match(/--pb-bg:\s*(#[0-9A-Fa-f]{6})/)[1].toLowerCase();
+  const hex = (rgb) => '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+
+  assert.strictEqual(hex(THEMES.dark), darkCss,
+    'tools/build-splash.mjs THEMES.dark must equal --pb-bg in the dark splash palette');
+  assert.strictEqual(hex(THEMES.light), lightCss,
+    'tools/build-splash.mjs THEMES.light must equal --pb-bg under [data-theme="light"]');
+});
+
+test('launch images follow the UI theme, pre-paint and on switch', () => {
+  const head = indexSrc.slice(0, indexSrc.indexOf('</head>'));
+  assert.match(head, /function applySplashTheme\(/,
+    'index.html must define applySplashTheme in the pre-paint script');
+  assert.match(head, /window\.applySplashTheme = applySplashTheme;/,
+    'applySplashTheme must be exposed so app.js can call it on a theme switch');
+
+  // It has to run off the UI theme (pb.theme.v2), not the home-screen icon theme
+  // (pb.iconTheme.v1) - those are independent settings, and only the UI theme
+  // decides what colour the loader paints.
+  const uiBlock = head.slice(head.indexOf("localStorage.getItem('pb.theme.v2')"));
+  assert.match(uiBlock, /applySplashTheme\(uiTheme\)/,
+    'applySplashTheme must be called with the UI theme, in the pre-paint script');
+
+  // Shipped hrefs must be the dark ones: that is the default theme, and it is
+  // what a first-ever visit (nothing in localStorage yet) will launch with.
+  assert.doesNotMatch(indexSrc, /href="\.\/brand\/splash\/light-/,
+    'index.html should ship the dark hrefs; light is applied at runtime');
+
+  assert.match(appSrc, /window\.applySplashTheme === 'function'/,
+    'app.js must repoint the launch images when the theme changes, guarded for ' +
+    'the verify-*.mjs harness shells (which have no such links)');
 });

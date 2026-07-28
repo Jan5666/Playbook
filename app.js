@@ -2909,6 +2909,9 @@ function App() {
   }, [previewLoadError]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    // Keep the iOS launch images on the same theme as the loader they hand off
+    // to (defined in index.html; absent in the verify-*.mjs harness shells).
+    if (typeof window.applySplashTheme === 'function') window.applySplashTheme(theme);
   }, [theme]);
   // Self-healing sector fill: any US holding the static classifier can't place
   // (→ "Other") gets one lightweight stockanalysis.com lookup, normalised and

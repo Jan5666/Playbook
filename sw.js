@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v92';
+const CACHE_NAME   = 'playbook-shell-v93';
 const CDN_CACHE    = 'playbook-cdn-v1';
 // Instrument logos: immutable per filename, so cache-first. Filenames are STABLE
 // across rebuilds, so without a bump an installed PWA keeps serving the old art
@@ -43,6 +43,11 @@ const SHELL_ASSETS = [
   './brand/icon-512.png',
   './brand/icon-light-192.png',
   './brand/icon-light-512.png',
+  // brand/splash/*.png (the iOS launch images) are deliberately NOT here. iOS
+  // reads the launch image at app-launch time, before this worker is running, so
+  // precaching them buys nothing - it would only add 36 files to an addAll that
+  // is atomic, where a single miss fails the whole install. iOS keeps its own
+  // copy once the page has been loaded on the device.
 ];
 
 // ─── Install: pre-cache the entire app shell ──────────────────────────────────

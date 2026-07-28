@@ -18,6 +18,46 @@
 <link rel="icon" type="image/svg+xml" href="./brand/favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="./brand/favicon-32.png">
 <link id="appleTouchIcon" rel="apple-touch-icon" href="./brand/apple-touch-icon.png">
+
+<!-- iOS LAUNCH IMAGES - this is what fixes the white flash on open.
+     Safari gives an installed PWA no splash screen of its own: it ignores the
+     manifest's background_color, so between the tap on the home-screen icon and
+     WebKit painting the document, iOS shows a plain WHITE screen for 300-800ms.
+     On a dark app that reads as a flash on every single launch. It happens
+     entirely OUTSIDE the page, which is why none of the in-page fixes (the
+     service-worker reload guard, the negative bar delays, collapsing to one
+     loader element) ever touched it.
+
+     Each file is a flat fill of the loader's own --pb-bg, deliberately not the
+     logo: a static mark can only ever land a pixel or two off the live loader's
+     tile and that lands as a JUMP at handoff. A flat fill cannot mis-register,
+     so the launch image and the page's first painted frame are the same colour
+     and the seam is invisible.
+
+     iOS only honours an image whose pixel size matches the device EXACTLY - a
+     near-miss is silently ignored and you are back to white - hence one entry
+     per geometry. Regenerate with `node tools/build-splash.mjs`, which owns
+     this list; splash-boot.test.mjs asserts the two stay in sync.
+
+     hrefs ship dark and are rewritten to -light below for a light-theme user. -->
+<link rel="apple-touch-startup-image" media="screen and (device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-320x568@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-375x667@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-414x736@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-375x812@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-414x896@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-414x896@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-390x844@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-428x926@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-393x852@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-430x932@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-402x874@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="./brand/splash/dark-440x956@3x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-768x1024@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-810x1080@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 820px) and (device-height: 1180px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-820x1180@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 834px) and (device-height: 1112px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-834x1112@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-834x1194@2x.png">
+<link rel="apple-touch-startup-image" media="screen and (device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="./brand/splash/dark-1024x1366@2x.png">
 <script>
   // Home-screen / tab icon theme. Default dark; user can pick light in Settings.
   // Runs before the app so the apple-touch-icon (read by iOS at "Add to Home
@@ -34,6 +74,25 @@
       window.__pbIconTheme = theme;
     }
     window.applyIconTheme = applyIconTheme;
+
+    // Point the iOS launch images at the UI theme. Keyed to pb.theme.v2, NOT to
+    // pb.iconTheme.v1 above: the launch image has to match the colour the loader
+    // will paint (--pb-bg, which follows data-theme), or fixing the white flash
+    // just trades it for a dark->light one.
+    // iOS reads the launch image from the last page it loaded, so this call is
+    // what makes the NEXT launch open in the right colour - a theme switch costs
+    // one launch of lag and then self-corrects. app.js calls this too, so a
+    // switch made in Settings is picked up without waiting for a reload.
+    function applySplashTheme(theme) {
+      var want = theme === 'light' ? '/light-' : '/dark-';
+      var links = document.querySelectorAll('link[rel="apple-touch-startup-image"]');
+      for (var i = 0; i < links.length; i++) {
+        var href = links[i].getAttribute('href') || '';
+        var next = href.replace(/\/(?:dark|light)-/, want);
+        if (next !== href) links[i].setAttribute('href', next);
+      }
+    }
+    window.applySplashTheme = applySplashTheme;
     var stored = 'dark';
     try { var raw = localStorage.getItem('pb.iconTheme.v1'); if (raw) stored = JSON.parse(raw); } catch (e) {}
     applyIconTheme(stored === 'light' ? 'light' : 'dark');
@@ -47,6 +106,7 @@
     try { var t = localStorage.getItem('pb.theme.v2'); if (t) uiTheme = JSON.parse(t); } catch (e) {}
     uiTheme = uiTheme === 'light' ? 'light' : 'dark';
     document.documentElement.dataset.theme = uiTheme;
+    applySplashTheme(uiTheme);
     var tc = document.querySelector('meta[name="theme-color"]');
     if (tc) tc.setAttribute('content', uiTheme === 'light' ? '#F4F4F2' : '#09090b');
   })();

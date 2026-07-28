@@ -52,6 +52,7 @@ jobs:
                    manifest.json manifest-light.json \
                    icon-180.png icon-192.png icon-512.png \
                    brand/favicon.svg brand/apple-touch-icon.png \
+                   brand/splash/dark-393x852@3x.png brand/splash/light-393x852@3x.png \
                    logos/CRYPTO-AAVE.png; do
             if [ ! -e "_site/$f" ]; then echo "::error::missing runtime asset $f"; missing=1; fi
           done
