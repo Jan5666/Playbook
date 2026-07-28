@@ -1,8 +1,12 @@
-// Real-browser verification of the extended-hours (pre/post market) readout.
-// Goal: it should read like Google Finance — the live pre/post PRICE plus its
-// move vs the regular close as "+%  ·  +cash" (e.g. Micron after close:
-// "After hours 1 235,00 +23,62 (1,95%)") — both in the detail card and the
-// inline list chip.
+// Real-browser verification of the extended-hours (pre/post market) readout, in
+// its three homes:
+//   1. the watchlist card chip — live pre/post PRICE + the % vs the regular close.
+//      The cash delta ("· +$23.42") was dropped here at Jan's request (2026-07-28);
+//      the card is a glance surface. Only the DETAIL card still carries it.
+//   2. the Holdings "view pre-market moves" toggle — the Today column reports the
+//      ext move instead, symbols with no reading show a dim dash, and the Pre/post
+//      sort appears only while the toggle is on.
+//   3. the detail card (showDailyRow) — still Google-style "+%  ·  +cash".
 //   Run: node backend/test/verify-extended-hours.mjs
 import http from 'node:http';
 import { readFileSync, existsSync, statSync, mkdtempSync, mkdirSync } from 'node:fs';
@@ -44,16 +48,24 @@ const NVDA = {
   marketState: 'CLOSED', fetchedAt: Date.now(),
 };
 
+// No ext fields at all — the "no pre/post reading" case the Holdings pre-market
+// column has to render as a dim dash rather than falling back to the day's move.
+const KO = {
+  price: 62.40, change: 0.31, changePct: 0.50, prevClose: 62.09,
+  currency: 'USD', marketState: 'CLOSED', fetchedAt: Date.now(),
+};
+
 const SEED = {
   'pb.positions.v2': [
     { id: 'p1', ticker: 'MU', market: 'US', shares: 10, costBasis: 100, name: 'Micron Technology Inc', purchaseDate: '2024-02-01', buyFx: 1 },
+    { id: 'p2', ticker: 'KO', market: 'US', shares: 20, costBasis: 50, name: 'Coca-Cola Co', purchaseDate: '2024-03-01', buyFx: 1 },
   ],
   'pb.watchlist.v2': [
     { id: 'w1', ticker: 'MU', market: 'US', name: 'Micron Technology Inc' },
     { id: 'w2', ticker: 'TSLA', market: 'US', name: 'Tesla Inc.' },
     { id: 'w3', ticker: 'NVDA', market: 'US', name: 'NVIDIA Corporation' },
   ],
-  'pb.prices.v1': { 'US:MU': MU, 'US:TSLA': TSLA, 'US:NVDA': NVDA },
+  'pb.prices.v1': { 'US:MU': MU, 'US:TSLA': TSLA, 'US:NVDA': NVDA, 'US:KO': KO },
 };
 
 const seedJson = JSON.stringify(SEED).replace(/</g, '\\u003c');
@@ -170,8 +182,21 @@ try {
   await sleep(700);
 
   // ── 1. WATCHLIST inline chip ────────────────────────────────────────────────
-  await evals(ws, `const b=document.querySelector('[data-tab="watchlist"]'); if(b) b.click(); return true;`);
-  await sleep(800);
+  // Poll for the cards rather than sleeping a fixed 800ms: on a slow or loaded
+  // machine the app can still be booting when the tab is clicked, and every
+  // assertion below then fails against an empty list — a false red that looks
+  // exactly like a real regression. Re-clicks the tab each turn because the first
+  // click can land before the nav exists.
+  const wlReady = await evals(ws, `
+    const dl=Date.now()+20000;
+    while(Date.now()<dl){
+      const b=document.querySelector('[data-tab="watchlist"]'); if(b) b.click();
+      if(document.querySelector('.watchlist-list .ext-hours')) return 'ready';
+      await new Promise(r=>setTimeout(r,200));
+    }
+    return 'timeout';`);
+  console.log('  watchlist ready:', wlReady);
+  await sleep(300);
   await shot(ws, 'watchlist');
   const chips = JSON.parse(await evals(ws, `
     const out=[];
@@ -188,20 +213,93 @@ try {
   ok('watchlist: found ext-hours chips', chips.length >= 2);
   ok('watchlist: MU shows After-hours label', !!muChip && muChip.label === 'After-hours', muChip && muChip.label);
   ok('watchlist: MU shows live ext price $1,234.80', !!muChip && /\$1,234\.80/.test(muChip.price), muChip && muChip.price);
-  ok('watchlist: MU chip shows +% and +cash like Google', !!muChip && /\+1\.93%/.test(muChip.chg) && /\+\$23\.42/.test(muChip.chg), muChip && muChip.chg);
+  // The card chip is PRICE + % only. The cash delta ("· +$23.42") was dropped at
+  // Jan's request (2026-07-28) — the card is a glance surface, the rand/dollar
+  // amount is detail. The DETAIL card below still carries it, so this is the
+  // assertion that keeps the two from drifting back together.
+  // The chip's move span is now the bare percentage — no currency symbol at all.
+  const noCash = (s) => !/[$£€]/.test(String(s || ''));
+  ok('watchlist: MU chip shows the %', !!muChip && /\+1\.93%/.test(muChip.chg), muChip && muChip.chg);
+  ok('watchlist: MU chip carries NO cash delta', !!muChip && noCash(muChip.chg), muChip && muChip.chg);
   ok('watchlist: MU chip colored green (up)', !!muChip && /\bup\b/.test(muChip.chgClass));
   ok('watchlist: TSLA shows Pre-market label', !!tslaChip, tslaChip && tslaChip.label);
-  ok('watchlist: TSLA pre-market is red (down) with -cash', !!tslaChip && /\bdown\b/.test(tslaChip.chgClass) && /-\$6\.82/.test(tslaChip.chg), tslaChip && (tslaChip.chg + ' / ' + tslaChip.chgClass));
+  ok('watchlist: TSLA pre-market is red (down), % only', !!tslaChip && /\bdown\b/.test(tslaChip.chgClass) && /-1\.66%/.test(tslaChip.chg) && !/\$6\.82/.test(tslaChip.chg), tslaChip && (tslaChip.chg + ' / ' + tslaChip.chgClass));
   // FINAL (extLive:false) reading survives the session's end as "After close".
   const nvdaChip = chips.find(c => c.price && c.price.includes('194.13'));
   ok('watchlist: NVDA final reading shows After close label', !!nvdaChip && nvdaChip.label === 'After close', nvdaChip && nvdaChip.label);
   ok('watchlist: NVDA final chip carries ext-closed styling', !!nvdaChip && /\bext-closed\b/.test(nvdaChip.cls || ''), nvdaChip && nvdaChip.cls);
-  ok('watchlist: NVDA final chip shows +2.10% and +$3.99', !!nvdaChip && /\+2\.10%/.test(nvdaChip.chg) && /\+\$3\.99/.test(nvdaChip.chg), nvdaChip && nvdaChip.chg);
+  ok('watchlist: NVDA final chip shows +2.10%, no cash', !!nvdaChip && /\+2\.10%/.test(nvdaChip.chg) && !/\$3\.99/.test(nvdaChip.chg), nvdaChip && nvdaChip.chg);
   ok('watchlist: NVDA final move still colored green (up)', !!nvdaChip && /\bup\b/.test(nvdaChip.chgClass));
 
-  // ── 2. DETAIL CARD (showDailyRow) ───────────────────────────────────────────
-  await evals(ws, `const b=document.querySelector('[data-tab="current"]'); if(b) b.click(); return true;`);
-  await sleep(700);
+  // ── 2. HOLDINGS "view pre-market moves" toggle ──────────────────────────────
+  // The Today column swaps to the extended-hours move, the header renames itself,
+  // and the Pre/post sort appears — but only while the toggle is on. MU carries a
+  // live post reading (+1.93%), KO carries none, so this run covers both branches.
+  const hdReady = await evals(ws, `
+    const dl=Date.now()+20000;
+    while(Date.now()<dl){
+      const b=document.querySelector('[data-tab="current"]'); if(b) b.click();
+      if(document.querySelector('.holding-row')) return 'ready';
+      await new Promise(r=>setTimeout(r,200));
+    }
+    return 'timeout';`);
+  console.log('  holdings ready:', hdReady);
+  await sleep(300);
+  const readHoldings = `
+    const head=document.querySelector('.holding-list-head .hlh-day');
+    const rows=[...document.querySelectorAll('.holding-row')].map(r=>{
+      const tkr=r.querySelector('.hold-tkr-main'); const chip=r.querySelector('.holding-day');
+      const dash=r.querySelector('.holding-day-empty');
+      return { tkr: tkr?tkr.textContent.trim():null,
+               chip: chip?chip.textContent.trim():null,
+               chipCls: chip?chip.className:null,
+               dash: dash?dash.textContent.trim():null };
+    });
+    return JSON.stringify({ dayLabel: head?head.textContent.trim():null, rows });`;
+  const sortLabels = `
+    const btn=document.querySelector('[aria-label="Sort holdings"]'); if(!btn) return '[]';
+    btn.click(); await new Promise(r=>setTimeout(r,250));
+    const out=[...document.querySelectorAll('.wl-sortmenu-row .wl-sortmenu-label')].map(e=>e.textContent.trim());
+    const back=document.querySelector('.wl-pop-backdrop'); if(back) back.click();
+    await new Promise(r=>setTimeout(r,200));
+    return JSON.stringify(out);`;
+
+  const hOff = JSON.parse(await evals(ws, readHoldings));
+  const sortOff = JSON.parse(await evals(ws, sortLabels));
+  console.log('  holdings (toggle off):', JSON.stringify(hOff), '\n  sort options:', JSON.stringify(sortOff));
+  ok('holdings: column is "Today" by default', hOff.dayLabel === 'Today', hOff.dayLabel);
+  ok('holdings: default chips are the DAY move', (hOff.rows.find(r => r.tkr === 'MU') || {}).chip === '+6.82%', JSON.stringify(hOff.rows.map(r => [r.tkr, r.chip])));
+  ok('holdings: Pre/post sort hidden while the toggle is off', !sortOff.includes('Pre/post move'), sortOff.join(' / '));
+
+  const toggled = await evals(ws, `
+    const b=document.querySelector('[aria-label="Show pre-market moves"]'); if(!b) return 'no-toggle';
+    b.click(); await new Promise(r=>setTimeout(r,400)); return b.getAttribute('aria-pressed');`);
+  console.log('  toggle clicked -> aria-pressed:', toggled);
+  ok('holdings: pre-market toggle exists and presses on', toggled === 'true', String(toggled));
+  await shot(ws, 'holdings-premarket');
+
+  const hOn = JSON.parse(await evals(ws, readHoldings));
+  const sortOn = JSON.parse(await evals(ws, sortLabels));
+  console.log('  holdings (toggle on):', JSON.stringify(hOn), '\n  sort options:', JSON.stringify(sortOn));
+  const muRow = hOn.rows.find(r => r.tkr === 'MU') || {};
+  const koRow = hOn.rows.find(r => r.tkr === 'KO') || {};
+  ok('holdings: column renames to "Pre-mkt"', hOn.dayLabel === 'Pre-mkt', hOn.dayLabel);
+  ok('holdings: MU chip switches to the ext move +1.93%', muRow.chip === '+1.93%', muRow.chip);
+  ok('holdings: MU chip carries the is-ext ring', /\bis-ext\b/.test(muRow.chipCls || ''), muRow.chipCls);
+  ok('holdings: MU chip still colour-coded up', /\btext-up\b/.test(muRow.chipCls || ''), muRow.chipCls);
+  ok('holdings: KO (no ext reading) shows a dim dash, not its day move', koRow.chip == null && !!koRow.dash, JSON.stringify(koRow));
+  ok('holdings: Pre/post sort appears while the toggle is on', sortOn.includes('Pre/post move'), sortOn.join(' / '));
+
+  // Back off again: the column reverts and the sort option is withdrawn.
+  const untoggled = await evals(ws, `
+    const b=document.querySelector('[aria-label="Show pre-market moves"]');
+    b.click(); await new Promise(r=>setTimeout(r,400)); return b.getAttribute('aria-pressed');`);
+  const hBack = JSON.parse(await evals(ws, readHoldings));
+  ok('holdings: toggling back off restores the day move', untoggled === 'false' && hBack.dayLabel === 'Today' && (hBack.rows.find(r => r.tkr === 'MU') || {}).chip === '+6.82%',
+     untoggled + ' / ' + hBack.dayLabel);
+
+  // ── 3. DETAIL CARD (showDailyRow) ───────────────────────────────────────────
+  await sleep(300);
   const openedDetail = await evals(ws, `
     const row=[...document.querySelectorAll('.holding-row, .pos-card, [class*="holding"]')].find(r=>/MU\\b|Micron/.test(r.textContent));
     if(!row) return 'no-row'; row.click(); return 'clicked';`);

@@ -1,8 +1,10 @@
 // Real-browser verification of the watchlist-card restyle:
-//  - stock price swapped to the top-right (where the 52W high used to be)
-//  - the money reads down one right-hand column: price, day's move, 52W high
-//  - the alert bell moved bottom-LEFT, under the company name and squared up
-//    with the day's move beside it
+//  - stock price top-right, with the day's move stacked directly UNDER it in the
+//    header's money column (it used to own a body row of its own, with the left
+//    half of that row empty — moving it up takes a whole row off the card)
+//  - the money still reads down one right-hand column: price, day's move, 52W high
+//  - the alert bell and the 52W badge now share ONE body row, the bell on the left
+//    under the company name
 //  - the "+$ today" cash line removed from under the % change
 // Run: node backend/test/verify-watchlist.mjs
 import http from 'node:http';
@@ -134,8 +136,21 @@ try {
   console.log('  app mounted:', mounted);
   await sleep(600);
 
-  await evals(ws, `const b=document.querySelector('[data-tab="watchlist"]'); if(b) b.click(); return true;`);
-  await sleep(700);
+  // Poll for the cards rather than sleeping a fixed 700ms: on a slow or loaded
+  // machine the app can still be booting when the tab is clicked, and the probe
+  // below then returns "(no card)" — a false red that looks like a real
+  // regression. Re-clicks each turn because the first click can land before the
+  // nav exists.
+  const ready = await evals(ws, `
+    const dl=Date.now()+20000;
+    while(Date.now()<dl){
+      const b=document.querySelector('[data-tab="watchlist"]'); if(b) b.click();
+      if(document.querySelector('.watchlist-list .pos-card')) return 'ready';
+      await new Promise(r=>setTimeout(r,200));
+    }
+    return 'timeout';`);
+  console.log('  watchlist ready:', ready);
+  await sleep(300);
   await shot(ws, 'cards');
 
   const layout = await evals(ws, `
@@ -156,26 +171,32 @@ try {
       priceInHead: inHead(price),
       badgeInBody: inBody(badge),
       bellInBody:  inBody(bell),
-      pctInBody:   inBody(pct),
+      // The day's move now rides in the HEADER, stacked under the price — the card
+      // used to spend a whole row on it with the left half of that row empty.
+      pctInHead:   inHead(pct),
       amtGone:     amt === null,
       badgeText:   badge ? badge.textContent.replace(/\\s+/g,' ').trim() : null,
       pctText:     pct ? pct.textContent.trim() : null,
+      cardH:       Math.round(cr.height),
     };
-    // Geometry: everything money reads down ONE right-hand column (price, day's
-    // move, 52W high), with the bell alone on the left under the company name.
+    // Geometry: everything money still reads down ONE right-hand column (price,
+    // day's move, 52W high), with the bell alone on the left under the company name.
     if (badge && bell) { out.bellLeftOfBadge = rb(bell).right < rb(badge).left + 1; out.badgeOnRight = rb(badge).right > cr.right - cr.width * 0.45; }
     if (price) out.priceOnRight = rb(price).right > cr.right - cr.width * 0.45;
     if (pct) out.pctOnRight = rb(pct).right > cr.right - cr.width * 0.45;
-    // The 52W badge sits UNDER the day's move, and the bell squares up with that
-    // same row — this is the layout Jan asked for, so pin both.
+    // The chip sits directly UNDER the price inside the header's money column…
+    if (price && pct) out.pctBelowPrice = rb(pct).top >= rb(price).bottom - 1;
+    // …and the 52W badge stays under the chip, one body row further down.
     if (badge && pct) out.badgeBelowPct = rb(badge).top >= rb(pct).bottom - 1;
-    // Compare against the CHIP, not the % text inside it: the chip carries 9px of
+    // Compare against the CHIP, not the % text inside it: the chip carries its own
     // padding, so the text's right edge is inset from the column the badge tracks.
     const chip = card.querySelector('.watch-today');
     if (badge && chip) out.badgeRightEdgeMatchesChip = Math.abs(rb(badge).right - rb(chip).right) <= 2;
-    if (bell && pct) {
+    // Bell and 52W badge now share ONE body row — that collapsed row is the whole
+    // point of the change, so pin it.
+    if (bell && badge) {
       const mid = (el) => { const r = rb(el); return r.top + r.height / 2; };
-      out.bellCentredOnPct = Math.abs(mid(bell) - mid(pct)) <= 2;
+      out.bellCentredOnBadge = Math.abs(mid(bell) - mid(badge)) <= 2;
     }
     // The bell starts where the ticker/company name starts, not under the logo.
     const nameEl = card.querySelector('.wl-idtxt');
@@ -189,14 +210,18 @@ try {
   ok('bell in body', L.bellInBody === true);
   ok('bell sits to the LEFT of the 52W badge', L.bellLeftOfBadge === true);
   ok('52W badge on the right', L.badgeOnRight === true);
-  ok('52W badge sits underneath the day move', L.badgeBelowPct === true);
+  ok('day move moved into the header, under the price', L.pctInHead === true && L.pctBelowPrice === true);
+  ok('52W badge still sits underneath the day move', L.badgeBelowPct === true);
   ok('52W badge right edge lines up with the day move', L.badgeRightEdgeMatchesChip === true);
-  ok('bell is vertically centred on the day move', L.bellCentredOnPct === true);
+  ok('bell and 52W badge share one body row', L.bellCentredOnBadge === true);
   ok('bell starts where the company name starts', L.bellIndentMatchesName === true);
   ok('price hugs the right of the header', L.priceOnRight === true);
-  ok('% change still in body, on the right', L.pctInBody === true && L.pctOnRight === true);
+  ok('% change on the right', L.pctOnRight === true);
   ok('"+$ today" amount line removed', L.amtGone === true);
   ok('badge shows 52W Hi value', /52W Hi/i.test(L.badgeText || '') && /%|ATH/.test(L.badgeText || ''));
+  // The whole point: one fewer row. Baseline before this change was ~148px at
+  // 440x1100; anything at or under 130 means the row really did collapse.
+  ok('card lost a row of height (<=130px)', L.cardH > 0 && L.cardH <= 130, L.cardH + 'px');
 
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);

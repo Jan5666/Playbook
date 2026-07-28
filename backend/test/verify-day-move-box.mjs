@@ -138,8 +138,21 @@ try {
   await sleep(700);
 
   // ---- WATCHLIST ----
-  await evals(ws, `const b=document.querySelector('[data-tab="watchlist"]'); if(b) b.click(); return true;`);
-  await sleep(700);
+  // Poll for the chips rather than sleeping a fixed 700ms: on a slow or loaded
+  // machine the app can still be booting when the tab is clicked, and every
+  // assertion below then runs against an empty list — a false red that looks
+  // exactly like a real regression. Re-clicks each turn because the first click
+  // can land before the nav exists.
+  const settle = (sel) => `
+    const dl=Date.now()+20000;
+    while(Date.now()<dl){ if(document.querySelector('${sel}')) return 'ready'; await new Promise(r=>setTimeout(r,200)); }
+    return 'timeout';`;
+  const clickTab = (tab) => `
+    const dl=Date.now()+20000;
+    while(Date.now()<dl){ const b=document.querySelector('[data-tab="${tab}"]'); if(b){ b.click(); return true; } await new Promise(r=>setTimeout(r,200)); }
+    return false;`;
+  await evals(ws, clickTab('watchlist'));
+  console.log('  watchlist ready:', await evals(ws, settle('.watch-today')));
   await shot(ws, 'watchlist');
   const wl = JSON.parse(await evals(ws, `
     const out = [];
@@ -153,7 +166,10 @@ try {
         bgImage: cs.backgroundImage, bgColor: cs.backgroundColor,
         radius: cs.borderTopLeftRadius, shadow: cs.boxShadow !== 'none',
         textColor: pcs ? pcs.color : null,
-        boxed: r.height > 18 && r.width > 36,
+        boxed: r.height > 14 && r.width > 32,
+        // Metrics for the cross-tab parity check below: both tabs size off the
+        // shared --day-chip-* tokens now, so these must match the holdings chip.
+        w: Math.round(r.width), h: Math.round(r.height), fs: pcs ? pcs.fontSize : null,
         text: pct ? pct.textContent.trim() : null,
       });
     }
@@ -169,8 +185,8 @@ try {
   ok('watchlist: covers both up (green) and down (red)', wl.some(b => b.dir === 'up') && wl.some(b => b.dir === 'down'));
 
   // ---- HOLDINGS ----
-  await evals(ws, `const b=document.querySelector('[data-tab="current"]'); if(b) b.click(); return true;`);
-  await sleep(700);
+  await evals(ws, clickTab('current'));
+  console.log('  holdings ready:', await evals(ws, settle('.holding-day')));
   await shot(ws, 'holdings');
   const hd = JSON.parse(await evals(ws, `
     const out = [];
@@ -183,6 +199,7 @@ try {
         radius: cs.borderTopLeftRadius, shadow: cs.boxShadow !== 'none',
         textColor: cs.color,
         boxed: r.height > 14 && r.width > 32,
+        w: Math.round(r.width), h: Math.round(r.height), fs: cs.fontSize,
         text: el.textContent.trim(),
       });
     }
@@ -196,6 +213,24 @@ try {
   ok('holdings: numerals are white', hd.length > 0 && hd.every(b => isWhite(b.textColor)), hd.map(b => b.textColor).join(' / '));
   ok('holdings: box reads as a box (size)', hd.every(b => b.boxed));
   ok('holdings: covers both up (green) and down (red)', hd.some(b => b.dir === 'up') && hd.some(b => b.dir === 'down'));
+
+  // ---- CROSS-TAB PARITY ----
+  // The two chips used to differ on purpose (the watchlist one was a size up).
+  // They no longer do: both size off --day-chip-w / --day-chip-fs, so a change to
+  // one tab that doesn't reach the other fails here. Widths are min-width driven,
+  // so a wider number ("+72.21%") can legitimately stretch a chip — compare the
+  // NARROWEST on each tab, which is the token floor both share.
+  const minW = (a) => Math.min(...a.map(b => b.w));
+  const fonts = (a) => [...new Set(a.map(b => b.fs))];
+  ok('chips share one font size across both tabs',
+    wl.length > 0 && hd.length > 0 && fonts(wl).length === 1 && fonts(hd).length === 1 && fonts(wl)[0] === fonts(hd)[0],
+    `watchlist ${fonts(wl).join('/')} vs holdings ${fonts(hd).join('/')}`);
+  ok('chips share one minimum width across both tabs',
+    wl.length > 0 && hd.length > 0 && Math.abs(minW(wl) - minW(hd)) <= 1,
+    `watchlist ${minW(wl)}px vs holdings ${minW(hd)}px`);
+  ok('chips share one height across both tabs',
+    wl.length > 0 && hd.length > 0 && Math.abs(wl[0].h - hd[0].h) <= 1,
+    `watchlist ${wl[0] && wl[0].h}px vs holdings ${hd[0] && hd[0].h}px`);
 
   ws.close();
   console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);

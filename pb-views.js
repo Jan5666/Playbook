@@ -2235,12 +2235,16 @@ function DashboardView(_ref6) {
 // --- Shared holding rows (relocated from app.js, Phase 4 inc 28) ---
 // row zones: Holding (stock name) · P/L · Current value. Shared by the
 // Holdings (per-market) and TFSA lists so both read identically.
-function HoldingsListHead() {
+function HoldingsListHead(_refHLH) {
+  // dayLabel names the middle column. It defaults to "Today"; the Holdings tab
+  // passes "Pre-mkt" while its pre-market toggle is on, so the header always says
+  // which figure the chips below it are. TFSA never passes it.
+  const dayLabel = (_refHLH && _refHLH.dayLabel) || 'Today';
   return React.createElement("div", { className: "holding-list-head" },
     React.createElement("span", { className: "hlh-name" }, "Holding"),
     // Middle column is the day's move now; the total P/L rides under the value
     // and is colour-coded, so it needs no label of its own.
-    React.createElement("span", { className: "hlh-day" }, "Today"),
+    React.createElement("span", { className: "hlh-day" }, dayLabel),
     React.createElement("span", { className: "hlh-val" }, "Current value"),
     // Empty cell over the row's disclosure chevron, so "Current value" stays
     // aligned with the value column.
@@ -2307,7 +2311,7 @@ function LogoMark(_refLM) {
 }
 const HoldingRow = React.memo(function HoldingRow(_refHR) {
   const { positionDisplayName, fmtCcy, Icon } = window.PBApp;
-  let { position: p, market, quote: q, rates, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
+  let { position: p, market, quote: q, rates, showExt, onOpenDetail, onBuyPosition, onSellPosition, onEditPosition } = _refHR;
   // Buy/Sell/Edit are collapsed behind the trailing chevron. Row-local state: the
   // rows are React.memo'd on props, so this neither leaks nor defeats the memo.
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -2335,7 +2339,15 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
   const gainUp = gain != null && gain >= 0;
   const growthPct = val.gainPct;
   const dayPct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
-  const dayUp = dayPct != null && dayPct >= 0;
+  // Pre-market mode (the Holdings toggle): the middle column reports the
+  // extended-hours move instead of the day's. extKind is the gate -- it is only
+  // set when Yahoo's intraday bars carried a real pre/post session (see
+  // PBCore.deriveIntradayExt), and the typeof guard matters because isFinite(null)
+  // is true. A symbol with no reading shows a dim dash rather than falling back to
+  // its day move, so every chip on screen is genuinely an extended-hours figure.
+  const extPct = q && q.extKind && typeof q.extChangePct === 'number' && isFinite(q.extChangePct) ? q.extChangePct : null;
+  const chipPct = showExt ? extPct : dayPct;
+  const chipUp = chipPct != null && chipPct >= 0;
   return React.createElement("button", {
     key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
   },
@@ -2353,9 +2365,10 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
     // when there is no quote: the row is a four-column grid, so dropping the cell
     // would slide the value and the chevron a column to the left.
     React.createElement("div", { className: "holding-today" },
-      dayPct != null ? React.createElement("div", {
-        className: `holding-day mono ${dayUp ? 'text-up' : 'text-down'}`
-      }, (dayUp ? '+' : '') + dayPct.toFixed(2) + '%') : null),
+      chipPct != null ? React.createElement("div", {
+        className: `holding-day mono ${chipUp ? 'text-up' : 'text-down'}` + (showExt ? ' is-ext' : '')
+      }, (chipUp ? '+' : '') + chipPct.toFixed(2) + '%')
+        : (showExt ? React.createElement("div", { className: "holding-day-empty mono" }, "—") : null)),
     // RIGHT — current value, with the total gain/loss smaller underneath it:
     // amount on top, % below. Deliberately below the value's weight (see
     // .holding-gl-amt) so the row has one primary figure, not two competing ones —
@@ -2411,7 +2424,7 @@ function CurrentView(_ref7) {
     onBuyPosition,
     onSellPosition
   } = _ref7;
-  const { Icon, fmtCcy, fmtCcySigned, MARKET_LABELS, positionDisplayName } = window.PBApp;
+  const { Icon, fmtCcy, fmtCcySigned, MARKET_LABELS, positionDisplayName, usePersistedState } = window.PBApp;
   const prices = PBStore.usePricesMap();
   const valueHidden = PBStore.useSetting('valueHidden');
   // Always offer the three primary US/SA tabs, then surface any other market
@@ -2434,6 +2447,15 @@ function CurrentView(_ref7) {
   // "Default order" (manual/insertion) is still available from the menu.
   const [sortMode, setSortMode] = useState('value');
   const [sortOpen, setSortOpen] = useState(false);
+  // Pre-market mode: the Today column reports the extended-hours move instead of
+  // the day's, and the sort menu unlocks ranking by it. This is view-local UI
+  // state, so the raw persisted-state idiom is the right one (not SETTINGS_SCHEMA);
+  // the pb. prefix carries it into cloud backup like the other view prefs.
+  const [showExt, setShowExt] = usePersistedState('pb.holdings.showExt.v1', false);
+  // Turning the column back off must not strand a sort the menu no longer offers.
+  useEffect(() => {
+    if (!showExt && sortMode === 'premarket') setSortMode('value');
+  }, [showExt, sortMode]);
   const sortOptions = [
     { id: 'manual', label: 'Default order' },
     { id: 'value', label: 'Value: high → low' },
@@ -2441,7 +2463,10 @@ function CurrentView(_ref7) {
     { id: 'plAmt', label: 'Gain amount' },
     { id: 'today', label: "Today's move" },
     { id: 'name', label: 'Name A–Z' }
-  ];
+  ].concat(
+    // Offered only while the pre-market column is showing: ranking by a figure the
+    // rows are not displaying would read as a mystery order.
+    showExt ? [{ id: 'premarket', label: 'Pre/post move' }] : []);
   const sortRows = (rows, market) => {
     if (sortMode === 'manual') return rows;
     const arr = rows.slice();
@@ -2451,6 +2476,16 @@ function CurrentView(_ref7) {
         const ca = qa && isFinite(qa.changePct) ? qa.changePct : -Infinity;
         const cb = qb && isFinite(qb.changePct) ? qb.changePct : -Infinity;
         return cb - ca;
+      }
+      // Pre/post move: rank by whatever extended-hours reading a symbol carries --
+      // the live pre-market % before the open, the live after-hours % in the
+      // evening, or the FINAL overnight "after close" move once the session ends.
+      // Symbols with no ext reading sink to the bottom, so the option degrades
+      // gracefully around the clock. Same comparator as the Watchlist's.
+      if (sortMode === 'premarket') {
+        const ea = qa && qa.extKind && typeof qa.extChangePct === 'number' && isFinite(qa.extChangePct) ? qa.extChangePct : -Infinity;
+        const eb = qb && qb.extKind && typeof qb.extChangePct === 'number' && isFinite(qb.extChangePct) ? qb.extChangePct : -Infinity;
+        return eb - ea;
       }
       if (sortMode === 'name') {
         const na = positionDisplayName(a, market, qa) || a.ticker;
@@ -2537,6 +2572,16 @@ function CurrentView(_ref7) {
   const renderActions = (market, count) => React.createElement("div", {
     className: "holdings-actions holdings-actions-bar", style: { position: 'relative' }
   },
+    // Pre-market toggle. Swaps the Today column for the extended-hours move and
+    // unlocks the Pre/post sort. Shown from the first position (unlike sort, which
+    // needs two rows to mean anything).
+    count > 0 ? React.createElement("button", {
+      className: "wl-iconbtn" + (showExt ? " on" : ""),
+      "aria-label": "Show pre-market moves", "aria-pressed": showExt,
+      title: "Pre-market / after-hours moves",
+      onClick: () => setShowExt(v => !v)
+    }, React.createElement(Icon, { name: "moon", size: 13 }),
+       showExt ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null) : null,
     count > 1 ? React.createElement("button", {
       className: "wl-iconbtn" + (sortOpen ? " active" : "") + (sortMode !== 'manual' ? " on" : ""),
       "aria-label": "Sort holdings", "aria-expanded": sortOpen,
@@ -2575,7 +2620,7 @@ function CurrentView(_ref7) {
       renderActions(market, rows.length),
       React.createElement("div", {
       className: "eyebrow"
-    }, "Your ", tabLabel(market), " positions"), React.createElement(HoldingsListHead, null), React.createElement("div", {
+    }, "Your ", tabLabel(market), " positions"), React.createElement(HoldingsListHead, { dayLabel: showExt ? 'Pre-mkt' : 'Today' }), React.createElement("div", {
       className: "row-list"
     }, sorted.map(p => React.createElement(HoldingRow, {
       key: p.id,
@@ -2583,6 +2628,7 @@ function CurrentView(_ref7) {
       market: market,
       quote: prices[priceKey(market, p.ticker)],
       rates: fxRates?.rates || null,
+      showExt: showExt,
       onOpenDetail: onOpenDetail,
       onBuyPosition: onBuyPosition,
       onSellPosition: onSellPosition,
@@ -3309,7 +3355,6 @@ function WatchlistView(_ref8) {
         const extFinal = hasExt && q.extLive === false;
         const extLabel = q && q.extKind === 'pre' ? 'Pre-market' : q && q.extKind === 'post' ? (extFinal ? 'After close' : 'After-hours') : '';
         const extSym = (MARKET_CURRENCY[w.market] || MARKET_CURRENCY.US).sym;
-        const extChgAbs = hasExt && typeof q.extChange === 'number' && isFinite(q.extChange) ? q.extChange : null;
         return React.createElement("div", {
           key: w.id,
           ref: setCardRef(w.id),
@@ -3338,14 +3383,26 @@ function WatchlistView(_ref8) {
                   activeList === 'all'
                     ? customListsOf(w).map(id => React.createElement("span", { key: id, className: "wl-card-list" }, listNameById(id))) : null),
                 displayName ? React.createElement("div", { className: "tkr-name" }, displayName) : null)),
-              // Stock price now sits top-right (swapped with the 52W high below).
-              // The ext-hours chip is lifted out (hideExt) and shown in the body.
-              React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, hideExt: true, market: w.market })),
-            // Body is a 2-column grid (see .watch-body): the bell sits bottom-left
-            // under the company name, sharing its row with the day's move, and the
-            // 52W high tucks underneath that move on the right. Everything money
-            // therefore reads down ONE right-hand column: price, day, 52W high.
-            // Source order is the visual order; the grid only pins the columns.
+              // Money column, top-right: the price with the day's move stacked
+              // directly under it. The chip used to sit in the body below, with the
+              // whole left half of that row left empty — moving it up costs no height
+              // (the head is already two lines tall on the left) and takes a full row
+              // off the card. The ext-hours chip is still lifted out (hideExt) and
+              // shown at the foot.
+              React.createElement("div", { className: "wl-head-money" },
+                React.createElement(PriceBlock, { quote: q, size: "lg", hideChange: true, hideExt: true, market: w.market }),
+                // Day's move (% only). The empty fallback still has to render: it
+                // holds the column the 52W badge in the body aligns its right edge
+                // against.
+                hasDay
+                  ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
+                      React.createElement("div", { className: "watch-today-pct mono" },
+                        (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
+                  : React.createElement("div", { className: "watch-today" }))),
+            // Body is a single 2-column row (see .watch-body): the bell sits left
+            // under the company name, the 52W high right under the day's move.
+            // Everything money still reads down ONE right-hand column: price, day,
+            // 52W high. Source order is the visual order; the grid pins the columns.
             React.createElement("div", { className: "watch-body" },
               React.createElement("button", {
                 className: "card-alert-bell",
@@ -3354,14 +3411,6 @@ function WatchlistView(_ref8) {
                 "aria-label": "Alerts"
               }, React.createElement(Icon, { name: "bell", size: 13 }),
                 ac > 0 && React.createElement("span", { className: "card-alert-count" }, ac)),
-              // Day's move (% only) anchored to the right of the card. The empty
-              // fallback still has to render: it holds the grid cell the 52W badge
-              // aligns its right edge against.
-              hasDay
-                ? React.createElement("div", { className: `watch-today ${dayUp ? 'up' : 'down'}` },
-                    React.createElement("div", { className: "watch-today-pct mono" },
-                      (dayUp ? '+' : '') + q.changePct.toFixed(2) + '%'))
-                : React.createElement("div", { className: "watch-today" }),
               athBadge),
             // Session badge (Open/Closed/Pre/After) so a quiet card reads as
             // market state, not blank. Shown only when the ext-price chip isn't.
@@ -3373,8 +3422,7 @@ function WatchlistView(_ref8) {
               React.createElement("span", { className: "ext-label" }, extLabel),
               React.createElement("span", { className: "ext-price mono" }, extSym, fmtNum(q.extPrice)),
               React.createElement("span", { className: `ext-chg mono ${extUp ? 'up' : 'down'}` },
-                (extUp ? '+' : '') + q.extChangePct.toFixed(2) + '%' +
-                (extChgAbs != null ? ' · ' + (extUp ? '+' : '-') + extSym + fmtNum(Math.abs(extChgAbs)) : '')))));
+                (extUp ? '+' : '') + q.extChangePct.toFixed(2) + '%'))));
       })),
 
     alertPopup && React.createElement("div", { className: "alert-popup-overlay" },

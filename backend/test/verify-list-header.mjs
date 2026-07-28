@@ -169,8 +169,21 @@ try {
   await sleep(800);
 
   for (const [tab, name] of [['current', 'holdings'], ['tfsa', 'tfsa']]) {
-    await evals(ws, `const b=document.querySelector('[data-tab="${tab}"]'); if(b) b.click(); return true;`);
-    await sleep(700);
+    // Poll for the row rather than sleeping a fixed 700ms: on a slow or loaded
+    // machine the app can still be booting when the tab is clicked, and the probe
+    // then reports "header + row present: false" — a false red that looks exactly
+    // like a real regression. Re-clicks each turn (the first click can land before
+    // the nav exists).
+    const ready = await evals(ws, `
+      const dl=Date.now()+20000;
+      while(Date.now()<dl){
+        const b=document.querySelector('[data-tab="${tab}"]'); if(b) b.click();
+        if(document.querySelector('.holding-list-head') && document.querySelector('.holding-row')) return 'ready';
+        await new Promise(r=>setTimeout(r,200));
+      }
+      return 'timeout';`);
+    console.log(`  [${name}] ready:`, ready);
+    await sleep(300);
     const data = JSON.parse(await evals(ws, inspect));
     console.log(`\n  [${name}]`, JSON.stringify(data));
     if (!data.labels) { check(`${name}: header + row present`, false, JSON.stringify(data)); continue; }
