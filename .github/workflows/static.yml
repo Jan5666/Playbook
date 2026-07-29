@@ -62,8 +62,13 @@ jobs:
           # The logo pack is thousands of tiles; listing each one buries the
           # runtime files this log exists to let a human eyeball. Count them
           # instead, and still print every non-logo file.
-          echo "Staged $(find _site -type f | wc -l) files for deploy \
-($(find _site/logos -type f | wc -l) of them logo tiles):"
+          # NOTE: every line here must stay indented inside the `run: |` block —
+          # a continuation starting at column 0 ends the YAML block scalar and
+          # GitHub rejects the whole workflow (startup_failure, zero jobs, no
+          # deploy at all). Use variables rather than a wrapped `echo`.
+          staged_total=$(find _site -type f | wc -l)
+          staged_tiles=$(find _site/logos -type f | wc -l)
+          echo "Staged $staged_total files for deploy ($staged_tiles of them logo tiles):"
           (cd _site && find . -type f -not -path './logos/*' | sort)
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

@@ -58,6 +58,43 @@ test('every local <script src> in index.html is precached in SHELL_ASSETS', () =
   assert.deepStrictEqual(missing, [], 'loaded by index.html but not offline-cached: ' + missing.join(', '));
 });
 
+// ─── the block-scalar guard ─────────────────────────────────────────────────
+// Every test above greps static.yml as TEXT, so a workflow that is no longer
+// valid YAML sails through all of them — which is exactly what shipped in
+// 1002352 and 450b59d (2026-07-28). A wrapped `echo` put its continuation line
+// at column 0 inside `run: |`; that ends the YAML block scalar, so GitHub
+// rejected the whole file with a startup_failure — zero jobs, no deploy, no
+// red step to click into. main moved twice and the live site never changed.
+//
+// Node has no bundled YAML parser and this suite takes no deps, so instead of
+// parsing we assert the one structural rule that broke: within a block scalar,
+// every non-blank line must be indented deeper than the key that opened it.
+test('no line inside a `run: |` block escapes its indentation', () => {
+  const lines = ymlSrc.split('\n');
+  const offenders = [];
+  for (let i = 0; i < lines.length; i++) {
+    const open = lines[i].match(/^(\s*)-?\s*run:\s*[|>][-+]?\s*$/);
+    if (!open) continue;
+    const keyIndent = open[1].length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const indent = line.match(/^\s*/)[0].length;
+      if (indent > keyIndent) continue;      // still inside the block
+      // Dedented back to the key's level or shallower. That legitimately ends
+      // the block only if it starts a new YAML key / list item.
+      if (!/^\s*(-\s|[\w.$-]+\s*:)/.test(line)) {
+        offenders.push(`line ${j + 1}: ${line.slice(0, 72)}`);
+      }
+      break;
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    'these lines end the block scalar and make static.yml invalid YAML — ' +
+    'GitHub will reject the workflow at startup and silently skip the deploy:\n  ' +
+    offenders.join('\n  '));
+});
+
 // ─── the logo-pack sentinel ─────────────────────────────────────────────────
 // Guard 1 in static.yml probes one file inside logos/ to prove `cp -r logos`
 // actually staged the pack. That sentinel is a real filename, and the pack now
