@@ -67,6 +67,25 @@ ok('fetchQuote populates name cache', PBData.cachedName('US', 'AAPL') === 'Apple
 ok('isUnitTrustId true for SecId shape', PBData.isUnitTrustId('F000002CRJ') === true);
 ok('isUnitTrustId false for normal ticker', PBData.isUnitTrustId('AAPL') === false);
 
+// ── Stooq fallback units: TFSA is the same .JO listing as JSE ────────────────
+// Stooq quotes SA listings in cents, so the fallback divides by 100 and labels the
+// quote ZAR. That test read `market === 'JSE'` only, so a TFSA holding whose Yahoo
+// fetch failed came back 100x too high AND labelled USD — which the display layer
+// then FX-converted a second time. stooqSymbol already treats the two as one
+// listing (both → ticker.jo), so the units must agree with it.
+const stooqCsv = 'Date,Open,High,Low,Close,Volume\n2026-07-30,9000,9100,8900,9000,1000\n2026-07-31,9100,9300,9050,9250,1200\n';
+const stooqJse  = PBData.parseStooqCsv(stooqCsv, 'JSE');
+const stooqTfsa = PBData.parseStooqCsv(stooqCsv, 'TFSA');
+const stooqUs   = PBData.parseStooqCsv(stooqCsv, 'US');
+ok('stooq JSE: cents → rand', near(stooqJse.price, 92.5) && near(stooqJse.prevClose, 90));
+ok('stooq JSE: labelled ZAR', stooqJse.currency === 'ZAR');
+ok('stooq TFSA: cents → rand (was 100x too high)', near(stooqTfsa.price, 92.5) && near(stooqTfsa.prevClose, 90));
+ok('stooq TFSA: labelled ZAR (was USD)', stooqTfsa.currency === 'ZAR');
+ok('stooq TFSA matches JSE exactly', stooqTfsa.price === stooqJse.price && stooqTfsa.currency === stooqJse.currency);
+ok('stooq TFSA change % survives the divisor', near(stooqTfsa.changePct, stooqJse.changePct));
+ok('stooq US untouched: no divisor, USD', near(stooqUs.price, 9250) && stooqUs.currency === 'USD');
+ok('stooqSymbol maps TFSA to the .jo listing', PBData.stooqSymbol('AIETF', 'TFSA') === PBData.stooqSymbol('AIETF', 'JSE'));
+
 // fetchQuoteBatch: keys by priceKey, fires onBatch, second pass retries missing.
 installYahoo({ AAPL: yahooChart('AAPL', 150, 145, 'Apple'), MSFT: yahooChart('MSFT', 400, 390, 'Microsoft') });
 const seen = [];

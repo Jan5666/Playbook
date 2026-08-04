@@ -309,11 +309,9 @@ const MARKETS = PBContent.MARKETS;
 // JSE-listed shares (.JO) tax-free — so a JSE-listed search result is valid for
 // either account. Used so picking a listing never silently flips the account
 // the user explicitly chose (e.g. TFSA → JSE) when both map to the same listing.
-function sameUnderlyingExchange(a, b) {
-  if (a === b) return true;
-  const norm = m => (m === 'TFSA' ? 'JSE' : m);
-  return norm(a) === norm(b);
-}
+// Canonical source is pb-core.js: yahooSymbol/centDivisor already encode the same
+// fact, and the import matcher (pb-import.js, no access to app.js) needs it too.
+const sameUnderlyingExchange = PBCore.sameUnderlyingExchange;
 const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES;
 const CURRENCY_SYMBOLS = PBContent.CURRENCY_SYMBOLS;
 const RIBBON_CATALOG = PBContent.RIBBON_CATALOG;

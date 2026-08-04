@@ -15,6 +15,7 @@
   const isUnitTrustId = PBData.isUnitTrustId; // PBData global
   const fetchViaProxies = PBData.fetchViaProxies; // PBData global (CORS proxy fetch — used by fetchSectorTrend)
   const MARKET_CURRENCY = PBCore.MARKET_CURRENCY; // PBCore global
+  const sameUnderlyingExchange = PBCore.sameUnderlyingExchange; // PBCore global (JSE === TFSA venue)
   const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES; // PBContent global
   const MARKETS = PBContent.MARKETS; // PBContent global
   const RIBBON_CATALOG = PBContent.RIBBON_CATALOG; // PBContent global
@@ -22,6 +23,7 @@
   const SECTOR_TREND_WINDOWS = PBContent.SECTOR_TREND_WINDOWS; // PBContent global
   const parseHoldingsFromText = PBImport.parseHoldingsFromText; // PBImport global (loaded before this script)
   const rankImportCandidates = PBImport.rankImportCandidates; // PBImport global
+  const buildImportAttempts = PBImport.buildImportAttempts; // PBImport global
   const companyNameScore = PBImport.companyNameScore; // PBImport global
   const looksLikeTickerToken = PBImport.looksLikeTickerToken; // PBImport global
   const normaliseCompanyName = PBImport.normaliseCompanyName; // PBImport global
@@ -2867,28 +2869,10 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     // resort, so a US ticker is never booked as its European cross-listing (EUR).
     const symHint = (r.tickerHint && looksLikeTickerToken(r.tickerHint)) ? String(r.tickerHint).toUpperCase()
                   : (looksLikeTickerToken(r.query) ? String(r.query).toUpperCase() : null);
-    // A candidate whose ticker still carries an exchange suffix (".VI", ":MI") is a
-    // foreign listing that slipped through — never let it pass as an on-market pick,
-    // even if its market field happens to equal the chosen one.
-    const onMarket = ranked.filter(c => c.market === market && !/[.:]/.test(c.ticker));
-    let offMarketRanked = ranked.filter(c => c.market !== market);
-    // Never auto-book a holding onto a different-currency cross-listing — European
-    // brokers quote US shares in EUR, and dual-listed names (iShares ETFs, etc.)
-    // surface London/pence listings, which used to silently land under the user's
-    // import at the wrong-currency "live rate". Restrict the off-market fallback to
-    // markets that settle in the same currency as the chosen one; everything else
-    // stays in `candidates` so it can still be chosen by hand if genuinely meant.
-    const chosenCcy = (MARKET_CURRENCY[market] || {}).code;
-    if (chosenCcy) offMarketRanked = offMarketRanked.filter(c => (MARKET_CURRENCY[c.market] || {}).code === chosenCcy);
-    // When the row explicitly named its market, don't drift off it at all — a miss
-    // becomes "not matched" (overridable) rather than a wrong foreign listing.
-    if (r.marketExplicit) offMarketRanked = [];
-    const attempts = [];
-    const pushAttempt = (c) => { if (c && c.ticker && !attempts.some(a => a.ticker === c.ticker && a.market === c.market)) attempts.push(c); };
-    if (onMarket[0]) pushAttempt(onMarket[0]);                                   // best name match on the chosen market
-    if (symHint) pushAttempt({ ticker: symHint, market, name: null, nameScore: null }); // the bare symbol on the chosen market
-    onMarket.slice(1).forEach(pushAttempt);                                     // other chosen-market candidates
-    offMarketRanked.forEach(pushAttempt);                                       // finally, anything elsewhere
+    // Which listings to try, in order (pure — pb-import.js, unit-tested there).
+    // A live JSE result counts as on-market for a TFSA row and is re-tagged to
+    // TFSA, so the holding lands in the account the user chose.
+    const attempts = buildImportAttempts(ranked, { market, marketExplicit: r.marketExplicit, symHint });
     let pick = null, q = null;
     for (const c of attempts.slice(0, 6)) {
       const cq = await fetchQuote(c.ticker, c.market).catch(() => null);
@@ -2901,12 +2885,14 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     // listing (clean "Vanguard S&P 500 ETF"-style names) → the live quote's name →
     // the query. The middle step matters for ticker/symbol imports where `pick` is
     // a bare-symbol attempt with no name, so ETFs don't show a cryptic quote name.
-    const matchedCand = pick ? ranked.find(c => c.ticker === pick.ticker && c.market === pick.market) : null;
+    // Same-venue match (JSE result on a TFSA row), so the ranked entry is found by
+    // underlying exchange — `pick.market` may have been re-tagged to the row's own.
+    const matchedCand = pick ? ranked.find(c => c.ticker === pick.ticker && sameUnderlyingExchange(c.market, pick.market)) : null;
     const resolvedName = q && pick
       ? (pick.name || (matchedCand && matchedCand.name) || resolveTickerName(pick.ticker, pick.market, q) || r.query)
       : r.resolvedName;
     const conf = q && pick ? (pick.nameScore != null ? pick.nameScore : companyNameScore(r.query, resolvedName)) : 0;
-    const offMarket = !!(q && pick && pick.market !== market);
+    const offMarket = !!(q && pick && !sameUnderlyingExchange(pick.market, market));
     return {
       ticker: q && pick ? pick.ticker : (r.tickerHint || ''),
       market: q && pick ? pick.market : market,
@@ -2916,6 +2902,8 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
       confidence: conf,
       lowConfidence: !!(q && (conf < 0.5 || offMarket)),
       candidates: ranked.slice(0, 7),
+      // A fresh auto-match supersedes any earlier hand-forced listing on this row.
+      manual: false,
     };
   };
 
@@ -2947,17 +2935,45 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     setRows(prev => prev.map(r => r.id === id ? { ...r, ...res } : r));
   };
 
-  // User explicitly picks one of the alternative listings.
+  // User explicitly picks one of the alternative listings (or forces a symbol via
+  // the manual search). This is the user asserting knowledge the matcher lacks, so
+  // it is never overruled: the listing they picked stays on the row even when the
+  // live feed can't confirm it — that lands as 'unverified' (importable, flagged)
+  // rather than 'notfound' (blocked). Picking a same-venue listing (a JSE result on
+  // a TFSA row) keeps the account the row is already on.
   const chooseCandidate = async (id, cand) => {
-    setRows(prev => prev.map(r => r.id === id ? { ...r, ticker: cand.ticker, market: cand.market, resolvedName: cand.name, status: 'resolving', showAlts: false, lowConfidence: false } : r));
-    const q = await fetchQuote(cand.ticker, cand.market).catch(() => null);
+    const row = rows.find(r => r.id === id);
+    const market = (row && sameUnderlyingExchange(cand.market, row.market)) ? row.market : cand.market;
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ticker: cand.ticker, market, resolvedName: cand.name, status: 'resolving', showAlts: false, lowConfidence: false } : r));
+    const q = await fetchQuote(cand.ticker, market).catch(() => null);
     setRows(prev => prev.map(r => r.id === id ? {
       ...r,
-      status: q ? 'ok' : 'notfound',
+      status: q ? 'ok' : 'unverified',
+      manual: true,
       currentPrice: q ? q.price : null,
       lowConfidence: false,
-      resolvedName: q ? (resolveTickerName(cand.ticker, cand.market, q) || cand.name) : cand.name,
+      resolvedName: q ? (resolveTickerName(cand.ticker, market, q) || cand.name) : (cand.name || r.resolvedName),
     } : r));
+  };
+
+  // "Add anyway" on a row the live search couldn't match: the user knows the
+  // listing exists (a brand-new ETF, a feed outage, a symbol Yahoo doesn't carry),
+  // so let them commit it. Uses whatever symbol the row already carries — a hand-
+  // picked one, the broker's ticker hint, or a symbol-shaped query — and only falls
+  // back to opening the manual search when there's genuinely no symbol to force.
+  const forceRow = (id) => {
+    const r = rows.find(x => x.id === id);
+    if (!r) return;
+    const sym = (r.ticker || '').trim() || (looksLikeTickerToken(r.query) ? String(r.query).trim().toUpperCase() : '');
+    if (!sym) { updateRow(id, { manualSearch: true, showAlts: false }); return; }
+    updateRow(id, {
+      ticker: sym.toUpperCase(),
+      status: 'unverified',
+      manual: true,
+      lowConfidence: false,
+      currentPrice: null,
+      resolvedName: r.resolvedName || r.query || sym.toUpperCase(),
+    });
   };
 
   // One-tap "these are all JSE / US / …": set the bias market, apply it to every
@@ -2971,11 +2987,15 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
 
   const hasShares = (r) => isFinite(parseDecimal(r.shares)) && parseDecimal(r.shares) > 0;
   const hasCost = (r) => isFinite(parseDecimal(r.costBasis)) && parseDecimal(r.costBasis) > 0;
+  // A row is "settled on a listing" when the feed confirmed it ('ok') OR the user
+  // forced one the feed couldn't confirm ('unverified'). Both import; only the
+  // second is flagged as unconfirmed, because the user vouched for it.
+  const isSettled = (r) => r.status === 'ok' || r.status === 'unverified';
   // The sector this row will be allocated to in the dashboard — the same static
   // resolution the allocation chart uses (listing map first, then the name), so
   // what the user sees here is exactly where it'll land.
   const sectorForRow = (r) => {
-    if (!(r.status === 'ok' && r.ticker)) return 'Other';
+    if (!(isSettled(r) && r.ticker)) return 'Other';
     const f = DATA.findSector(r.ticker, r.market);
     if (f.sector !== 'Other') return f.sector;
     const byName = r.resolvedName ? DATA.classifySectorByName(r.resolvedName) : 'Other';
@@ -2988,10 +3008,12 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     const det = sectorForRow(r);
     return det !== 'Other' ? det : null;
   };
-  // Importable only once matched to a confirmed live listing with valid qty/cost.
-  const validRows = rows.filter(r => r.include && r.ticker.trim() && r.status === 'ok' && hasShares(r) && hasCost(r));
+  // Importable once the row sits on a listing (feed-confirmed, or hand-forced by
+  // the user) with valid qty/cost.
+  const validRows = rows.filter(r => r.include && r.ticker.trim() && isSettled(r) && hasShares(r) && hasCost(r));
   const notFoundCount = rows.filter(r => r.include && r.status === 'notfound').length;
-  const needQtyCount = rows.filter(r => r.include && r.status === 'ok' && (!hasShares(r) || !hasCost(r))).length;
+  const unverifiedCount = rows.filter(r => r.include && r.status === 'unverified').length;
+  const needQtyCount = rows.filter(r => r.include && isSettled(r) && (!hasShares(r) || !hasCost(r))).length;
   // Guard against silent collapse: when two *differently-named* included rows
   // resolve to the same live listing, importing merges them (sums the shares) —
   // the exact failure where several distinct ETFs land on one ticker and the
@@ -3001,7 +3023,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   const collisionKeys = (() => {
     const byKey = {};
     rows.forEach(r => {
-      if (!r.include || r.status !== 'ok' || !r.ticker.trim()) return;
+      if (!r.include || !isSettled(r) || !r.ticker.trim()) return;
       const k = priceKey(r.market, r.ticker.trim().toUpperCase());
       (byKey[k] = byKey[k] || []).push(r);
     });
@@ -3012,7 +3034,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     });
     return out;
   })();
-  const isCollisionRow = (r) => r.include && r.status === 'ok' && !!r.ticker.trim() &&
+  const isCollisionRow = (r) => r.include && isSettled(r) && !!r.ticker.trim() &&
     collisionKeys.has(priceKey(r.market, r.ticker.trim().toUpperCase()));
   const collisionCount = rows.filter(isCollisionRow).length;
 
@@ -3121,6 +3143,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   const statusDot = (r) => {
     if (r.status === 'resolving') return React.createElement("span", { className: "import-status checking", title: "Matching…" });
     if (r.status === 'ok') return React.createElement("span", { className: "import-status ok", title: r.currentPrice != null ? ("Matched · now " + fmt(r.currentPrice, r.market)) : "Matched" });
+    if (r.status === 'unverified') return React.createElement("span", { className: "import-status warn", title: "Your listing — no live price yet" });
     if (r.status === 'notfound') return React.createElement("span", { className: "import-status bad", title: "No live match on this market" });
     return React.createElement("span", { className: "import-status", title: "Not matched" });
   };
@@ -3131,17 +3154,20 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     // Holding amount = shares × cost/share — shown so the user can confirm the
     // app derived the position size correctly from the four imported fields.
     const amt = (!sharesBad && !costBad) ? parseDecimal(r.shares) * parseDecimal(r.costBasis) : null;
-    const alts = (r.candidates || []).filter(c => !(c.ticker === r.ticker && c.market === r.market)).slice(0, 6);
+    // The row's own listing never shows up as an "alternative" — matched by
+    // underlying exchange so a TFSA row doesn't offer its own JSE twin.
+    const alts = (r.candidates || []).filter(c => !(c.ticker === r.ticker && sameUnderlyingExchange(c.market, r.market))).slice(0, 6);
     const lowConf = r.status === 'ok' && r.lowConfidence;
+    const unverified = r.status === 'unverified';
     const collide = isCollisionRow(r);
     // The sector this holding will land in (same resolution as the chart). Shown
     // for every matched row; when it can't be classified we flag it and the user's
     // pick is learned (persisted) so the allocation chart stops saying "Other".
-    const matched = r.status === 'ok' && !!r.ticker;
+    const matched = isSettled(r) && !!r.ticker;
     const detectedSector = matched ? sectorForRow(r) : null;
     const sectorValue = sectorByRow[r.id] || (detectedSector && detectedSector !== 'Other' ? detectedSector : '');
     const sectorUnknown = matched && detectedSector === 'Other' && !sectorByRow[r.id];
-    return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") + (lowConf ? " is-low" : "") + (collide ? " is-dup" : "") },
+    return React.createElement("div", { key: r.id, className: "import-card" + (r.include ? "" : " excluded") + (r.status === 'notfound' ? " is-bad" : "") + (lowConf ? " is-low" : "") + (unverified ? " is-unverified" : "") + (collide ? " is-dup" : "") },
       React.createElement("div", { className: "import-card-top" },
         React.createElement("label", {
           className: "import-include" + (r.include ? " on" : ""),
@@ -3159,7 +3185,10 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
         autoComplete: "off", spellCheck: false,
         onChange: e => updateRow(r.id, { query: e.target.value }),
         onKeyDown: e => { if (e.key === 'Enter') { e.preventDefault(); reResolveRow(r.id); } },
-        onBlur: () => { if (r.query.trim() && r.status !== 'resolving') reResolveRow(r.id); }
+        // A hand-forced row is never silently re-matched away by a stray tap: only
+        // an explicit re-match (Enter, the refresh button, a market change, or
+        // "Re-match all") reopens a listing the user chose themselves.
+        onBlur: () => { if (r.query.trim() && r.status !== 'resolving' && !r.manual) reResolveRow(r.id); }
       }),
       React.createElement("div", { className: "import-card-match" },
         statusDot(r),
@@ -3169,7 +3198,8 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
                 ? React.createElement("span", { className: "market-badge" }, "Unit trust")
                 : React.createElement("span", { className: "import-match-tkr" }, r.ticker),
               React.createElement("span", { className: "import-match-name" }, r.resolvedName || ''),
-              lowConf ? React.createElement("span", { className: "import-conf-low", title: "Loose match — please confirm or pick an alternative" }, "check?") : null)
+              lowConf ? React.createElement("span", { className: "import-conf-low", title: "Loose match — please confirm or pick an alternative" }, "check?") : null,
+              unverified ? React.createElement("span", { className: "import-conf-manual", title: "Your listing — no live price yet. It will import and price on the next refresh." }, "unverified") : null)
           : React.createElement("span", { className: "import-match-name text-dim" },
               r.status === 'resolving' ? "Searching live listings…" : (r.status === 'notfound' ? "No match — try the exact name or another market" : "Not matched yet")),
         alts.length > 0 ? React.createElement("button", {
@@ -3181,11 +3211,23 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
           onClick: () => updateRow(r.id, { manualSearch: !r.manualSearch, showAlts: false }),
           title: "Search live listings and pick the exact one"
         }, r.manualSearch ? "Close" : (r.status === 'notfound' ? "Find" : "Search")),
+        // The user's override. The matcher can be wrong — a listing may be too new
+        // for Yahoo, or the feed may be down — and the holder often knows better,
+        // so nothing here is a dead end: force the symbol in and import it.
+        r.status === 'notfound' ? React.createElement("button", {
+          className: "btn btn-ghost btn-xs import-alts-toggle import-force",
+          onClick: () => forceRow(r.id),
+          title: "Import this holding on the symbol as typed, without a live match"
+        }, "Add anyway") : null,
         React.createElement("button", {
           className: "btn btn-ghost btn-xs import-alts-toggle",
           onClick: () => reResolveRow(r.id), title: "Re-match"
         }, React.createElement(Icon, { name: "refresh", size: 12 }))
       ),
+      unverified ? React.createElement("div", { className: "import-manual-note" },
+        React.createElement(Icon, { name: "alert", size: 12 }),
+        React.createElement("span", null, "Importing ", React.createElement("b", null, r.ticker), " on ", (MARKETS.find(m => m.value === r.market) || {}).label || r.market,
+          " as you set it — we couldn't confirm a live price. It'll price on the next refresh if the symbol is right.")) : null,
       collide ? React.createElement("div", { className: "import-dup-warn" },
         React.createElement(Icon, { name: "alert", size: 12 }),
         React.createElement("span", null, "Same listing as another row — importing will merge them into one position. Use ", React.createElement("b", null, "Search"), " to pick the correct listing for this holding.")) : null,
@@ -3195,7 +3237,10 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
           onClick: () => chooseCandidate(r.id, c)
         },
           isUnitTrustId(c.ticker) ? null : React.createElement("span", { className: "import-alt-tkr" }, c.ticker),
-          React.createElement("span", { className: "market-badge" }, isUnitTrustId(c.ticker) ? "Unit trust" : c.market),
+          // Badge the account it would actually land in: picking a JSE listing on a
+          // TFSA row keeps it in the TFSA, so don't label it "JSE" here.
+          React.createElement("span", { className: "market-badge" },
+            isUnitTrustId(c.ticker) ? "Unit trust" : (sameUnderlyingExchange(c.market, r.market) ? r.market : c.market)),
           React.createElement("span", { className: "import-alt-name" }, c.name)))
       ) : null,
       // Manual matcher: search every live exchange by name or symbol and pick the
@@ -3267,6 +3312,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     React.createElement("div", { className: "import-review-head" },
       React.createElement("span", null, validRows.length, " of ", rows.length, " ready"),
       notFoundCount > 0 ? React.createElement("span", { className: "text-down text-xs" }, notFoundCount, " unmatched") : null,
+      unverifiedCount > 0 ? React.createElement("span", { className: "text-warn text-xs" }, unverifiedCount, " unverified") : null,
       resolving ? React.createElement("span", { className: "text-dim text-xs" }, "Matching…") : React.createElement("button", {
         className: "btn btn-ghost btn-xs", onClick: () => resolveRows(rows.filter(r => r.include))
       }, React.createElement(Icon, { name: "refresh", size: 12 }), " Re-match all")
@@ -3289,7 +3335,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     ) : null,
     (notFoundCount > 0 || needQtyCount > 0) && !resolving ? React.createElement("div", { className: "import-gate-note" },
       notFoundCount > 0
-        ? `${notFoundCount} row${notFoundCount !== 1 ? 's' : ''} couldn't be matched to a live listing — refine the name, switch the market, or tap Change to pick from alternatives. Only matched holdings import.`
+        ? `${notFoundCount} row${notFoundCount !== 1 ? 's' : ''} couldn't be matched to a live listing — refine the name, switch the market, or tap Change to pick from alternatives. If you know the listing is right, tap Add anyway and it imports on the symbol you set.`
         : `${needQtyCount} matched row${needQtyCount !== 1 ? 's' : ''} still need shares and cost before importing.`
     ) : null,
     React.createElement("div", { className: "form-actions", style: { marginTop: 14 } },
@@ -3597,6 +3643,11 @@ function PositionModal(_ref12) {
   const [purchaseDate, setPurchaseDate] = useState(existing?.purchaseDate || todayISO);
   const [verifying, setVerifying] = useState(false);
   const [tickerError, setTickerError] = useState('');
+  // Set when the live feed couldn't confirm the symbol. The failed verify used to
+  // be a dead end — the holder can know a listing is real and correct (a new ETF,
+  // a market the feed lags on, a proxy outage) and had no way past it — so it now
+  // offers to save the position exactly as entered instead of refusing it.
+  const [canForce, setCanForce] = useState(false);
   // Sector this holding will be allocated to — auto-detected from the ticker,
   // overridable, and learned so the allocation chart reflects it.
   const [sectorOverride, setSectorOverride] = useState(existing?.sector || '');
@@ -3652,7 +3703,8 @@ function PositionModal(_ref12) {
   const perUnitCost = (isCrypto && costMode === 'total')
     ? ((parseDecimal(shares) > 0) ? parseDecimal(totalSpent) / parseDecimal(shares) : NaN)
     : parseDecimal(costBasis);
-  const submit = async () => {
+  const submit = async (opts) => {
+    const force = !!(opts && opts.force);
     if (!ticker.trim()) return;
     const s = parseDecimal(shares);
     const c = perUnitCost;
@@ -3668,13 +3720,15 @@ function PositionModal(_ref12) {
     const listingChanged = isEdit && existing &&
       (ticker.trim().toUpperCase() !== String(existing.ticker || '').toUpperCase() || market !== existing.market);
     let verifiedQuote = null;
-    if (!isEdit || listingChanged) {
+    if ((!isEdit || listingChanged) && !force) {
       setVerifying(true);
       setTickerError('');
       verifiedQuote = await fetchQuote(ticker.trim(), market);
       setVerifying(false);
       if (!verifiedQuote) {
-        setTickerError(`"${ticker.trim()}" not found on ${market}. Check the symbol.`);
+        // Not a refusal — a warning with a way through. The user decides.
+        setTickerError(`We couldn't find a live price for "${ticker.trim().toUpperCase()}" on ${market}. Check the symbol — or add it anyway if you know it's right.`);
+        setCanForce(true);
         return;
       }
     }
@@ -3735,17 +3789,26 @@ function PositionModal(_ref12) {
     className: "form-label"
   }, "Market"), React.createElement(MarketPicker, {
     value: market,
-    onChange: v => { setMarket(v); setTickerError(''); }
+    onChange: v => { setMarket(v); setTickerError(''); setCanForce(false); }
   })), React.createElement("div", {
     className: "form-group"
   }, React.createElement("label", {
     className: "form-label"
   }, "Ticker"), React.createElement(TickerSearch, {
     value: ticker,
-    onChange: v => { setTicker(v); setTickerError(''); },
+    onChange: v => { setTicker(v); setTickerError(''); setCanForce(false); },
     market: market,
-    onMarketChange: m2 => { setMarket(m2); setTickerError(''); }
+    onMarketChange: m2 => { setMarket(m2); setTickerError(''); setCanForce(false); }
   }), tickerError ? React.createElement("div", { className: "verify-error" }, tickerError) : null,
+    canForce ? React.createElement("div", { className: "verify-force" },
+      React.createElement("button", {
+        className: "btn btn-ghost btn-xs import-force",
+        onClick: () => submit({ force: true }),
+        disabled: verifying
+      }, "Add anyway"),
+      React.createElement("span", { className: "form-help" },
+        "Saves ", ticker.trim().toUpperCase() || 'this holding', " on ", market,
+        " exactly as entered. It'll price on the next refresh if the symbol is right.")) : null,
     isEdit ? React.createElement("div", { className: "form-help" },
       "Change the ticker or market to re-point this holding to the correct live listing (e.g. if it was imported or added incorrectly). Your shares, cost and date stay as below.") : null), React.createElement("div", {
     className: "form-group"
@@ -3865,7 +3928,7 @@ function PositionModal(_ref12) {
     onClick: onClose
   }, "Cancel"), React.createElement("button", {
     className: "btn btn-primary",
-    onClick: submit,
+    onClick: () => submit(),
     disabled: verifying
   }, verifying ? 'Verifying…' : isEdit ? 'Save changes' : 'Add position'))))),
     confirmEdit ? ReactDOM.createPortal(

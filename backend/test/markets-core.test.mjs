@@ -83,6 +83,34 @@ ok('worker.js destructures yahooSymbol from PBCore', /const\s*\{[^}]*\byahooSymb
 ok('worker.js has no local centDivisor definition', !/function\s+centDivisor\s*\(/.test(workerSrc));
 ok('worker.js has no local yahooSymbol definition', !/function\s+yahooSymbol\s*\(/.test(workerSrc));
 
+// ── sameUnderlyingExchange: JSE and TFSA are one venue ──────────────────────
+// A TFSA is a tax wrapper around JSE-listed instruments, not a separate exchange:
+// yahooSymbol above already proves it (NPN.JO either way) and MARKET_CURRENCY
+// prices both in ZAR. Anything asking "is this listing on the market the user
+// chose?" must use this, not `===` — strict equality is what made a live JSE
+// search result look off-market to a TFSA import row and report "no match".
+ok('PBCore exports sameUnderlyingExchange', typeof PBCore.sameUnderlyingExchange === 'function');
+const SAME = [
+  [['JSE', 'TFSA'], true],
+  [['TFSA', 'JSE'], true],   // symmetric
+  [['TFSA', 'TFSA'], true],
+  [['JSE', 'JSE'], true],
+  [['US', 'US'], true],
+  [['US', 'TFSA'], false],   // ZAR wrapper does not absorb foreign markets
+  [['LSE', 'JSE'], false],
+  [['TFSA', 'CRYPTO'], false],
+  [[null, null], true],
+  [[undefined, 'JSE'], false]
+];
+for (const [args, exp] of SAME) ok(`sameUnderlyingExchange(${show(args)}) === ${exp}`, PBCore.sameUnderlyingExchange(...args) === exp);
+// The pair it declares equal must genuinely price identically — otherwise
+// re-tagging a JSE candidate to TFSA would silently change the instrument.
+ok('the equal pair builds one symbol', PBCore.yahooSymbol('AIETF', 'JSE') === PBCore.yahooSymbol('AIETF', 'TFSA'));
+ok('the equal pair shares one currency', PBCore.MARKET_CURRENCY.JSE.code === PBCore.MARKET_CURRENCY.TFSA.code);
+ok('the equal pair shares one cent divisor', PBCore.centDivisor('JSE', 'ZAc') === PBCore.centDivisor('TFSA', 'ZAc'));
+ok('app.js binds sameUnderlyingExchange from PBCore', /const\s+sameUnderlyingExchange\s*=\s*PBCore\.sameUnderlyingExchange/.test(appSrc));
+ok('app.js has no local sameUnderlyingExchange definition', !/function\s+sameUnderlyingExchange\s*\(/.test(appSrc));
+
 // ── priceKey: single-sourced market:ticker key (Phase 2 carve) ───────────────
 ok('PBCore exports priceKey', typeof PBCore.priceKey === 'function');
 ok("priceKey('US','AAPL')", PBCore.priceKey('US', 'AAPL') === 'US:AAPL');

@@ -276,6 +276,18 @@
     const isLseBareGBP = market === 'LSE' && raw === 'GBP';
     return (isJseCent || isLseGBX || isLseGBp || isLseBareGBP) ? 100 : 1;
   }
+  // JSE and TFSA are the SAME underlying exchange — a TFSA is a tax wrapper around
+  // JSE-listed instruments, not a separate venue — so both build the identical
+  // Yahoo symbol (.JO), settle in the same currency (ZAR), and apply the same
+  // cent divisor. Anything that decides "is this listing on the market the user
+  // chose?" must ask this, never `a === b`: strict equality made every live JSE
+  // search result look off-market to a TFSA row, so listings that exist and price
+  // perfectly well reported "no match" purely because of the account label.
+  function sameUnderlyingExchange(a, b) {
+    if (a === b) return true;
+    const norm = m => (m === 'TFSA' ? 'JSE' : m);
+    return norm(a) === norm(b);
+  }
   function yahooSymbol(ticker, market) {
     if (market === 'JSE' || market === 'TFSA') return ticker + '.JO';
     if (market === 'LSE') return ticker + '.L';
@@ -1336,6 +1348,7 @@ function rotationSummary(classified) {
     evaluateAlerts,
     centDivisor,
     yahooSymbol,
+    sameUnderlyingExchange,
     pLimit,
     MARKET_CURRENCY,
     convertCcy,

@@ -84,6 +84,74 @@ ok('Satrix Top 40 still → STX40', top40Pick.ticker === 'STX40');
 const eemPick = rankImportCandidates('iShares MSCI Emerging Markets ETF', null, 'US', [])[0];
 ok('iShares MSCI Emerging Markets → EEM', eemPick && eemPick.ticker === 'EEM');
 
+// ── TFSA is the JSE: same venue, so a JSE listing matches a TFSA row ─────────
+// The bug: Yahoo tags every SA listing 'JSE' (AIETF.JO), the matcher compared
+// markets with `===`, so on a TFSA row every live result looked off-market and the
+// row reported "no match" for a listing that resolves one chip over on JSE. Both
+// markets build the identical .JO symbol and settle in ZAR — a TFSA is a tax
+// wrapper around JSE instruments, not a separate exchange.
+const { buildImportAttempts } = PBImport;
+const saRemote = [{ ticker: 'AIETF', market: 'JSE', name: 'EasyETFs AI Innovation Actively Managed ETF', exchange: 'JSE' }];
+const saName = 'Ivy EasyETFs AI Innovation Actively Managed ETF';
+const rankedTfsa = rankImportCandidates(saName, null, 'TFSA', saRemote);
+const rankedJse  = rankImportCandidates(saName, null, 'JSE',  saRemote);
+ok('rank: JSE candidate earns the on-market bonus on a TFSA row',
+   rankedTfsa[0].ticker === 'AIETF' && rankedTfsa[0].score === rankedJse[0].score);
+// A same-name US listing must not outrank the SA one for a TFSA import.
+const rankedMixed = rankImportCandidates('Satrix 40 ETF', null, 'TFSA',
+  [{ ticker: 'STX40', market: 'JSE', name: 'Satrix 40 ETF' }, { ticker: 'SAT', market: 'US', name: 'Satrix 40 ETF' }]);
+ok('rank: SA listing outranks a same-name US listing for TFSA', rankedMixed[0].market === 'JSE');
+
+// The crux — before the fix this array was EMPTY, which is what produced "no match".
+const attemptsTfsa = buildImportAttempts(rankedTfsa, { market: 'TFSA', marketExplicit: true, symHint: null });
+ok('TFSA row has a listing to try (was 0 attempts = "no match")', attemptsTfsa.length >= 1);
+ok('TFSA attempt is the JSE listing, re-tagged to TFSA',
+   attemptsTfsa[0].ticker === 'AIETF' && attemptsTfsa[0].market === 'TFSA');
+ok('TFSA attempt prices via the same Yahoo symbol as JSE',
+   PBCore.yahooSymbol(attemptsTfsa[0].ticker, attemptsTfsa[0].market) === 'AIETF.JO');
+// And a row that did NOT name its exchange must stay in the TFSA rather than being
+// silently booked as a plain JSE position (the second-order bug).
+const attemptsLoose = buildImportAttempts(rankedTfsa, { market: 'TFSA', marketExplicit: false, symHint: null });
+ok('bare-name TFSA row books onto TFSA, not JSE', attemptsLoose[0].market === 'TFSA');
+// Symmetry: a TFSA-tagged candidate (curated TFSA_SUGGESTIONS) suits a JSE row too.
+const attemptsJseRow = buildImportAttempts(
+  rankImportCandidates(saName, null, 'JSE', [{ ...saRemote[0], market: 'TFSA' }]),
+  { market: 'JSE', marketExplicit: true, symHint: null });
+ok('TFSA-tagged candidate is on-market for a JSE row, tagged JSE',
+   attemptsJseRow.length === 1 && attemptsJseRow[0].market === 'JSE');
+// Same listing reached from both sides collapses to ONE attempt, not two.
+const attemptsDupe = buildImportAttempts(
+  rankImportCandidates(saName, null, 'TFSA', [saRemote[0], { ...saRemote[0], market: 'TFSA' }]),
+  { market: 'TFSA', marketExplicit: true, symHint: null });
+ok('JSE + TFSA copies of one listing dedupe to a single attempt', attemptsDupe.length === 1);
+
+// ── buildImportAttempts: the pre-existing ordering rules are unchanged ────────
+// Characterization of behaviour that predates the TFSA fix — nothing outside the
+// JSE/TFSA pair may shift.
+const brkRanked = rankImportCandidates('Berkshire Hathaway', null, 'US', remote);
+const brkAttempts = buildImportAttempts(brkRanked, { market: 'US', marketExplicit: false, symHint: null });
+ok('US row: chosen-market listing is attempted first', brkAttempts[0].ticker === 'BRK-B' && brkAttempts[0].market === 'US');
+ok('US row: EUR/GBP cross-listings never enter the fallback',
+   !brkAttempts.some(c => c.market === 'FRA' || c.market === 'LSE'));
+const symAttempts = buildImportAttempts(brkRanked, { market: 'US', marketExplicit: false, symHint: 'BRKB' });
+ok('symbol hint is tried second, on the chosen market',
+   symAttempts[1].ticker === 'BRKB' && symAttempts[1].market === 'US');
+// Same-currency off-market fallback still applies (PAR ↔ FRA both settle EUR)…
+const euRemote = [{ ticker: 'MC', market: 'PAR', name: 'LVMH' }, { ticker: 'AAPL', market: 'US', name: 'Apple' }];
+const euRanked = rankImportCandidates('LVMH', null, 'FRA', euRemote);
+ok('FRA row falls back to the EUR listing on another market',
+   buildImportAttempts(euRanked, { market: 'FRA', marketExplicit: false, symHint: null })
+     .some(c => c.market === 'PAR'));
+// …unless the row named its own exchange, where a miss must stay a miss.
+ok('marketExplicit blocks the off-market fallback entirely',
+   buildImportAttempts(euRanked, { market: 'FRA', marketExplicit: true, symHint: null }).length === 0);
+// A candidate still carrying an exchange suffix is never an on-market pick.
+ok('suffixed ticker is not treated as on-market',
+   buildImportAttempts([{ ticker: 'ASML.VI', market: 'US', name: 'ASML' }],
+     { market: 'US', marketExplicit: true, symHint: null }).length === 0);
+ok('buildImportAttempts tolerates an empty candidate list',
+   buildImportAttempts([], { market: 'US', marketExplicit: false, symHint: null }).length === 0);
+
 // ── splitLine: delimiter auto-detection ──────────────────────────────────────
 const { splitLine, splitCsvLine, splitTickerMarket, inferMarket } = PBImport;
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -168,6 +236,21 @@ ok('app.js no longer defines parseHoldingsFromText',     !/\bfunction parseHoldi
 ok('app.js no longer defines parseEasyEquitiesScreenshot', !/\bfunction parseEasyEquitiesScreenshot\b/.test(_appSrc));
 ok('app.js binds parseDecimal from PBCore',              /const parseDecimal = PBCore\.parseDecimal/.test(_appSrc));
 ok('app.js binds rowsToHoldings from PBImport',          /const rowsToHoldings\s*=\s*PBImport\.rowsToHoldings/.test(_appSrc));
+
+// TFSA listing fix: the market-equality rule is single-sourced in pb-core, and the
+// import modal delegates its attempt ordering instead of re-filtering by hand — a
+// re-inlined `c.market === market` filter is exactly how this bug got in.
+const _modalSrc = _rf(_jn(_dn(_fu(import.meta.url)), '..', '..', 'pb-modals.js'), 'utf8');
+ok('app.js binds sameUnderlyingExchange from PBCore',
+   /const sameUnderlyingExchange = PBCore\.sameUnderlyingExchange/.test(_appSrc));
+ok('app.js has no local sameUnderlyingExchange definition',
+   !/function\s+sameUnderlyingExchange\s*\(/.test(_appSrc));
+ok('pb-import binds sameUnderlyingExchange from PBCore',
+   /\bsameUnderlyingExchange\b[^\n]*\}\s*=\s*PBCore/.test(_rf(_jn(_dn(_fu(import.meta.url)), '..', '..', 'pb-import.js'), 'utf8')));
+ok('pb-modals delegates attempt ordering to PBImport.buildImportAttempts',
+   /buildImportAttempts\(ranked,\s*\{/.test(_modalSrc));
+ok('pb-modals no longer filters candidates by strict market equality',
+   !/ranked\.filter\(c => c\.market [=!]== market/.test(_modalSrc));
 
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll import-matching tests passed');
 process.exit(failures ? 1 : 0);
