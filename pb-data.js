@@ -187,13 +187,18 @@
     let close = parseFloat(last[4]);
     let priorClose = parseFloat(prev[4]);
     if (!isFinite(close) || !isFinite(priorClose) || priorClose === 0) return null;
-    if (market === 'JSE') { close = close / 100; priorClose = priorClose / 100; }
+    // TFSA is the same .JO listing as JSE (stooqSymbol above already treats them as
+    // one), so it needs the same cents divisor and the same currency. Testing only
+    // for 'JSE' left every TFSA holding that fell back to Stooq priced 100x too
+    // high and labelled USD, which then got FX-converted a second time.
+    const zar = market === 'JSE' || market === 'TFSA';
+    if (zar) { close = close / 100; priorClose = priorClose / 100; }
     return {
       price: close,
       prevClose: priorClose,
       change: close - priorClose,
       changePct: (close - priorClose) / priorClose * 100,
-      currency: market === 'JSE' ? 'ZAR' : 'USD',
+      currency: zar ? 'ZAR' : 'USD',
       marketState: 'UNKNOWN',
       fetchedAt: Date.now(),
       source: 'stooq'

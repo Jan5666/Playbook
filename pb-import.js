@@ -8,7 +8,7 @@
   const PBCore = (typeof module !== 'undefined' && module.exports && typeof require !== 'undefined')
     ? require('./pb-core.js')
     : globalThis.PBCore;
-  const { priceKey, MARKET_CURRENCY, parseDecimal } = PBCore;
+  const { priceKey, MARKET_CURRENCY, parseDecimal, sameUnderlyingExchange } = PBCore;
 
   // App-injected config (set once from app.js via PBImport.configure). Kept here
   // so the module never reaches into app.js/data.js globals.
@@ -150,7 +150,10 @@ function rankImportCandidates(query, tickerHint, chosenMarket, remote) {
   return pool.map(c => {
     const ns = bestNameScore(query, c.name, c.aliases || aliasByKey[priceKey(c.market, c.ticker)]);
     let score = ns * 100;
-    if (c.market === chosenMarket) score += 45;                 // market guides the pick
+    // Same *underlying exchange*, not the same label: a live JSE result is the
+    // listing a TFSA row is looking for (a TFSA holds JSE instruments), so it must
+    // earn the on-market bonus instead of being ranked as a foreign cross-listing.
+    if (sameUnderlyingExchange(c.market, chosenMarket)) score += 45; // market guides the pick
     // Prefer the listing in the account's own currency, then break ties toward the
     // primary listing: a candidate still carrying an exchange suffix in its ticker
     // (e.g. a foreign cross-listing) is the less-likely retail pick.
@@ -161,6 +164,50 @@ function rankImportCandidates(query, tickerHint, chosenMarket, remote) {
     if (c.ticker.toUpperCase() === qUpper) score += 25;          // query itself was a symbol
     return { ...c, score, nameScore: ns };
   }).sort((a, b) => b.score - a.score);
+}
+
+// Given ranked candidates for one import row, decide which listings to actually
+// try quoting, in order. Pure — the caller does the awaiting — so the rules that
+// decide whether a row can be matched at all are unit-testable instead of living
+// only inside the browser-only import modal.
+//   market         the account/exchange the row is being imported into
+//   marketExplicit the row named its own exchange (ticker suffix, exchange column,
+//                  or a scanned screenshot's EXCHANGE field)
+//   symHint        a symbol-shaped query/ticker hint, tried as a bare symbol
+function buildImportAttempts(ranked, opts) {
+  const { market, marketExplicit, symHint } = opts || {};
+  // A candidate whose ticker still carries an exchange suffix (".VI", ":MI") is a
+  // foreign listing that slipped through — never let it pass as an on-market pick,
+  // even if its market field happens to equal the chosen one.
+  // "On market" is the same *underlying exchange*: a JSE result is the listing a
+  // TFSA row wants (a TFSA holds JSE instruments — same .JO symbol, same ZAR
+  // price), so it is re-tagged to the row's own market and the holding lands in
+  // the account the user chose. Strict equality here is what made TFSA imports
+  // report "no match" for listings that resolve fine one chip over on JSE.
+  const onMarket = (ranked || [])
+    .filter(c => sameUnderlyingExchange(c.market, market) && !/[.:]/.test(c.ticker))
+    .map(c => (c.market === market ? c : { ...c, market }));
+  let offMarket = (ranked || []).filter(c => !sameUnderlyingExchange(c.market, market));
+  // Never auto-book a holding onto a different-currency cross-listing — European
+  // brokers quote US shares in EUR, and dual-listed names (iShares ETFs, etc.)
+  // surface London/pence listings, which used to silently land under the user's
+  // import at the wrong-currency "live rate". Restrict the off-market fallback to
+  // markets that settle in the same currency as the chosen one; everything else
+  // stays in `candidates` so it can still be chosen by hand if genuinely meant.
+  const chosenCcy = (MARKET_CURRENCY[market] || {}).code;
+  if (chosenCcy) offMarket = offMarket.filter(c => (MARKET_CURRENCY[c.market] || {}).code === chosenCcy);
+  // When the row explicitly named its market, don't drift off it at all — a miss
+  // becomes "not matched" (overridable by hand) rather than a wrong foreign listing.
+  if (marketExplicit) offMarket = [];
+  const attempts = [];
+  const pushAttempt = (c) => {
+    if (c && c.ticker && !attempts.some(a => a.ticker === c.ticker && a.market === c.market)) attempts.push(c);
+  };
+  if (onMarket[0]) pushAttempt(onMarket[0]);                                        // best name match on the chosen market
+  if (symHint) pushAttempt({ ticker: symHint, market, name: null, nameScore: null }); // the bare symbol on the chosen market
+  onMarket.slice(1).forEach(pushAttempt);                                           // other chosen-market candidates
+  offMarket.forEach(pushAttempt);                                                   // finally, anything elsewhere
+  return attempts;
 }
 
 // Header-name synonyms, checked in order. First matching column wins per field.
@@ -865,7 +912,7 @@ function parseEasyEquitiesScreenshot(text, defaultMarket, opts) {
 
   const api = { configure, YAHOO_EXCHANGE_MAP, parseYahooSymbol, normaliseCompanyName,
     diceSimilarity, companyNameScore, bestNameScore, looksLikeTickerToken,
-    rankImportCandidates, IMPORT_SYNONYMS, CURRENCY_TO_MARKET, SUFFIX_TO_MARKET,
+    rankImportCandidates, buildImportAttempts, IMPORT_SYNONYMS, CURRENCY_TO_MARKET, SUFFIX_TO_MARKET,
     splitTickerMarket, inferMarket, splitLine, splitCsvLine,
     looksLikeHeader, matchColumn, rowsToHoldings, parseImportDate, stripListMarker,
     parseHoldingsFromText, parseEasyEquitiesScreenshot, dedupeEeHoldings };

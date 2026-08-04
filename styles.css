@@ -1273,6 +1273,13 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   color: var(--rose, #f43f5e);
   font-family: var(--mono);
 }
+/* The way past a failed verify: the holder's own call, offered next to the error
+   instead of leaving them stuck behind it. */
+.verify-force {
+  margin-top: 6px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.verify-force .form-help { margin: 0; flex: 1 1 180px; min-width: 0; }
 
 /* Ticker search autocomplete */
 .ticker-dropdown {
@@ -1766,6 +1773,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 /* Text utilities */
 .text-up { color: var(--emerald); }
 .text-down { color: var(--rose); }
+.text-warn { color: var(--amber); }
 .text-muted { color: var(--text-muted); }
 .text-dim { color: var(--text-dim); }
 .text-xs { font-size: 11px; }
@@ -3429,6 +3437,9 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .import-card.excluded { opacity: 0.45; }
 .import-card.is-bad { border-color: color-mix(in srgb, var(--rose) 45%, var(--border)); }
 .import-card.is-low { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+/* Hand-forced listing: the user overrode the matcher, so the row imports but is
+   visibly marked as unconfirmed rather than styled like a clean live match. */
+.import-card.is-unverified { border-color: color-mix(in srgb, var(--amber) 55%, var(--border)); }
 .import-card.is-dup {
   border-color: color-mix(in srgb, var(--rose) 55%, var(--border));
   background: color-mix(in srgb, var(--rose) 6%, var(--bg));
@@ -3456,6 +3467,25 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
   border-radius: 4px; padding: 1px 5px;
 }
+.import-conf-manual {
+  flex: 0 0 auto; font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 4px; padding: 1px 5px;
+}
+/* Explains, on the row itself, exactly what an overridden row will import. */
+.import-manual-note {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 11px; line-height: 1.4; color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
+  border-radius: 8px; padding: 6px 8px;
+}
+.import-manual-note svg { flex: 0 0 auto; margin-top: 1px; }
+.import-manual-note b { color: var(--text); font-weight: 700; font-family: var(--mono); }
+/* The override itself reads as an action, not a warning. */
+.import-force { color: var(--amber); }
 .import-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .import-query-input {
   width: 100%; box-sizing: border-box; min-width: 0; padding: 9px 11px; border-radius: 8px;
@@ -3650,6 +3680,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .import-status.checking { background: var(--blue); animation: import-pulse 1s ease-in-out infinite; }
 .import-status.ok { background: var(--emerald); }
+.import-status.warn { background: var(--amber); }
 .import-status.bad { background: var(--rose); }
 @keyframes import-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 .import-del {
