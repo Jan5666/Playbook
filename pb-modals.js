@@ -1924,49 +1924,63 @@ function sectorForwardPE(sector) {
   return (typeof v === 'number') ? v : null;
 }
 // Convert a Yahoo currency code (e.g. ZAc, GBp, USD) to its 3-letter base.
-function baseCurrency(code, market) {
-  const c = (code || '').toUpperCase();
-  if (c.startsWith('ZA')) return 'ZAR';
-  if (c.startsWith('GB')) return 'GBP';
-  if (c.startsWith('AU')) return 'AUD';
-  if (c.startsWith('EU') || c === 'EUR') return 'EUR';
-  if (c === 'USD' || c === 'USC') return 'USD';
-  if (c.length === 3) return c;
-  return (MARKET_CURRENCY[market]?.code) || 'USD';
-}
+// Lives in pb-core now (money math has one home); this is the bind.
+const baseCurrency = PBCore.baseCurrencyCode;
 function FundamentalsBlock(_refFB) {
   const { fmt } = window.PBApp;
   let { fundamentals, quote, market, fxRates, onRetry } = _refFB;
   const loading = fundamentals && fundamentals.loading && !fundamentals.data;
   const f = fundamentals?.data || {};
   const cur = quote?.price && quote.price > 0 ? quote.price : null;
-  // Currency symbol follows the position's market (same source as fmt() used for
-  // the analyst targets below) so every figure on the card reads in one currency.
+  // A fundamentals object mixes TWO currencies and the card has to keep them
+  // apart: anything PRICED (day range, 52-week range, analyst targets, dividends
+  // per share) is in the listing currency, anything REPORTED (revenue, EBITDA,
+  // cash flow, EPS, NAV) is in the currency the company files its statements in.
+  // Naspers and Datatec trade in rand and report in dollars; printing a dollar
+  // revenue behind an "R" is how a card lies without a single wrong number.
   const ccySym = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).sym;
-  const nativeCode = baseCurrency(f.currency || quote?.currency, market);
-  // Market cap normalised to USD (FX base is USD: rates[code] = units per 1 USD).
-  let mcapUsd = null;
-  if (f.marketCap != null && isFinite(f.marketCap)) {
-    if (nativeCode === 'USD') mcapUsd = f.marketCap;
-    else { const rate = fxRates?.rates?.[nativeCode]; if (rate) mcapUsd = f.marketCap / rate; }
-  }
-  const quarterLabel = (() => {
-    const ms = f.mostRecentQuarter || f.lastFiscalYearEnd;
-    return ms ? new Date(ms).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : null;
+  const listingCode = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code;
+  const money = PBCore.fundamentalsMoney(f, market, fxRates?.rates);
+  const stCode = money.statementCcy;
+  // Say the code whenever the statements are filed elsewhere - or whenever there
+  // is no symbol to say it with, so a figure is never left currency-less.
+  const stSym = CURRENCY_SYMBOLS[stCode] || '';
+  const stTag = (stCode !== listingCode || !stSym) ? stCode : null;
+  const capMoney = (n) => (CURRENCY_SYMBOLS[money.capCcy] || (money.capCcy + ' ')) + n;
+  const periodLabel = (() => {
+    const q = f.mostRecentQuarter, y = f.lastFiscalYearEnd;
+    const ms = q || y;
+    if (!ms) return null;
+    const when = new Date(ms).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+    // Say which period it actually is. This used to caption every date "Q ended",
+    // including fiscal-year ends and (before the parser fix) a valuation date.
+    return (q ? 'Q ended ' : 'FY ended ') + when;
   })();
   const signed = (n, d = 1) => (n >= 0 ? '+' : '') + n.toFixed(d) + '%';
   const tone = (n) => n >= 0 ? 'text-up' : 'text-down';
   // \u2500\u2500 Headline analytics (the metrics the user explicitly tracks) \u2500\u2500
   const headline = [];
   const hpush = (label, value, opts) => { if (value != null) headline.push({ label, value, ...(opts || {}) }); };
-  if (f.peTrailing != null) hpush('P/E (TTM)', f.peTrailing.toFixed(2), { sub: quarterLabel ? 'Q ended ' + quarterLabel : null });
+  if (f.peTrailing != null) hpush('P/E (TTM)', f.peTrailing.toFixed(2), { sub: periodLabel });
   if (f.peForward != null) hpush('Forward P/E', f.peForward.toFixed(2));
-  if (mcapUsd != null) { const m = fmtLarge(mcapUsd); if (m) hpush('Market cap', '$' + m, { sub: nativeCode !== 'USD' ? 'USD' : null }); }
+  // Market cap in dollars so it reads against every other holding, with the
+  // figure as quoted underneath. The old code assumed the object's single
+  // currency field belonged to the cap, so a rand cap on a dollar-reporting
+  // JSE listing was printed unconverted: Naspers as "$600B" rather than ~$32B.
+  // A missing FX rate now shows the native figure instead of hiding the row.
+  if (money.capUsd != null) {
+    const m = fmtLarge(money.capUsd);
+    const native = money.capCcy !== 'USD' ? fmtLarge(money.capNative) : null;
+    if (m) hpush('Market cap', '$' + m, { sub: native ? capMoney(native) : null });
+  } else if (money.capNative != null) {
+    const m = fmtLarge(money.capNative);
+    if (m) hpush('Market cap', capMoney(m), { sub: money.capCcy });
+  }
   if (f.debtToEquity != null) hpush('Debt / equity', (f.debtToEquity / 100).toFixed(2));
-  if (f.freeCashflow != null) { const v = fmtLarge(f.freeCashflow); if (v) hpush('Free cash flow', ccySym + v, { cls: f.freeCashflow >= 0 ? 'text-up' : 'text-down' }); }
+  if (f.freeCashflow != null) { const v = fmtLarge(f.freeCashflow); if (v) hpush('Free cash flow', stSym + v, { cls: f.freeCashflow >= 0 ? 'text-up' : 'text-down', sub: stTag }); }
   if (f.profitMargin != null) hpush('Profit margin', f.profitMargin.toFixed(1) + '%', { cls: tone(f.profitMargin) });
   if (f.earningsGrowth != null) hpush('Profit growth', signed(f.earningsGrowth), { cls: tone(f.earningsGrowth), sub: 'YoY net income' });
-  if (f.revenue != null) { const r = fmtLarge(f.revenue); if (r) hpush('Revenue', ccySym + r, { sub: 'TTM' }); }
+  if (f.revenue != null) { const r = fmtLarge(f.revenue); if (r) hpush('Revenue', stSym + r, { sub: stTag ? 'TTM ' + stTag : 'TTM' }); }
   if (f.revenueGrowth != null) hpush('Revenue growth', signed(f.revenueGrowth), { cls: tone(f.revenueGrowth), sub: 'YoY' });
   const headlineKeys = new Set(['P/E (TTM)', 'Forward P/E', 'Market cap', 'Debt / equity', 'Free cash flow', 'Profit margin', 'Profit growth', 'Revenue', 'Revenue growth']);
   const stats = [];
@@ -1977,10 +1991,17 @@ function FundamentalsBlock(_refFB) {
   };
   const yearHigh = f.yearHigh || quote?.yearHigh;
   const yearLow = f.yearLow || quote?.yearLow;
-  if (f.eps != null) push('EPS (TTM)', ccySym + f.eps.toFixed(2));
-  if (f.dividendYield != null) push('Dividend yield', f.dividendYield.toFixed(2) + '%');
-  if (f.bookValue != null) push('NAV / share', ccySym + f.bookValue.toFixed(2));
-  if (f.bookValue != null && cur != null && f.bookValue > 0) {
+  if (f.eps != null) push('EPS (TTM)', stSym + f.eps.toFixed(2), stTag);
+  if (f.dividendYield != null) {
+    // Dividends are paid per share in the LISTING currency, not the reporting one.
+    push('Dividend yield', f.dividendYield.toFixed(2) + '%',
+      f.dividendRate != null ? ccySym + f.dividendRate.toFixed(2) + ' / share (TTM)' : null);
+  }
+  if (f.bookValue != null) push('NAV / share', stSym + f.bookValue.toFixed(2), stTag);
+  // Comparing price to book value only means anything when both are in the same
+  // currency; when the statements are filed in another one, the unitless P/B
+  // below is the honest answer instead of a premium computed across currencies.
+  if (f.bookValue != null && cur != null && f.bookValue > 0 && stCode === listingCode) {
     const diff = (cur - f.bookValue) / f.bookValue * 100;
     const prem = diff >= 0;
     push(prem ? 'NAV premium' : 'NAV discount', (prem ? '+' : '') + diff.toFixed(1) + '%');
@@ -1996,7 +2017,7 @@ function FundamentalsBlock(_refFB) {
   if (f.operatingMargin != null) push('Op margin', f.operatingMargin.toFixed(1) + '%');
   if (f.roe != null) push('ROE', f.roe.toFixed(1) + '%');
   if (f.currentRatio != null) push('Current ratio', f.currentRatio.toFixed(2));
-  if (f.ebitda != null) { const e = fmtLarge(f.ebitda); if (e) push('EBITDA', ccySym + e); }
+  if (f.ebitda != null) { const e = fmtLarge(f.ebitda); if (e) push('EBITDA', stSym + e, stTag); }
   if (quote?.dayHigh != null && quote?.dayLow != null) {
     push("Day range", ccySym + quote.dayLow.toFixed(2) + ' – ' + ccySym + quote.dayHigh.toFixed(2));
   }
@@ -2005,17 +2026,31 @@ function FundamentalsBlock(_refFB) {
   }
   if (quote?.volume != null) { const v = fmtLarge(quote.volume); if (v) push('Volume', v); }
   if (f.avgVolume != null) { const v = fmtLarge(f.avgVolume); if (v) push('Avg volume', v); }
-  const targetSection = f.targetMean ? React.createElement("div", { className: "analyst-card" },
+  // Analyst targets belong to the LISTING currency, but the S&P Global pool
+  // behind stockanalysis quotes some non-US listings in dollars - and a dollar
+  // target measured against a rand price renders as a ~-95% "upside". Convert
+  // when a rate exists; without one, drop the section rather than print a
+  // cross-currency comparison that looks like a collapse.
+  const tgtCode = baseCurrency(f.targetCurrency || listingCode, market);
+  const toListing = (n) => {
+    if (n == null || !isFinite(n)) return null;
+    if (tgtCode === listingCode) return n;
+    return PBCore.convertCcy(n, tgtCode, listingCode, fxRates?.rates || null);
+  };
+  const targetMean = toListing(f.targetMean);
+  const targetHigh = toListing(f.targetHigh);
+  const targetLow = toListing(f.targetLow);
+  const targetSection = targetMean ? React.createElement("div", { className: "analyst-card" },
     React.createElement("div", { className: "eyebrow" }, "Analyst targets", f.analystCount ? ' · ' + f.analystCount + ' analysts' : ''),
     React.createElement("div", { className: "analyst-row" },
       React.createElement("div", null,
         React.createElement("div", { className: "analyst-label" }, "Mean target"),
-        React.createElement("div", { className: "mono analyst-val" }, fmt(f.targetMean, market))
+        React.createElement("div", { className: "mono analyst-val" }, fmt(targetMean, market))
       ),
       cur && React.createElement("div", null,
         React.createElement("div", { className: "analyst-label" }, "Upside"),
-        React.createElement("div", { className: `mono analyst-val ${f.targetMean > cur ? 'text-up' : 'text-down'}` },
-          ((f.targetMean - cur) / cur * 100).toFixed(1) + '%'
+        React.createElement("div", { className: `mono analyst-val ${targetMean > cur ? 'text-up' : 'text-down'}` },
+          ((targetMean - cur) / cur * 100).toFixed(1) + '%'
         )
       ),
       f.recommendation && React.createElement("div", null,
@@ -2023,14 +2058,15 @@ function FundamentalsBlock(_refFB) {
         React.createElement("div", { className: `mono analyst-val rec-${f.recommendation}` }, f.recommendation.replace('_', ' '))
       )
     ),
-    (f.targetLow != null && f.targetHigh != null) && React.createElement("div", { className: "analyst-range" },
+    (targetLow != null && targetHigh != null) && React.createElement("div", { className: "analyst-range" },
       React.createElement("span", { className: "analyst-range-label" }, "Range"),
-      React.createElement("span", { className: "mono" }, fmt(f.targetLow, market), " – ", fmt(f.targetHigh, market))
+      React.createElement("span", { className: "mono" }, fmt(targetLow, market), " – ", fmt(targetHigh, market))
     ),
     f.targetSource && React.createElement("div", { className: "analyst-attrib" },
       (f.targetUpdated
         ? 'Updated ' + new Date(f.targetUpdated).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' via '
         : 'via ') + f.targetSource
+        + (tgtCode !== listingCode ? ' (converted from ' + tgtCode + ')' : '')
     )
   ) : null;
   const sectorRow = (f.sector || f.industry) ? React.createElement("div", { className: "sector-row" },
@@ -2056,7 +2092,12 @@ function FundamentalsBlock(_refFB) {
     stats.length > 0 && React.createElement("div", { className: "fundamentals-grid" },
       stats.map((s, i) => React.createElement("div", { key: i, className: "fund-cell" },
         React.createElement("div", { className: "fund-label" }, s.label),
-        React.createElement("div", { className: "fund-val mono" }, s.value)
+        React.createElement("div", { className: "fund-val mono" }, s.value),
+        // `push()` has always taken a sub-line; only the headline grid rendered
+        // one, so every sub passed here was silently dropped. It carries the
+        // reporting currency and the dividend rate now, which is exactly the
+        // context a bare number is ambiguous without.
+        s.sub ? React.createElement("div", { className: "fund-sub" }, s.sub) : null
       ))
     ),
     targetSection,

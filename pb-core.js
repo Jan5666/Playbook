@@ -970,20 +970,43 @@ function parseDecimal(raw) {
 function parseFundamentalsTimeseries(json, market) {
   const results = json?.timeseries?.result;
   if (!Array.isArray(results)) return null;
-  // latest[type] = { v, asOfDate }; prevAnnual[type] = value before latest
+  // latest[type] = { v, asOfDate, ccy }; prevAnnual[type] = value before latest
   // (for YoY growth on annual statement items).
   const latest = {};
   const prevAnnual = {};
-  let currency = null;
   for (const entry of results) {
     const type = entry?.meta?.type?.[0];
     if (!type || !Array.isArray(entry[type])) continue;
     const rows = entry[type].filter(r => r && r.reportedValue && typeof r.reportedValue.raw === 'number' && isFinite(r.reportedValue.raw));
     if (rows.length === 0) continue;
     const last = rows[rows.length - 1];
-    latest[type] = { v: last.reportedValue.raw, asOfDate: last.asOfDate || null };
+    latest[type] = { v: last.reportedValue.raw, asOfDate: last.asOfDate || null, ccy: last.currencyCode || null };
     if (rows.length > 1 && type.startsWith('annual')) prevAnnual[type] = rows[rows.length - 2].reportedValue.raw;
-    if (!currency && last.currencyCode) currency = last.currencyCode;
+  }
+  // The payload carries ONE currency tag per row, but the object it feeds needs
+  // TWO: statements are reported in the company's reporting currency, market cap
+  // is priced in the LISTING currency, and for plenty of listings those differ
+  // (Naspers and Datatec trade in rand and report in dollars). Reading a single
+  // "first currencyCode we met" - which is what this did - handed the statement
+  // currency to the market cap, so a R570bn cap rendered as $600bn with no
+  // conversion at all. Pick the reporting currency from a fixed, deterministic
+  // list of STATEMENT types (never from a valuation row, and never from payload
+  // order); the listing currency comes from the market, below.
+  const STATEMENT_TYPES = [
+    'trailingTotalRevenue', 'annualTotalRevenue',
+    'trailingNetIncome', 'annualNetIncome',
+    'trailingOperatingIncome', 'annualOperatingIncome',
+    'trailingFreeCashFlow', 'annualFreeCashFlow',
+    'trailingOperatingCashFlow', 'annualOperatingCashFlow',
+    'trailingEBITDA', 'annualEBITDA',
+    'trailingNormalizedEBITDA', 'annualNormalizedEBITDA',
+    'annualStockholdersEquity', 'annualTotalDebt',
+    'annualCurrentAssets', 'annualCurrentLiabilities',
+    'trailingDilutedEPS', 'annualDilutedEPS'
+  ];
+  let currency = null;
+  for (const t of STATEMENT_TYPES) {
+    if (latest[t] && latest[t].ccy) { currency = latest[t].ccy; break; }
   }
   const L = (...types) => {
     for (const t of types) if (latest[t]) return latest[t].v;
@@ -998,7 +1021,6 @@ function parseFundamentalsTimeseries(json, market) {
   };
   const revenue = L('trailingTotalRevenue', 'annualTotalRevenue');
   const netIncome = L('trailingNetIncome', 'annualNetIncome');
-  const opIncome = L('trailingOperatingIncome', 'annualOperatingIncome');
   const equity = L('annualStockholdersEquity');
   const totalDebt = L('annualTotalDebt');
   const curAssets = L('annualCurrentAssets');
@@ -1006,6 +1028,18 @@ function parseFundamentalsTimeseries(json, market) {
   const asOfMs = (type) => {
     const d = latest[type] && latest[type].asOfDate ? Date.parse(latest[type].asOfDate) : NaN;
     return isFinite(d) ? d : null;
+  };
+  // A margin must divide like by like. Yahoo often answers with a TTM numerator
+  // but no TTM revenue, and the old code then divided trailing net income by the
+  // latest FISCAL-YEAR revenue - a silently wrong ratio (a growing company reads
+  // too profitable, a shrinking one too thin). Take the basis where BOTH sides
+  // exist: trailing first, then annual, else nothing.
+  const margin = (trailingType, annualType) => {
+    const tn = L(trailingType), tr = L('trailingTotalRevenue');
+    if (tn != null && tr > 0) return tn / tr * 100;
+    const an = L(annualType), ar = L('annualTotalRevenue');
+    if (an != null && ar > 0) return an / ar * 100;
+    return null;
   };
   const mc = (MARKET_CURRENCY[market] || MARKET_CURRENCY.US);
   const result = {
@@ -1021,8 +1055,8 @@ function parseFundamentalsTimeseries(json, market) {
     beta: null,
     dividendYield: null,
     payoutRatio: null,
-    profitMargin: (netIncome != null && revenue > 0) ? netIncome / revenue * 100 : null,
-    operatingMargin: (opIncome != null && revenue > 0) ? opIncome / revenue * 100 : null,
+    profitMargin: margin('trailingNetIncome', 'annualNetIncome'),
+    operatingMargin: margin('trailingOperatingIncome', 'annualOperatingIncome'),
     revenueGrowth: growth('annualTotalRevenue'),
     earningsGrowth: growth('annualNetIncome'),
     roe: (netIncome != null && equity > 0) ? netIncome / equity * 100 : null,
@@ -1036,7 +1070,11 @@ function parseFundamentalsTimeseries(json, market) {
     operatingCashflow: L('trailingOperatingCashFlow', 'annualOperatingCashFlow'),
     revenue: revenue,
     ebitda: L('trailingEBITDA', 'trailingNormalizedEBITDA', 'annualEBITDA', 'annualNormalizedEBITDA'),
-    mostRecentQuarter: asOfMs('quarterlyMarketCap') || asOfMs('quarterlyPeRatio'),
+    // The period the TTM figures close on - a REPORTED period end, taken from a
+    // statement row. quarterlyMarketCap's asOfDate (what this used to read) is a
+    // valuation snapshot date, so the card captioned its P/E "Q ended <date>"
+    // with a date the company never reported on.
+    mostRecentQuarter: asOfMs('trailingNetIncome') || asOfMs('trailingTotalRevenue') || asOfMs('trailingDilutedEPS'),
     lastFiscalYearEnd: asOfMs('annualTotalRevenue') || asOfMs('annualNetIncome'),
     targetMean: null, targetHigh: null, targetLow: null,
     recommendation: null, analystCount: null,
@@ -1047,8 +1085,16 @@ function parseFundamentalsTimeseries(json, market) {
     epsEst: null, revEst: null, dividendDate: null,
     sector: null, industry: null, employees: null,
     // Statement/valuation figures arrive in natural units (never pence/cents),
-    // so the divisor is always 1; currency comes from the payload when present.
+    // so the divisor is always 1. `currency` denominates the STATEMENT figures
+    // (revenue, EBITDA, cash flow, EPS, debt) and comes from the payload's
+    // statement rows; `marketCapCurrency` denominates the market cap and comes
+    // from the MARKET, because a market cap is price x shares and is therefore
+    // always quoted in the currency the share trades in - in major units, never
+    // pence/cents (a R570bn cap is 570e9, not 57e12). The payload's own tag is
+    // deliberately not trusted here: Yahoo returns rand-denominated caps on
+    // USD-tagged payloads for JSE names that report in dollars.
     currency: currency || mc.code,
+    marketCapCurrency: mc.code,
     divisor: 1,
     fetchedAt: Date.now(),
     source: 'yahoo-ts'
@@ -1060,26 +1106,133 @@ function parseFundamentalsTimeseries(json, market) {
   return filled >= 3 ? result : null;
 }
 
+// Fields carrying an ABSOLUTE money amount, split by which of a fundamentals
+// object's two currencies denominates them. Everything not listed is a ratio, a
+// percentage, a count, a date or a label - unitless, so it merges freely.
+const FUND_STATEMENT_MONEY = new Set([
+  'revenue', 'ebitda', 'freeCashflow', 'operatingCashflow', 'totalCash',
+  'totalDebt', 'eps', 'epsForward', 'epsEst', 'revEst', 'bookValue', 'dividendRate'
+]);
+const FUND_CAP_MONEY = new Set(['marketCap']);
 // Merge partial fundamentals from several sources (priority order: earlier
 // wins per field, later sources only fill gaps). Sources cover different
 // fields — stockanalysis has analyst/earnings data, the Yahoo timeseries has
-// statement-derived ratios — so a merge beats first-hit-wins. All sources
-// normalise money fields to natural units before this point, so mixing per
-// field is safe. Returns null when nothing usable was fetched.
+// statement-derived ratios — so a merge beats first-hit-wins. Money fields are
+// the exception: each source states its own reporting currency, so filling a
+// gap across a currency boundary would pair (say) dollar revenue with a
+// rand-tagged object and no downstream reader could tell. Those fields only
+// cross when the currencies agree; an absent tag on either side counts as
+// agreement (analyst-only parts carry no currency and no money).
+// Returns null when nothing usable was fetched.
 function mergeFundamentals(parts) {
   const real = (parts || []).filter(p => p && typeof p === 'object');
   if (real.length === 0) return null;
   if (real.length === 1) return real[0];
+  // Resolve both currencies FIRST (earliest non-empty wins, the same priority
+  // rule as every other field) so the compatibility test never depends on the
+  // order keys happen to sit in inside a part.
+  const firstCcy = (key) => { for (const p of real) { if (p[key]) return p[key]; } return null; };
+  const statementCcy = firstCcy('currency');
+  const capCcy = firstCcy('marketCapCurrency');
   const out = Object.assign({}, real[0]);
   for (let i = 1; i < real.length; i++) {
-    for (const k of Object.keys(real[i])) {
-      const v = real[i][k];
+    const part = real[i];
+    for (const k of Object.keys(part)) {
+      const v = part[k];
       if (v == null) continue;
-      if (out[k] == null || out[k] === '') out[k] = v;
+      if (!(out[k] == null || out[k] === '')) continue;
+      if (FUND_STATEMENT_MONEY.has(k) && part.currency && statementCcy && part.currency !== statementCcy) continue;
+      if (FUND_CAP_MONEY.has(k) && part.marketCapCurrency && capCcy && part.marketCapCurrency !== capCcy) continue;
+      out[k] = v;
     }
   }
+  if (statementCcy) out.currency = statementCcy;
+  if (capCcy) out.marketCapCurrency = capCcy;
   out.source = real.map(p => p.source).filter(Boolean).join('+');
   return out;
+}
+
+// Yahoo currency code -> its 3-letter major-unit base ("ZAc"/"ZAX" -> ZAR,
+// "GBp"/"GBX" -> GBP), falling back to the market's own currency. This is the
+// unit a figure is DISPLAYED in; centDivisor owns the numeric scaling.
+function baseCurrencyCode(code, market) {
+  const c = (code || '').toUpperCase();
+  if (c.startsWith('ZA')) return 'ZAR';
+  if (c.startsWith('GB')) return 'GBP';
+  if (c.startsWith('AU')) return 'AUD';
+  if (c.startsWith('EU') || c === 'EUR') return 'EUR';
+  if (c === 'USD' || c === 'USC') return 'USD';
+  if (c.length === 3) return c;
+  return (MARKET_CURRENCY[market] && MARKET_CURRENCY[market].code) || 'USD';
+}
+// Resolve the two currencies a fundamentals object mixes, and value its market
+// cap. Pure, so no view has to do FX arithmetic inline:
+//   statementCcy - what revenue / EBITDA / cash flow / EPS are denominated in
+//   capCcy       - what the market cap is denominated in (the LISTING currency)
+//   capNative    - the market cap as reported, in capCcy
+//   capUsd       - that cap in USD, or null when no rate is available
+// `rates` is the app's FX map (source units per 1 USD, USD === 1). An object
+// cached before `marketCapCurrency` existed falls back to the market's own
+// currency, which is exactly what that field always holds - so entries already
+// sitting in the in-memory TTL cache render correctly too.
+function fundamentalsMoney(f, market, rates) {
+  const statementCcy = baseCurrencyCode(f && f.currency, market);
+  const capCcy = baseCurrencyCode((f && f.marketCapCurrency) || null, market);
+  const raw = f && f.marketCap;
+  const capNative = (typeof raw === 'number' && isFinite(raw) && raw > 0) ? raw : null;
+  let capUsd = null;
+  if (capNative != null) {
+    if (capCcy === 'USD') capUsd = capNative;
+    else {
+      const rate = rates && rates[capCcy];
+      if (typeof rate === 'number' && isFinite(rate) && rate > 0) capUsd = capNative / rate;
+    }
+  }
+  return { statementCcy, capCcy, capNative, capUsd };
+}
+// Trailing-twelve-month dividends out of a Yahoo chart payload fetched with
+// `events=div` - the keyless way to get a dividend yield now that the
+// timeseries carries none and stockanalysis's API is dead (GAPS #18).
+//
+// The yield is TTM dividends / price taken straight off the payload's own
+// numbers, so both sides are in the listing's quoted units and the pence/cents
+// divisor CANCELS - the one figure here that cannot be broken by the unit trap.
+// The per-share rate is money on the card, so that one does get the divisor.
+// `meta.regularMarketPrice` is the last traded price (see the day-move trap),
+// which for a yield denominator is immaterial - a few basis points at most.
+// `now` is injectable so the TTM window is testable.
+function parseDividendEvents(json, market, now) {
+  const r = json?.chart?.result?.[0];
+  const meta = r?.meta;
+  const divs = r?.events?.dividends;
+  if (!meta || !divs || typeof divs !== 'object') return null;
+  const nowMs = (typeof now === 'number' && isFinite(now)) ? now : Date.now();
+  const fromSec = (nowMs - 365 * 24 * 3600 * 1000) / 1000;
+  const toSec = nowMs / 1000;
+  let sum = 0, count = 0, lastSec = null;
+  for (const k of Object.keys(divs)) {
+    const d = divs[k];
+    if (!d) continue;
+    const amt = (typeof d.amount === 'number' && isFinite(d.amount)) ? d.amount : null;
+    const at = (typeof d.date === 'number' && isFinite(d.date)) ? d.date : Number(k);
+    if (amt == null || amt <= 0 || !isFinite(at)) continue;
+    if (at < fromSec || at > toSec) continue;
+    sum += amt;
+    count++;
+    if (lastSec == null || at > lastSec) lastSec = at;
+  }
+  if (count === 0 || !(sum > 0)) return null;
+  const px = meta.regularMarketPrice;
+  const price = (typeof px === 'number' && isFinite(px) && px > 0) ? px : null;
+  const divisor = centDivisor(market, meta.currency || '');
+  return {
+    dividendYield: price != null ? sum / price * 100 : null,
+    dividendRate: sum / divisor,
+    lastDividendDate: lastSec != null ? lastSec * 1000 : null,
+    dividendCount: count,
+    fetchedAt: Date.now(),
+    source: 'yahoo-div'
+  };
 }
 
 // ─── stockanalysis.com forecast page-data parser ────────────────────────────
@@ -1150,6 +1303,11 @@ function parseSAForecast(json, market) {
     targetMean: scale(set.mean),
     targetHigh: scale(set.high),
     targetLow: scale(set.low),
+    // What those targets are denominated in, once scaled to major units. The
+    // S&P Global pool (`priceTargets`) quotes some non-US listings in dollars,
+    // and a USD target measured against a rand price reads as a ~-95% "upside",
+    // so the card has to know rather than assume the listing's currency.
+    targetCurrency: baseCurrencyCode(set.currency || '', market),
     analystCount: set.count,
     recommendation,
     targetUpdated: isFinite(updatedMs) ? updatedMs : null,
@@ -1560,6 +1718,9 @@ function rotationSummary(classified) {
     parseDecimal,
     parseFundamentalsTimeseries,
     mergeFundamentals,
+    baseCurrencyCode,
+    fundamentalsMoney,
+    parseDividendEvents,
     parseSAForecast,
     parseSAOverviewEarnings,
     ROTATION_THRESHOLDS,

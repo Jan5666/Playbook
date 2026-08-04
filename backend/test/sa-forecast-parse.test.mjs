@@ -97,6 +97,22 @@ ok('JSE: analystCount from numPriceTargets', jse != null && jse.analystCount ===
 ok('JSE: multi-word consensus mapped', jse != null && jse.recommendation === 'strong_buy');
 ok('JSE: no updated date on the spg set → null', jse != null && jse.targetUpdated === null);
 
+// ── Which currency the targets are IN ───────────────────────────────────────
+// The scale (÷100) and the currency are two different questions. The card needs
+// the second one too: the S&P Global pool quotes some non-US listings in
+// dollars, and a dollar target held up against a rand price renders as a ~-95%
+// "upside" - a number the user would read as a crash forecast.
+ok('US: targetCurrency USD', us != null && us.targetCurrency === 'USD');
+ok('LSE: GBX targets are tagged GBP (major units, post-divisor)', lse != null && lse.targetCurrency === 'GBP');
+ok('JSE: ZAc targets are tagged ZAR', jse != null && jse.targetCurrency === 'ZAR');
+const jseUsdTargets = parseSAForecast(saPayload({
+  targets: { low: null, high: null, average: null, median: null, count: 0, updated: '', currency: 'USD', chart: [] },
+  priceTargets: { source: 'spg', currency: 'USD', avg: 70, median: 70, low: 55, high: 90, numPriceTargets: 6 },
+  currentRatings: { source: 'spg', consensus: 'Buy', score: 5, count: 6, strongBuy: 3, buy: 3, hold: 0, sell: 0, strongSell: 0 }
+}), 'JSE');
+ok('a JSE listing with dollar-quoted targets says so', jseUsdTargets != null && jseUsdTargets.targetCurrency === 'USD');
+ok('dollar targets on a JSE listing are NOT divided by 100', jseUsdTargets != null && near(jseUsdTargets.targetMean, 70));
+
 // ── Degenerate set values ───────────────────────────────────────────────────
 // Curated set present but with a count and no usable average → spg wins.
 const half = parseSAForecast(saPayload({

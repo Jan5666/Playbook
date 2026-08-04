@@ -541,3 +541,31 @@ resolution note at the top of this entry), so **this entry is fully closed**.
   overview page; Yahoo `v10 quoteSummary` with a crumb fetched through the
   Worker; Finnhub/FMP free tiers with a key in Settings), or accept
   Perplexity as the enrichment path.
+
+## 19. Fundamentals: leftovers after the 2026-08-04 currency audit
+
+The market-cap defect ("Naspers $600B") and the currency/period errors around it
+are **fixed** — see `PBCore.fundamentalsMoney`, `marketCapCurrency`, and the
+rendered-card assertions in `fundamentals-parse.test.mjs`. Three things were
+found in the same sweep and deliberately NOT changed:
+
+- **`sectorForwardPE` is dead code.** `pb-modals.js` still defines it (and binds
+  `PBContent.SECTOR_FWD_PE` for it), but nothing calls it: the "Industry fwd P/E"
+  comparator it exists to feed no longer renders anywhere on the card. Removing it
+  means editing `content.test.mjs:168-170`, which asserts the binding — a
+  three-line change nobody should make blind. Either restore the comparator or
+  delete both ends. Note the table it reads is a hardcoded early-2026 estimate,
+  so restoring it re-introduces a figure that goes stale silently.
+- **Parsed but never rendered.** `FundamentalsBlock` reads 32 of the object's
+  fields; `epsForward`, `payoutRatio`, `roa`, `totalCash`, `totalDebt`,
+  `operatingCashflow`, `fiftyDayAvg`, `twoHundredDayAvg`, `revEst`,
+  `dividendDate` and `employees` are parsed, merged and thrown away (and most of
+  them only ever arrive from the crumb-gated quoteSummary anyway). Harmless, but
+  the shape advertises coverage the card does not show. Either surface a few
+  (50/200-day averages next to the 52-week range would earn their place) or stop
+  parsing them.
+- **Earnings dates stay US-only.** `fetchFundamentals` backfills a missing
+  earnings date from the SA overview probe only when `market === 'US'`; JSE/LSE
+  holdings show no earnings badge at all. Same root cause as #18.
+
+**Severity**: Low (cosmetic/dead code, no wrong numbers).
