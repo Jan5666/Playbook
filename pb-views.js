@@ -15,6 +15,8 @@ const MARKET_CURRENCY = PBCore.MARKET_CURRENCY;
 const contribInDisplay = PBCore.contribInDisplay;
 const quoteTradedToday = PBCore.quoteTradedToday;
 const marketDayKey = PBCore.marketDayKey;
+// Session phase for the day chip's "At close" note (see DayChipNote).
+const marketSession = PBCore.marketSession;
 const fetchHistory = PBData.fetchHistory;
 // PBContent/PBCore module globals for the extracted Current (Holdings) view (Phase 4 inc 25).
 const MARKETS = PBContent.MARKETS;
@@ -2361,6 +2363,12 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
   const extPct = q && q.extKind && typeof q.extChangePct === 'number' && isFinite(q.extChangePct) ? q.extChangePct : null;
   const chipPct = showExt ? extPct : dayPct;
   const chipUp = chipPct != null && chipPct >= 0;
+  // The day move is the market's own open->close. Outside its regular session that
+  // is the LAST COMPLETED session's move (what Yahoo shows too), so it gets a quiet
+  // "At close" caption -- unlabelled, it reads as a live figure. The ext chip needs
+  // no caption: "Pre-market"/"After-hours" already says which session it is.
+  const dayAtClose = !showExt && chipPct != null && market !== 'CRYPTO'
+    && marketSession(market).phase !== 'open';
   return React.createElement("button", {
     key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
   },
@@ -2383,9 +2391,11 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
     // when there is no quote: the row is a four-column grid, so dropping the cell
     // would slide the value and the chevron a column to the left.
     React.createElement("div", { className: "holding-today" },
-      chipPct != null ? React.createElement("div", {
-        className: `holding-day mono ${chipUp ? 'text-up' : 'text-down'}` + (showExt ? ' is-ext' : '')
-      }, (chipUp ? '+' : '') + chipPct.toFixed(2) + '%')
+      chipPct != null ? React.createElement(React.Fragment, null,
+        React.createElement("div", {
+          className: `holding-day mono ${chipUp ? 'text-up' : 'text-down'}` + (showExt ? ' is-ext' : '')
+        }, (chipUp ? '+' : '') + chipPct.toFixed(2) + '%'),
+        dayAtClose ? React.createElement("div", { className: "day-chip-note" }, "At close") : null)
         : (showExt ? React.createElement("div", { className: "holding-day-empty mono" }, "—") : null)),
     // RIGHT — current value, with the total gain/loss smaller underneath it:
     // amount on top, % below. Deliberately below the value's weight (see

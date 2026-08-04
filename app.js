@@ -3773,6 +3773,9 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
   // masquerades as a live after-hours tape.
   const extFinal = hasExt && quote.extLive === false;
   const extLabel = quote.extKind === 'pre' ? 'Pre-market' : quote.extKind === 'post' ? (extFinal ? 'After close' : 'After-hours') : '';
+  // Is the day move a live figure, or the last completed session's? Drives the
+  // "Today" / "At close" label below. CRYPTO never closes, so it is always live.
+  const dayAtClose = !!market && market !== 'CRYPTO' && marketSession(market).phase !== 'open';
   const chgAbs = (typeof quote.change === 'number' && isFinite(quote.change)) ? quote.change : null;
   const extChgAbs = (typeof quote.extChange === 'number' && isFinite(quote.extChange)) ? quote.extChange : null;
   const prevClose = (typeof quote.prevClose === 'number' && isFinite(quote.prevClose) && quote.prevClose > 0) ? quote.prevClose : null;
@@ -3796,7 +3799,11 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
   showDailyRow && !hideChange && React.createElement("div", { className: "daily-block" },
     React.createElement("div", { className: "daily-col" },
       React.createElement("div", { className: "daily-row" },
-        React.createElement("span", { className: "daily-label" }, "Today"),
+        // "Today" only while the market is actually in its regular session. The
+        // day move is that session's open-to-close, so outside it the figure is
+        // the LAST COMPLETED session's — labelling that "Today" is what made a
+        // stale reading indistinguishable from a live one.
+        React.createElement("span", { className: "daily-label" }, dayAtClose ? "At close" : "Today"),
         React.createElement("span", { className: `daily-val mono ${up ? 'up' : 'down'}` },
           (up ? '+' : '') + quote.changePct.toFixed(2) + '%',
           chgAbs != null ? ' · ' + (up ? '+' : '-') + sym + fmtNum(Math.abs(chgAbs)) : ''
