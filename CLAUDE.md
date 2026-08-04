@@ -18,7 +18,7 @@ npx serve .                       # or: python -m http.server
 
 # Unit tests — zero-framework Node scripts, run individually (cwd doesn't matter):
 node backend/test/money-math.test.mjs
-for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (33)
+for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (41)
 
 # MONEY GATE — must be green on ANY change touching money/import code:
 #   money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers
@@ -68,7 +68,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v95`), or installed PWAs serve stale assets offline.
+`playbook-shell-v100`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -150,6 +150,18 @@ Adding a **new runtime file** additionally requires ALL of:
 - Yahoo pence/cents: JSE quotes arrive in cents (`ZAc`/`ZAX`), LSE in pence
   (`GBp`/`GBX`, and bare `GBP` on LSE is treated as pence too) — `centDivisor`
   in pb-core handles it; never hand-divide by 100 elsewhere.
+- **`meta.regularMarketPrice` is the last TRADED price, not the last REGULAR one.**
+  During pre/post it is the extended-hours price (and `meta.regularMarketTime` is
+  that print's time — `quoteTradedToday` already documents the same trap). Never
+  use it as a regular-session price without checking `marketSession(market).phase`
+  first; that mistake read Oracle's day as **+11.18%** against Yahoo's **+9.00%**
+  and separately collapsed every after-hours % to ~0.00% by measuring the session
+  against itself. Day move → `PBCore.deriveDayMove`; ext baseline → the regular
+  window's own last bar. `backend/test/day-move.test.mjs` pins both.
+- **Never put `includePrePost` on an `interval=1d` quote fetch.** It lets the
+  current day's *daily* bar absorb pre/post trades, so the bar the day move treats
+  as "the regular close" quietly stops being one. The intraday (`1m`) fetch keeps
+  the flag — that is where extended hours legitimately comes from.
 
 ## Current state (2026-07-26)
 

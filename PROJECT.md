@@ -171,14 +171,34 @@ Key mechanics:
   reference, which is what makes `React.memo` on leaf rows effective. `App()` itself
   does **not** subscribe to prices; only ~18 leaf consumers do via `usePricesMap()`.
   Result: one sweep ≈ one re-render of subscribers, not ~13 full-tree renders.
+- **The day move vs extended hours** — one rule, two numbers. Yahoo's chart
+  `meta.regularMarketPrice` is the **last traded** price, so during pre/post it is
+  the extended-hours price, not a regular-session one. Treating it as regular is
+  what made Oracle read **+11.18%** against Yahoo's **+9.00%** (the after-hours pop
+  folded into "Today"). Both numbers are now derived from the **bars**:
+  `PBCore.deriveDayMove` resolves *which* regular session `price` belongs to first
+  (chart has today's bar / session opened but no bar yet / market shut) and only
+  then picks the previous close relative to it, so the pair can never straddle two
+  sessions. `parseYahooQuote` uses `meta.regularMarketPrice` only while the market
+  is actually in its regular session (or for CRYPTO); otherwise the last daily bar
+  — a completed regular close — wins. The daily quote URLs therefore carry **no**
+  `includePrePost`: with it, the current day's daily bar absorbs pre/post trades
+  and stops being a regular close. Guarded by `backend/test/day-move.test.mjs`.
 - **Extended-hours quotes**: `PBCore.deriveIntradayExt` turns the 1m intraday chart
-  (fetched on the stale path with `includePrePost`) into the pre/post readout. Two
-  modes: a LIVE session (`extLive:true`, labels "Pre-market"/"After-hours", may
-  assert marketState PRE/POST) and a FINAL reading (`extLive:false`, label "After
-  close") — the post session's last trade vs that day's close, shown while the
-  market is fully closed (overnight/weekend) so the close→open move never vanishes
-  at the post bell. Windows anchor to `meta.tradingPeriods` (the bars' own day)
-  with a day-shifted `currentTradingPeriod` fallback.
+  (which *does* keep `includePrePost`) into the pre/post readout. Two modes: a LIVE
+  session (`extLive:true`, labels "Pre-market"/"After-hours", may assert marketState
+  PRE/POST) and a FINAL reading (`extLive:false`, label "After close") — the post
+  session's last trade vs that day's close, shown while the market is fully closed
+  (overnight/weekend) so the close→open move never vanishes at the post bell.
+  Windows anchor to `meta.tradingPeriods` (the bars' own day) with a day-shifted
+  `currentTradingPeriod` fallback via `resolveTradingWindows`. The move is measured
+  against the **regular window's own last close**, not `meta.regularMarketPrice` —
+  against the latter it compared the session to itself and every readout collapsed
+  to ~0.00%. A PRE session's baseline cannot come from a range=1d chart at all
+  (today's regular window is still empty), so `fetchQuote` passes yesterday's close
+  in as `opts.regularClose`; it also now fetches the intraday chart whenever the
+  clock says pre/post, since a fresh pre-market print made the daily quote look
+  current and the readout never appeared.
 - **Watchlist suggestions**: `PBData.fetchHotStocks` (Yahoo trending + day-gainers/
   most-actives screeners, best-effort per source) feeds a "Hot right now" chip
   cluster, cached in `pb.hotStocks.v1` (BACKUP_SKIP, 10-min TTL). `buildSuggestions`

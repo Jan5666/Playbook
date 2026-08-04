@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import PBData from '../../pb-data.js';
+import PBCore from '../../pb-core.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appSrc = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
@@ -14,7 +15,8 @@ const ok = (name, cond) => { console.log(`${cond ? '  ok  ' : ' FAIL '} ${name}`
 const near = (a, b, eps = 1e-6) => a != null && b != null && Math.abs(a - b) < eps;
 
 // A fresh Yahoo 5d/1d chart payload (regularMarketTime ~ now → not "stale", so
-// fetchQuote takes the daily-only path and makes exactly one proxied call).
+// fetchQuote takes the daily-only path and makes exactly one proxied call —
+// EXCEPT inside a pre/post session, see extHoursNow below).
 function yahooChart(symbol, price, prev, name) {
   const nowSec = Math.floor(Date.now() / 1000);
   return JSON.stringify({ chart: { result: [{
@@ -58,7 +60,15 @@ installYahoo({ AAPL: yahooChart('AAPL', 150, 145, 'Apple') });
 let q = await PBData.fetchQuote('AAPL', 'US');
 ok('fetchQuote returns parsed price', q && q.price === 150);
 ok('fetchQuote computes change vs prevClose', q && near(q.change, 5));
-ok('fetchQuote daily-only path = 1 fetch', fetchCalls.length === 1);
+// fetchQuote also pulls the 1m intraday chart whenever the market is in a pre or
+// post session — that is the only source of the extended-hours readout, and a
+// fresh pre-market print makes the daily quote look current, so `looksStale`
+// alone used to skip it and the pre-market chip never appeared. Outside ext hours
+// the daily-only path still makes exactly one call. Derived from the clock rather
+// than hard-coded so this reads the same at any hour.
+const extHoursNow = ['pre', 'post'].includes(PBCore.marketSession('US').phase);
+ok(`fetchQuote daily-only path = ${extHoursNow ? 2 : 1} fetch (US phase: ${PBCore.marketSession('US').phase})`,
+  fetchCalls.length === (extHoursNow ? 2 : 1));
 ok('fetchQuote populates name cache', PBData.cachedName('US', 'AAPL') === 'Apple');
 
 // parseStooqCsv via the Stooq fallback is tested directly on the moved function

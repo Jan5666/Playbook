@@ -16,8 +16,9 @@
   // These core helpers are used by the providers added in Task 3; pulled here so
   // the destructure is established once. (priceKey is the only one the proxy
   // ladder itself could need; the rest are forward-looking.)
-  const { yahooSymbol, centDivisor, parseYahooQuote, buildDailyBars, derivePrevClose,
-          deriveIntradayExt, plausiblePriceMove, MARKET_CURRENCY, priceKey, pLimit } = PBCore;
+  const { yahooSymbol, centDivisor, parseYahooQuote, buildDailyBars,
+          deriveDayMove, deriveIntradayExt, plausiblePriceMove, marketSession,
+          MARKET_CURRENCY, priceKey, pLimit } = PBCore;
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
   // pb-data never reaches into app.js globals (which would break the Node tests).
@@ -523,7 +524,7 @@
     if (isUnitTrustId(ticker)) return fetchUnitTrustQuote(ticker);
     // Two ranges in parallel-of-attempts: 5d for daily prevClose context, 1d/1m
     // for intraday freshness on actively-traded sessions. We try 5d first because
-    // its daily bars feed derivePrevClose; if Yahoo's regularMarketTime on that
+    // its daily bars feed deriveDayMove; if Yahoo's regularMarketTime on that
     // response is suspiciously old, we re-shoot with the 1m chart which carries
     // a fresher tick on extended-hours sessions.
     const sym = yahooSymbol(ticker, market);
@@ -533,7 +534,12 @@
     // the extra param, so it's harmless on the auto-poll path (left off there to
     // keep benefiting from proxy caching).
     const cb = opts.cacheBust ? `&_=${Date.now()}` : '';
-    const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d&includePrePost=true${cb}`;
+    // NO includePrePost on the daily chart, deliberately: with it, the current
+    // day's daily bar absorbs pre/post trades, so the bar that derivePrevClose /
+    // deriveDayMove treat as "the regular close" silently becomes an after-hours
+    // price and the day move overstates (Oracle read +11% against Yahoo's +9%).
+    // Extended hours comes from the intraday chart below, which keeps the flag.
+    const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d${cb}`;
     const dailyText = await fetchViaProxies(dailyUrl);
     let quote = null;
     if (dailyText) {
@@ -551,17 +557,41 @@
     const PRICE_FRESH_MS = 30 * 60 * 1000;
     const ageMs = quote && quote.fetchedAt ? Date.now() - (quote.regularMarketTime || quote.fetchedAt) : Infinity;
     const looksStale = !quote || ageMs > PRICE_FRESH_MS;
-    if (looksStale) {
+    // Extended hours needs this fetch too, and `looksStale` does not imply it: a
+    // pre-market print stamps regularMarketTime with a fresh time, so the daily
+    // quote looks current, the intraday call was skipped, and the pre-market
+    // readout never appeared at all. Ask whenever the clock says pre or post —
+    // OR whenever Yahoo itself says so. `marketState` is the half-day escape
+    // hatch: on an early close (13:00 ET) the clock kernel still reads 'open'
+    // (SESSIONS has no holiday calendar) while the tape is already POST, and
+    // without this the day move would silently absorb that afternoon's
+    // after-hours trading — the very bug this all exists to prevent.
+    const phase = market === 'CRYPTO' ? 'open' : marketSession(market).phase;
+    const feedState = (quote && quote.marketState || '').toUpperCase();
+    const inExtHours = phase === 'pre' || phase === 'post'
+      || feedState === 'PRE' || feedState === 'PREPRE'
+      || feedState === 'POST' || feedState === 'POSTPOST';
+    if (looksStale || inExtHours) {
       const intraUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1m&range=1d&includePrePost=true${cb}`;
       const intraText = await fetchViaProxies(intraUrl);
       if (intraText) {
         try {
           const data = JSON.parse(intraText);
           const result = data?.chart?.result?.[0];
-          const fresh = result ? parseYahooQuote(result, market) : null;
           // The extended-hours quote can only be derived from the intraday bars
           // (the daily endpoint has no pre/post data); null outside ext hours.
-          const ext = result ? deriveIntradayExt(result, market) : null;
+          // The daily quote's price is the previous regular close, which is the
+          // baseline a PRE session must measure against — today's regular window
+          // is still empty at that hour, so the chart alone cannot supply it.
+          const ext = result
+            ? deriveIntradayExt(result, market, Date.now(), { regularClose: quote ? quote.price : undefined })
+            : null;
+          // Prefer a bar-derived regular price over meta.regularMarketPrice: in
+          // pre/post the latter is the extended-hours price, and letting it land
+          // in `price` is what folded after-hours movement into the day move.
+          const fresh = result
+            ? parseYahooQuote(result, market, { regularPrice: ext ? ext.regPrice : undefined })
+            : null;
           if (fresh && fresh.price > 0) {
             // Unit-mismatch guard for the splice: parseYahooQuote normalises
             // `currency` to the filed market, so a divisor disagreement between
@@ -570,12 +600,25 @@
             // than mix pence onto a pounds quote (a ~100x day move).
             if (quote) {
               if (plausiblePriceMove(quote.price, fresh.price)) {
+                // Which price may be spliced in? Only one that belongs to the SAME
+                // regular session as the daily quote's prevClose — otherwise the
+                // pair straddles two sessions and the chip reports the sum of both
+                // moves. A bar-derived regular close wins whenever we have one:
+                // it comes from the chart's OWN trading windows, which know about
+                // half-days and holiday closes that the clock kernel does not, and
+                // its presence means the chart has already left the regular
+                // session. Only with no ext reading at all do we fall back to the
+                // clock — and then meta's "last traded" price is the live regular
+                // price, which is exactly what we want.
+                const sessionPrice = (ext && ext.regPrice > 0)
+                  ? ext.regPrice
+                  : (phase === 'open' ? fresh.price : quote.price);
                 // Splice fresher price/change/extended-hours onto the daily quote.
                 quote = {
                   ...quote,
-                  price: fresh.price,
-                  change: fresh.price - quote.prevClose,
-                  changePct: quote.prevClose > 0 ? (fresh.price - quote.prevClose) / quote.prevClose * 100 : 0,
+                  price: sessionPrice,
+                  change: sessionPrice - quote.prevClose,
+                  changePct: quote.prevClose > 0 ? (sessionPrice - quote.prevClose) / quote.prevClose * 100 : 0,
                   dayHigh: fresh.dayHigh || quote.dayHigh,
                   dayLow: fresh.dayLow || quote.dayLow,
                   extPrice: ext ? ext.extPrice : null,
@@ -664,7 +707,9 @@
       return q ? { price: q.price, changePct: q.changePct, fetchedAt: q.fetchedAt } : null;
     }
     const sym = yahooSymbol(ticker, market);
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d&includePrePost=true`;
+    // No includePrePost — same reason as fetchQuote's daily URL: it contaminates
+    // the current day's bar with extended-hours trades.
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d`;
     const text = await fetchViaProxies(url, { timeoutMs: 6000 });
     if (!text) return null;
     try {
@@ -676,9 +721,23 @@
       cacheName(market, ticker, meta.shortName || meta.longName);
       const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
       const divisor = centDivisor(market, currency);
-      const price = meta.regularMarketPrice / divisor;
       const bars = buildDailyBars(result, divisor);
-      const prevClose = derivePrevClose(bars, price, meta.chartPreviousClose / divisor, market);
+      // Same session-anchoring rule as the full fetchQuote path: meta's price is
+      // the last TRADED price, so outside the regular session the last daily bar
+      // (a completed regular close) is the one the day move is measured from.
+      const lastBar = bars.length ? bars[bars.length - 1] : null;
+      // marketState covers the half-day case the clock kernel misses (see the
+      // same guard in fetchQuote); this path never fetches an intraday chart, so
+      // it is the only signal available here.
+      const feedState = (meta.marketState || '').toUpperCase();
+      const outsideRegular = market !== 'CRYPTO' && bars.length >= 2
+        && (marketSession(market).phase !== 'open'
+            || feedState === 'PRE' || feedState === 'PREPRE'
+            || feedState === 'POST' || feedState === 'POSTPOST');
+      const price = outsideRegular ? lastBar.p : meta.regularMarketPrice / divisor;
+      const lastTick = typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null;
+      const move = deriveDayMove(bars, price, meta.chartPreviousClose / divisor, market, { lastTick });
+      const prevClose = move.prevClose;
       const changePct = prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0;
       return { price, changePct, fetchedAt: Date.now() };
     } catch (_e) { return null; }

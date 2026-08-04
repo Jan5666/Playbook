@@ -619,7 +619,9 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
    so the header's "Today" label sits over it. margin-left buys clearance from the
    company name — bump it and .holding-list-head .hlh-day TOGETHER or the label
    slides off the chip. */
-.holding-today { min-width: var(--row-day); display: flex; align-items: center; justify-content: center; margin-left: 14px; }
+/* Column, not row: the chip may carry an "At close" caption beneath it (see
+   .day-chip-note). With a single child the centring is identical to before. */
+.holding-today { min-width: var(--row-day); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; margin-left: 14px; }
 /* Right zone: current value large, the total gain/loss smaller underneath it.
    Extra left margin sets the value column apart from the day's move. */
 .holding-row .row-right { min-width: var(--row-val); margin-left: 14px; }
@@ -655,6 +657,16 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .holding-day-empty {
   font-family: var(--mono); font-size: var(--day-chip-fs); font-weight: 600;
   color: var(--text-dim); line-height: 1;
+}
+/* "At close" — the day chip is the market's own open-to-close move, so outside a
+   regular session it is the LAST COMPLETED session's and says so. Deliberately
+   tiny and dim: it qualifies the number above it, it does not compete with it.
+   Holdings-only: the watchlist card already carries session state in its foot
+   (SessionBadge, or the Pre-market/After-hours readout), and the 2px this costs
+   broke that card's height budget (verify-watchlist asserts <=115px). */
+.day-chip-note {
+  font-size: 8.5px; font-weight: 600; line-height: 1; letter-spacing: 0.02em;
+  color: var(--text-dim); text-align: center; white-space: nowrap;
 }
 /* Holdings summary — market value + a stacked invested/profit progress bar, with
    the day's move tucked underneath. One compact card per market tab. */
