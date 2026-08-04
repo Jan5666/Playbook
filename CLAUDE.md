@@ -68,7 +68,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v100`), or installed PWAs serve stale assets offline.
+`playbook-shell-v101`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -150,6 +150,16 @@ Adding a **new runtime file** additionally requires ALL of:
 - Yahoo pence/cents: JSE quotes arrive in cents (`ZAc`/`ZAX`), LSE in pence
   (`GBp`/`GBX`, and bare `GBP` on LSE is treated as pence too) — `centDivisor`
   in pb-core handles it; never hand-divide by 100 elsewhere.
+- **A fundamentals object carries TWO currencies and you must not collapse them.**
+  `currency` = what the STATEMENTS are filed in (revenue, EBITDA, cash flow, EPS,
+  NAV); `marketCapCurrency` = what the share TRADES in, which is the only thing a
+  market cap can be denominated in. They differ for real holdings — Naspers and
+  Datatec are rand-listed, dollar-reporting — and Yahoo's timeseries tags *every*
+  row (valuation rows included) with the reporting currency, so its tag can never
+  be trusted for the cap. Collapsing them printed R570bn as **"$600B"** with no
+  conversion. Read both through `PBCore.fundamentalsMoney(f, market, rates)`;
+  never do the FX in a view. `fundamentals-parse.test.mjs` renders the real
+  `FundamentalsBlock` in a `vm` to pin the labels, not just the numbers.
 - **`meta.regularMarketPrice` is the last TRADED price, not the last REGULAR one.**
   During pre/post it is the extended-hours price (and `meta.regularMarketTime` is
   that print's time — `quoteTradedToday` already documents the same trap). Never
@@ -255,3 +265,35 @@ something load-bearing.** Phase 5's whole premise (inc-38), `PROJECT.md`'s Phase
 #12's "flake" (structural, and already fixed elsewhere in the repo), and GAPS #12(c)'s "one stale
 assertion" (two — its partner was a false green). Every one was caught by a grep or a 30-line
 script. **Measure the claim before building on it.**
+
+## Fundamentals currency audit (2026-08-04)
+
+Jan reported non-US market caps being wildly wrong (Naspers **$600B**, Datatec **$20B** — both
+were the *rand* figure wearing a dollar sign). Root cause: a fundamentals object mixes a
+**statement** currency and a **listing** currency, and the code carried **one** field for both.
+`parseFundamentalsTimeseries` set it from the first `currencyCode` it met walking Yahoo's payload —
+a statement row — so for the many JSE names that report in USD the card took its `nativeCode ===
+'USD'` branch and skipped conversion entirely. It was never market-specific: a rand-*reporting*
+JSE name (Shoprite) converted fine, and a US-listed EUR reporter was silently ~8% high the other
+way. Fixed by splitting the field (`currency` + `marketCapCurrency`) and moving the valuation into
+`PBCore.fundamentalsMoney` — see the gotcha above. Cached objects heal on their own: the
+fundamentals TTL cache is `useState`-only, never persisted, and the helper falls back to the
+market's currency.
+
+The same sweep fixed, in the same pipeline: statement figures (revenue/EBITDA/FCF/EPS/NAV) labelled
+with the **market's** symbol instead of the reporting one; quoteSummary's 52-week range and 50/200-day
+averages left un-divided (100x on LSE/JSE); margins pairing a **TTM** numerator with a **fiscal-year**
+denominator; `v(a) || v(b)` chains discarding a legitimate `0`; a NAV premium computed across two
+currencies; analyst targets compared against the price without checking the target's currency (the S&P
+Global pool quotes some JSE names in USD → a ~-95% "upside"); a P/E captioned "Q ended" off
+`quarterlyMarketCap`'s **valuation** date; and `push()`'s sub-line silently dropped by the stats grid.
+Dividend yield — which no keyless source carries any more — is now derived from the chart API's own
+`events=div` payments (`PBCore.parseDividendEvents`, TTM sum ÷ price, so the pence/cents divisor
+cancels). `CACHE_NAME` -> **v101**.
+
+**The browser gate could not run for this change**: this container's egress policy 403s both
+`query1.finance.yahoo.com` and `unpkg.com`, and every `verify-*.mjs` harness loads React from unpkg.
+Substitute evidence: all 41 node suites green, `fundamentals-parse.test.mjs` grown 35 -> 103
+assertions (including a `vm` render of the real `FundamentalsBlock`), plus an ad-hoc evaluation of all
+10 shipped scripts in index.html order under browser stubs — 11 modals, 17 views, **38** bridge
+members, i.e. the `window.PBApp` floor is unchanged.

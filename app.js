@@ -418,10 +418,36 @@ async function fetchFundamentalsYahoo(ticker, market) {
       divisor = centDivisor(market, curr);
       const v = x => (x && typeof x.raw === 'number') ? x.raw : null;
       const pct = x => (x && typeof x.raw === 'number') ? x.raw * 100 : null;
+      // First value that is actually a number. `v(a) || v(b)` - what this used
+      // to be - throws away a legitimate 0 (a zero-beta ETF, a debt-free
+      // balance sheet) and silently reaches for the fallback field instead.
+      const firstNum = (...xs) => { for (const x of xs) { const n = v(x); if (n != null) return n; } return null; };
+      const firstPct = (...xs) => { for (const x of xs) { const n = v(x); if (n != null) return n * 100; } return null; };
       // Analyst targets arrive in the quote's own units - pence/cents for
       // GBp/ZAc listings - like bookValue; scale them to natural units so the
       // card's upside math against the (already-scaled) quote price is right.
       const tgt = x => { const n = v(x); return n != null ? n / divisor : null; };
+      // Two currencies, never one (see PBCore.fundamentalsMoney): the price
+      // module quotes the LISTING currency, financialData names the currency the
+      // STATEMENTS are filed in, and for a JSE name reporting in dollars those
+      // differ. `price` is the authority for anything priced, `financialCurrency`
+      // for anything reported.
+      const listingCcy = PBCore.baseCurrencyCode(curr, market);
+      const statementCcy = PBCore.baseCurrencyCode(fd.financialCurrency || curr, market);
+      // Per-share book value follows the STATEMENTS, so the pence/cents divisor
+      // only applies when the statements are filed in the listing's currency -
+      // dividing a dollar-denominated NAV by 100 because the share trades in
+      // cents is how a NAV premium turns into nonsense.
+      const bookRaw = v(ks.bookValue);
+      const bookValue = bookRaw != null ? (statementCcy === listingCcy ? bookRaw / divisor : bookRaw) : null;
+      // Yahoo has shipped BOTH conventions for summaryDetail.dividendYield
+      // (0.0243 and 2.43 for one and the same 2.43%) and nothing in the payload
+      // says which one arrived. Derive it instead from two figures whose units
+      // are unambiguous AND identical - the trailing annual rate over the price
+      // it is paid on - so the pence/cents divisor cancels out of the ratio.
+      const divRate = firstNum(sd.trailingAnnualDividendRate, sd.dividendRate);
+      const divPrice = firstNum(pr.regularMarketPrice, sd.previousClose);
+      const dividendYield = (divRate != null && divPrice > 0) ? divRate / divPrice * 100 : null;
       let earningsDate = null;
       let earningsDateEnd = null;
       const ed = ce?.earnings?.earningsDate;
@@ -437,19 +463,20 @@ async function fetchFundamentalsYahoo(ticker, market) {
       const revEst = v(ce?.earnings?.revenueAverage);
       const dvFwd = v(ce?.dividendDate);
       return {
-        marketCap: v(sd.marketCap) || v(pr.marketCap),
-        peTrailing: v(sd.trailingPE) || v(ks.trailingPE),
-        peForward: v(sd.forwardPE) || v(ks.forwardPE),
+        marketCap: firstNum(sd.marketCap, pr.marketCap),
+        peTrailing: firstNum(sd.trailingPE, ks.trailingPE),
+        peForward: firstNum(sd.forwardPE, ks.forwardPE),
         pegRatio: v(ks.pegRatio),
-        priceToBook: v(ks.priceToBook) || v(sd.priceToBook),
-        bookValue: v(ks.bookValue) != null ? v(ks.bookValue) / divisor : null,
-        priceToSales: v(ks.priceToSalesTrailing12Months) || v(sd.priceToSalesTrailing12Months),
+        priceToBook: firstNum(ks.priceToBook, sd.priceToBook),
+        bookValue,
+        priceToSales: firstNum(ks.priceToSalesTrailing12Months, sd.priceToSalesTrailing12Months),
         eps: v(ks.trailingEps),
         epsForward: v(ks.forwardEps),
-        beta: v(sd.beta) || v(ks.beta),
-        dividendYield: pct(sd.dividendYield) || pct(sd.trailingAnnualDividendYield),
+        beta: firstNum(sd.beta, ks.beta),
+        dividendYield,
+        dividendRate: divRate != null ? divRate / divisor : null,
         payoutRatio: pct(sd.payoutRatio),
-        profitMargin: pct(fd.profitMargins) || pct(ks.profitMargins),
+        profitMargin: firstPct(fd.profitMargins, ks.profitMargins),
         operatingMargin: pct(fd.operatingMargins),
         revenueGrowth: pct(fd.revenueGrowth),
         earningsGrowth: pct(fd.earningsGrowth),
@@ -470,12 +497,15 @@ async function fetchFundamentalsYahoo(ticker, market) {
         targetLow: tgt(fd.targetLowPrice),
         recommendation: fd.recommendationKey || null,
         analystCount: v(fd.numberOfAnalystOpinions),
-        volume: v(sd.volume) || v(sd.regularMarketVolume),
-        avgVolume: v(sd.averageVolume) || v(sd.averageVolume10days),
-        yearHigh: v(sd.fiftyTwoWeekHigh),
-        yearLow: v(sd.fiftyTwoWeekLow),
-        fiftyDayAvg: v(sd.fiftyDayAverage),
-        twoHundredDayAvg: v(sd.twoHundredDayAverage),
+        volume: firstNum(sd.volume, sd.regularMarketVolume),
+        avgVolume: firstNum(sd.averageVolume, sd.averageVolume10days),
+        // Price-shaped fields, so they carry the quote's pence/cents units just
+        // like the targets do. Left raw, a JSE 52-week range rendered 100x the
+        // share price it was drawn next to.
+        yearHigh: tgt(sd.fiftyTwoWeekHigh),
+        yearLow: tgt(sd.fiftyTwoWeekLow),
+        fiftyDayAvg: tgt(sd.fiftyDayAverage),
+        twoHundredDayAvg: tgt(sd.twoHundredDayAverage),
         earningsDate,
         earningsDateEnd,
         epsEst,
@@ -484,7 +514,11 @@ async function fetchFundamentalsYahoo(ticker, market) {
         sector: ap.sector || null,
         industry: ap.industry || null,
         employees: v(ap.fullTimeEmployees),
-        currency: curr,
+        // Statement currency (revenue, EBITDA, cash flow, EPS) vs listing
+        // currency (the market cap). `curr` is Yahoo's raw quote code and can be
+        // a minor unit ("ZAc"), so both are normalised to a major-unit base.
+        currency: statementCcy,
+        marketCapCurrency: listingCcy,
         divisor,
         fetchedAt: Date.now(),
         source: 'yahoo'
@@ -508,7 +542,9 @@ async function fetchFundamentalsPerplexity(ticker, market, companyName, apiKey) 
 
 Shape (null for unknown values):
 {
-  "marketCap": number (absolute, e.g. 2500000000000),
+  "currency": string (ISO 4217 code the FINANCIAL STATEMENTS below are reported in, e.g. "USD"),
+  "marketCapCurrency": string (ISO 4217 code the market cap is quoted in - the currency the share TRADES in),
+  "marketCap": number (absolute, in marketCapCurrency, e.g. 2500000000000),
   "peTrailing": number, "peForward": number, "pegRatio": number,
   "priceToBook": number, "priceToSales": number,
   "bookValue": number (book value / NAV per share, in reporting currency per share),
@@ -599,7 +635,14 @@ Shape (null for unknown values):
       epsEst: num(p.epsEst),
       sector: typeof p.sector === 'string' ? p.sector : null,
       industry: typeof p.industry === 'string' ? p.industry : null,
-      currency: '', divisor: 1,
+      // The model is asked to name both currencies explicitly. It used to name
+      // neither, and an empty string made every reader assume the market's own
+      // currency - so a dollar answer about a rand-listed company was read as
+      // rand. An unparseable/absent code falls back to the market, which is the
+      // right guess for the large majority of listings.
+      currency: PBCore.baseCurrencyCode(typeof p.currency === 'string' ? p.currency : '', market),
+      marketCapCurrency: PBCore.baseCurrencyCode(typeof p.marketCapCurrency === 'string' ? p.marketCapCurrency : '', market),
+      divisor: 1,
       fetchedAt: Date.now(),
       source: 'perplexity'
     };
@@ -742,8 +785,11 @@ async function fetchFundamentalsStockAnalysis(ticker, market) {
     industry: (o.infoTable || []).find(r => r.t === 'Industry')?.v || null,
     // stockanalysis reports each listing in its own exchange currency (rand for
     // JSE, pence-free pounds for LSE, …) in natural units — so the divisor is 1
-    // and the currency follows the market, not a hardcoded USD.
-    currency: (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code, divisor: 1,
+    // and the currency follows the market, not a hardcoded USD. Market cap is
+    // quoted the same way, hence the identical code for both.
+    currency: (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code,
+    marketCapCurrency: (MARKET_CURRENCY[market] || MARKET_CURRENCY.US).code,
+    divisor: 1,
     fetchedAt: Date.now(),
     source: 'stockanalysis'
   };
@@ -821,6 +867,35 @@ async function fetchFundamentalsYahooTimeseries(ticker, market) {
   }
   return null;
 }
+// Trailing-twelve-month dividends, straight off the chart API's dividend
+// events. Neither keyless stats source carries a dividend yield any more (the
+// timeseries never did, stockanalysis's symbol API is 404-dead), so without
+// this the card simply has no yield for almost every holding. Deliberately its
+// OWN url: `events=div` rides an interval=1d request, and the quote fetch's
+// daily bars are load-bearing for the day move (see the includePrePost rule in
+// CLAUDE.md) - they do not get to share a request.
+// The outer time-box is the lesson of the dead-API stall (fundamentals-parse
+// .test.mjs): this rides the same Promise.all that gates the card's stats
+// render, so a crawling proxy chain on a nice-to-have field must never be what
+// the user waits for. Worst case the card ships without a yield for one TTL.
+async function fetchDividendEventsYahoo(ticker, market) {
+  const sym = yahooSymbol(ticker, market);
+  const work = (async () => {
+    const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+    for (const h of hosts) {
+      const url = `https://${h}/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1y&events=div`;
+      const text = await fetchViaProxies(url, { timeoutMs: 5000 });
+      if (!text) continue;
+      let data;
+      try { data = JSON.parse(text); } catch (_e) { continue; }
+      const parsed = PBCore.parseDividendEvents(data, market);
+      if (parsed) return parsed;
+    }
+    return null;
+  })();
+  const timeBox = new Promise(resolve => setTimeout(() => resolve(null), 10000));
+  return Promise.race([work, timeBox]);
+}
 async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
   // Free keyless sources first, in parallel: stockanalysis.com (analyst
   // targets, earnings date, sector) and Yahoo's fundamentals-timeseries
@@ -831,20 +906,26 @@ async function fetchFundamentals(ticker, market, companyName, perplexityKey) {
   // fundamentals on either, so it goes straight to quoteSummary.
   const parts = [];
   if (market !== 'CRYPTO') {
-    const [fcast, sa, ts] = await Promise.all([
+    const [fcast, div, sa, ts] = await Promise.all([
       fetchAnalystForecastSA(ticker, market),
+      fetchDividendEventsYahoo(ticker, market),
       fetchFundamentalsStockAnalysis(ticker, market),
       fetchFundamentalsYahooTimeseries(ticker, market)
     ]);
     if (fcast) parts.push(fcast);
+    // Ahead of the stats sources on purpose: a yield computed from dividends
+    // actually paid, over the price they are paid on, beats any source's
+    // pre-computed field (Yahoo's is percent-or-fraction ambiguous).
+    if (div) parts.push(div);
     if (sa) parts.push(sa);
     if (ts) parts.push(ts);
   }
   // quoteSummary usually 401s without a crumb, but it's free to try when the
   // primary sources came up empty (and it's the only non-AI crypto source).
-  // The forecast part carries only analyst fields, so it doesn't count as
-  // having fundamentals - the stats fallbacks still fire without it.
-  const hasStats = () => parts.some(p => p.source !== 'sa-forecast');
+  // The forecast and dividend parts carry only their own narrow fields, so
+  // neither counts as having fundamentals - the stats fallbacks still fire.
+  const NON_STATS_SOURCES = new Set(['sa-forecast', 'yahoo-div']);
+  const hasStats = () => parts.some(p => !NON_STATS_SOURCES.has(p.source));
   if (!hasStats()) {
     const yahoo = await fetchFundamentalsYahoo(ticker, market);
     if (yahoo) parts.push(yahoo);
