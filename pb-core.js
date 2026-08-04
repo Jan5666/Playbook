@@ -124,11 +124,32 @@
     const a = new Date(tickMs), b = new Date(nowMs);
     return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
   }
-  // Quote-level wrapper: trust the quote's own last-tick timestamp when
-  // present; fall back to the session clock (open now ⇒ trading today) for
-  // sources that don't carry one (e.g. Stooq).
+  // Has `market`'s REGULAR session begun on its own current local day? This is
+  // deliberately NOT a marketSession() phase check: the JSE at 18:00 SAST is
+  // 'closed', but it plainly traded today and must keep counting until the
+  // viewer's day rolls over. Only the START of the regular session matters.
+  // Pre/after-hours are excluded on purpose -- before the regular open a quote's
+  // price is still yesterday's close, so its day move is yesterday's move.
+  function regularSessionStartedToday(market, nowMs = Date.now()) {
+    if (market === 'CRYPTO') return true; // 24/7, incl. weekends
+    const s = SESSIONS[market] || SESSIONS.US;
+    try {
+      const { wd, mins } = localWeekdayMins(s.tz, new Date(nowMs));
+      if (wd === 'Sat' || wd === 'Sun') return false;
+      return mins >= (typeof s.regOpen === 'number' ? s.regOpen : s.open);
+    } catch (_e) { return true; } // Intl failure: fail open, matching marketOpen
+  }
+  // Quote-level wrapper: the market must have opened for its regular session,
+  // AND the quote's own last tick must fall on the viewer's current local day.
+  // Sources with no tick timestamp (e.g. Stooq) fall back to the session clock.
   function quoteTradedToday(quote, market, nowMs = Date.now()) {
     if (!quote) return false;
+    // A market contributes nothing to "Today" until its regular session opens.
+    // Yahoo's regularMarketTime cannot answer this: a single pre-market print
+    // stamps today's date hours before the open, which is exactly how
+    // yesterday's whole US session used to land in the SA morning's "Today".
+    // We derive the answer from SESSIONS instead of trusting the feed.
+    if (!regularSessionStartedToday(market, nowMs)) return false;
     if (typeof quote.regularMarketTime === 'number' && isFinite(quote.regularMarketTime)) {
       return tradedToday(quote.regularMarketTime, nowMs);
     }
@@ -697,9 +718,18 @@
     // resolved a bare ticker to — that mismatch is what made US holdings
     // occasionally render in £/€. Falls back to Yahoo's value for unknown markets.
     currency = (MARKET_CURRENCY[market] && MARKET_CURRENCY[market].code) || currency;
+    const bars = buildDailyBars(result, divisor);
     try {
-      prevClose = derivePrevClose(buildDailyBars(result, divisor), price, prevClose, market);
+      prevClose = derivePrevClose(bars, price, prevClose, market);
     } catch (_e) {}
+    // Which session is `prevClose` anchored against? derivePrevClose assumes the
+    // LAST bar is the current session, so when Yahoo has not yet printed today's
+    // daily bar it silently reaches a session too far back and `price -
+    // prevClose` becomes yesterday's move. Recording the last bar's market-local
+    // day lets the "Today" aggregates refuse a quote whose prevClose is stale,
+    // instead of quietly double-counting. null = unknown (no timestamped bars).
+    const lastBar = bars.length ? bars[bars.length - 1] : null;
+    const sessionDay = lastBar && lastBar.t != null ? marketDayKey(lastBar.t, market) : null;
     return {
       price,
       prevClose,
@@ -726,6 +756,7 @@
       // this to detect stale data — fetchedAt only tracks when WE saw it, which
       // can drift far from the actual market clock when an upstream feed lags.
       regularMarketTime: typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null,
+      sessionDay,
       fetchedAt: Date.now(),
       source: 'yahoo'
     };
@@ -1329,6 +1360,7 @@ function rotationSummary(classified) {
     marketSession,
     tradedToday,
     quoteTradedToday,
+    regularSessionStartedToday,
     fmtAgo,
     refreshChipState,
     priceKey,
