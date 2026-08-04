@@ -109,6 +109,36 @@ if (typeof parseYahooQuote === 'function') {
   q = parseYahooQuote(stale, 'US');
   ok('parseYahooQuote bars override stale meta prevClose', q.prevClose === 145 && near(q.change, 5));
 
+  // ── sessionDay: which session prevClose is anchored against ────────────────
+  // derivePrevClose assumes the LAST bar is the current session. When Yahoo has
+  // not yet printed today's daily bar it reaches a session too far back, so
+  // price-prevClose becomes yesterday's whole move. sessionDay records the last
+  // bar's market-local day so the "Today" aggregates can refuse a stale anchor.
+  ok('parseYahooQuote sessionDay = last bar market-local day',
+    q.sessionDay === '2026-06-17');
+  const preOpenRes = {
+    meta: { regularMarketPrice: 215, currency: 'USD' },
+    timestamp: [sec('2026-07-31T13:30:00Z'), sec('2026-08-03T13:30:00Z')],
+    indicators: { quote: [{ close: [205, 215] }] }
+  };
+  const preOpenQ = parseYahooQuote(preOpenRes, 'US');
+  ok('parseYahooQuote sessionDay lags when today has no bar yet',
+    preOpenQ.sessionDay === '2026-08-03' && preOpenQ.prevClose === 205,
+    'prevClose is 2 sessions back, so sessionDay must flag it');
+  ok('parseYahooQuote sessionDay null when bars carry no timestamps',
+    parseYahooQuote({
+      meta: { regularMarketPrice: 10, currency: 'USD' },
+      timestamp: ['x', 'y'], indicators: { quote: [{ close: [9, 10] }] }
+    }, 'US').sessionDay === null);
+  ok('parseYahooQuote sessionDay null when there are no bars',
+    parseYahooQuote({ meta: { regularMarketPrice: 10, currency: 'USD' } }, 'US').sessionDay === null);
+  ok('parseYahooQuote sessionDay is market-local, not UTC',
+    parseYahooQuote({
+      meta: { regularMarketPrice: 10, currency: 'USD' },
+      timestamp: [sec('2026-06-15T18:00:00Z'), sec('2026-06-17T02:00:00Z')],
+      indicators: { quote: [{ close: [9, 10] }] }
+    }, 'US').sessionDay === '2026-06-16', '02:00 UTC is still the 16th in New York');
+
   ok('parseYahooQuote null result → null', parseYahooQuote(null, 'US') === null);
   ok('parseYahooQuote missing regularMarketPrice → null', parseYahooQuote({ meta: { currency: 'USD' } }, 'US') === null);
 }
@@ -121,6 +151,30 @@ for (const fn of ['buildDailyBars', 'derivePrevClose', 'deriveIntradayExt', 'par
   ok(`app.js has no local function ${fn}`, !new RegExp(`function\\s+${fn}\\s*\\(`).test(appSrc));
 }
 ok('app.js has no local function marketDayKey', !/function\s+marketDayKey\s*\(/.test(appSrc));
+
+// ── Anti-drift: the "Today" gate must stay wired the way the fix left it ─────
+const coreSrc = readFileSync(new URL('../../pb-core.js', import.meta.url), 'utf8');
+ok('pb-core defines regularSessionStartedToday',
+  /function\s+regularSessionStartedToday\s*\(/.test(coreSrc));
+ok('quoteTradedToday still gates on regularSessionStartedToday',
+  /function\s+quoteTradedToday[\s\S]{0,600}?regularSessionStartedToday\(market, nowMs\)/.test(coreSrc));
+ok('pb-core exports regularSessionStartedToday',
+  typeof PBCore.regularSessionStartedToday === 'function');
+ok('parseYahooQuote returns a sessionDay field', /\n\s*sessionDay,/.test(coreSrc));
+
+// The intraday 1m splice must NOT overwrite sessionDay: prevClose is retained
+// from the daily quote, so the day it is anchored to has to travel with it. A
+// 1m chart's bars are all today, which would stamp sessionDay "today" and
+// defeat the stale-anchor check entirely.
+const dataSrc = readFileSync(new URL('../../pb-data.js', import.meta.url), 'utf8');
+const spliceEnd = dataSrc.indexOf("source: 'yahoo+intraday'");
+const splice = spliceEnd > 0 ? dataSrc.slice(Math.max(0, spliceEnd - 1200), spliceEnd) : '';
+// Precondition, so the guard below can never pass because the window missed the
+// code it is meant to inspect: these two keys ARE in the override list, so if we
+// cannot see them we are looking at the wrong span and the guard is vacuous.
+ok('anti-drift window actually covers the intraday splice',
+  spliceEnd > 0 && /regularMarketTime\s*:/.test(splice) && /extPrice\s*:/.test(splice));
+ok('intraday splice does not override sessionDay', !/sessionDay\s*:/.test(splice));
 
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll quote-parsers tests passed');
 process.exit(failures ? 1 : 0);

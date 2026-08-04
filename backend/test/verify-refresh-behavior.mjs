@@ -4,7 +4,8 @@
 //      proxies can't serve a stale cached quote; the auto-poll does NOT cache-bust.
 //   3. The user's own positions are fetched BEFORE the static recommendation
 //      lists (VOO lands last), so the portfolio "today" move repaints first.
-//   4. The portfolio "Today" pill renders from the merged quotes.
+//   4. The portfolio "Today" pill reflects the merged quotes — present once the
+//      seeded market's regular session has opened, absent before it.
 // Network is fully mocked: every Yahoo chart request (via the corsmirror proxy
 // shape the app tries first) returns a crafted quote, and each call is logged.
 // Run: node backend/test/verify-refresh-behavior.mjs
@@ -14,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
+import PBCore from '../../pb-core.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..', '..');
@@ -156,9 +158,18 @@ try {
      firstPos >= 0 && (vooIdx === -1 || firstPos < vooIdx),
      `firstPos=${firstPos} voo=${vooIdx}`);
 
-  // The portfolio "Today" pill should have rendered (AAPL & GOOGL are up days).
+  // The portfolio "Today" pill. Both seeded positions are US, and a market only
+  // contributes to "Today" once its REGULAR session has opened — before that its
+  // price is still yesterday's close, so counting it would report yesterday's
+  // move as today's. So the pill is expected to be present after 09:30 ET and
+  // ABSENT before it. Asserting both directions keeps this deterministic at any
+  // hour; the old unconditional assertion silently depended on the wall clock.
+  const usOpen = PBCore.regularSessionStartedToday('US');
   const todayPill = await evals(ws, `const el=document.querySelector('.dash-today-val, .hsum-today'); return el ? el.textContent.trim() : null;`);
-  ok('portfolio "Today" pill renders', !!todayPill, String(todayPill));
+  ok(usOpen ? 'portfolio "Today" pill renders (US regular session open)'
+            : 'portfolio "Today" pill absent (US has not opened yet)',
+     usOpen ? !!todayPill : todayPill === null,
+     `${String(todayPill)} @ US open=${usOpen}`);
 
   // ---- MANUAL REFRESH ----
   await evals(ws, `window.__log = []; return true;`);

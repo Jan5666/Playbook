@@ -14,6 +14,7 @@ const CURRENCY_SYMBOLS = PBContent.CURRENCY_SYMBOLS;
 const MARKET_CURRENCY = PBCore.MARKET_CURRENCY;
 const contribInDisplay = PBCore.contribInDisplay;
 const quoteTradedToday = PBCore.quoteTradedToday;
+const marketDayKey = PBCore.marketDayKey;
 const fetchHistory = PBData.fetchHistory;
 // PBContent/PBCore module globals for the extracted Current (Holdings) view (Phase 4 inc 25).
 const MARKETS = PBContent.MARKETS;
@@ -2003,24 +2004,36 @@ function DashboardView(_ref6) {
   const totalPnl = totalValue - totalCost;
   const totalPnlPct = totalCost > 0 ? totalPnl / totalCost * 100 : 0;
   // Today's movement across the whole book, in the display currency. Each
-  // holding's day change (price − previous close) is valued in its market's
-  // native currency then converted; yesterday's value anchors the percentage.
-  // Only markets that have actually TRADED during the user's current local
-  // calendar day count — a pre-open US book otherwise reports yesterday's US
-  // session as part of today's move.
-  let todayChange = 0, todayPrevValue = 0, todayHasData = false;
+  // holding's day change (price - previous close) is valued in its market's
+  // native currency, then converted.
+  // Two gates gate a holding into this sum, both load-bearing:
+  //   1. quoteTradedToday - the market's REGULAR session must have opened today.
+  //      Before that, price is still yesterday's close and prevClose the one
+  //      before it, so the difference is YESTERDAY's move.
+  //   2. sessionDay - prevClose must be anchored to today's session. Just after
+  //      an open, Yahoo may not have printed today's daily bar yet, which sends
+  //      derivePrevClose a session too far back. null = unknown (an old cached
+  //      or non-Yahoo quote) and falls through to gate 1 alone.
+  let todayChange = 0, todayHasData = false;
+  const todayNow = Date.now();
   positions.forEach(p => {
     const q = prices[priceKey(p.market, p.ticker)];
     if (!q || !isFinite(q.price) || typeof q.prevClose !== 'number' || !(q.prevClose > 0)) return;
     if (!quoteTradedToday(q, p.market)) return;
+    if (q.sessionDay != null && q.sessionDay !== marketDayKey(todayNow, p.market)) return;
     const native = marketCurrency(p.market);
     const valNow = convertCcy(p.shares * q.price, native, displayCurrency, rates);
     const valPrev = convertCcy(p.shares * q.prevClose, native, displayCurrency, rates);
     if (valNow != null && valPrev != null) {
-      todayChange += valNow - valPrev; todayPrevValue += valPrev; todayHasData = true;
+      todayChange += valNow - valPrev; todayHasData = true;
     }
   });
-  const todayPct = (todayHasData && todayPrevValue > 0) ? todayChange / todayPrevValue * 100 : null;
+  // Percentage of the WHOLE portfolio, so each market's move adds into the same
+  // denominator: +R2,500 on a R250k book reads 1%, and when the US opens later
+  // and adds another R2,500 the day reads 2% in total. Dividing by only the
+  // subset that happened to be trading made the pill read "+2.31%" directly
+  // beneath a R251k total when it was really 2.31% of the R149k that was open.
+  const todayPct = (todayHasData && totalValue > 0) ? todayChange / totalValue * 100 : null;
   const todayUp = todayChange >= 0;
   const [contribModalOpen, setContribModalOpen] = useState(false);
   const [contribImportOpen, setContribImportOpen] = useState(false);
@@ -2511,19 +2524,21 @@ function CurrentView(_ref7) {
   // different currency (crypto in ZAR) is converted into native first.
   const computeMarketSummary = (rows, market) => {
     const native = marketCurrency(market);
-    let value = 0, cost = 0, prevValue = 0, dayChange = 0, anyPrice = false, anyDay = false;
+    let value = 0, cost = 0, dayChange = 0, anyPrice = false, anyDay = false;
+    const nowMs = Date.now();
     rows.forEach(p => {
       const q = prices[priceKey(market, p.ticker)];
       const c = convertCcy(p.shares * p.costBasis, positionCostCcy(p), native, rates);
       cost += (c != null ? c : p.shares * p.costBasis);
       if (q && isFinite(q.price)) {
         value += p.shares * q.price; anyPrice = true;
-        // Day line only counts once this market has traded today.
-        if (typeof q.prevClose === 'number' && q.prevClose > 0 && quoteTradedToday(q, market)) {
-          prevValue += p.shares * q.prevClose;
+        // Same two gates as the Dashboard hero: the market's regular session must
+        // have opened today, and prevClose must be anchored to that session.
+        if (typeof q.prevClose === 'number' && q.prevClose > 0 && quoteTradedToday(q, market)
+            && (q.sessionDay == null || q.sessionDay === marketDayKey(nowMs, market))) {
           dayChange += p.shares * (q.price - q.prevClose);
           anyDay = true;
-        } else { prevValue += p.shares * q.price; }
+        }
       }
     });
     return {
@@ -2531,7 +2546,10 @@ function CurrentView(_ref7) {
       gain: anyPrice ? value - cost : null,
       gainPct: (anyPrice && cost > 0) ? (value - cost) / cost * 100 : null,
       dayChange: anyDay ? dayChange : null,
-      dayPct: (anyDay && prevValue > 0) ? dayChange / prevValue * 100 : null
+      // Percentage of this market's whole value, matching the Dashboard hero's
+      // denominator rule. The old anchor mixed non-traded holdings in at their
+      // CURRENT price, so the two "Today" figures could never agree.
+      dayPct: (anyDay && value > 0) ? dayChange / value * 100 : null
     };
   };
 

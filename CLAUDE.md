@@ -126,6 +126,11 @@ Adding a **new runtime file** additionally requires ALL of:
   retype these strings. Move content with Node slice scripts (read → splice →
   write). In Node scripts, a `.replace()` search spanning a line break needs
   `\r?\n` or it silently no-ops.
+- **`pb-views.js` is invisible to ripgrep.** It contains 2 NUL bytes (~offsets 21687/21833),
+  so `rg`/Grep classify it as binary and **silently skip it** — grepping `quoteTradedToday`
+  returns *no hits* in the very file holding both call sites, with no warning. Use `grep -a`
+  (or `python`) for pb-views.js, and never conclude "this symbol is unused" from a Grep miss
+  alone. ~2,700 lines of view code hide behind this.
 - **`node --check` + green node suites can still mean a broken app** (e.g. app.js
   referencing a const you moved out). Always run
   `verify-refresh-behavior.mjs` after touching module boundaries; also sanity-check
