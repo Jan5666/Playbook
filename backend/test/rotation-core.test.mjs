@@ -28,7 +28,8 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
 
 const { aggregateSectorSnapshot, classifyRotation, pairFlows, buildRotationFetchPlan,
         buildIntradaySeries, combineSectorSeries, downsampleRotationSeries,
-        rotationSummary, ROTATION_THRESHOLDS, priceKey } = PBCore;
+        rotationSummary, ROTATION_THRESHOLDS, priceKey,
+        THIN_SECTOR_MIN_NAMES, THIN_SECTOR_MIN_SHARE } = PBCore;
 
 // ── 1. aggregateSectorSnapshot ───────────────────────────────────────────────
 {
@@ -356,7 +357,225 @@ const SECTOR_ETF = { Technology: { etf: 'XLK' }, Energy: { etf: 'XLE' }, Financi
   ok('summary: rotation sentence names both sides + net', /Out of/.test(sum) && /into/.test(sum) && /Market net/.test(sum));
 }
 
-// ── 9. Anti-drift source guards ──────────────────────────────────────────────
+// ── 9. Cap-weighted participation (vs the headcount breadth) ─────────────────
+// The universes are top-N-by-cap subsets, so the adv/dec headcount is the stat
+// most distorted by truncation. participation weighs the same question by cap.
+{
+  // One huge advancer, two tiny decliners: headcount says 33% up, cap says 90%.
+  const { sectors, market } = aggregateSectorSnapshot([
+    { ticker: 'BIG', sector: 'Tech', m: 900, changePct: 1 },
+    { ticker: 'S1', sector: 'Tech', m: 50, changePct: -1 },
+    { ticker: 'S2', sector: 'Tech', m: 50, changePct: -1 },
+  ]);
+  ok('participation: headcount breadth is 1/3', near(market.adv / (market.adv + market.dec), 1 / 3));
+  ok('participation: cap-weighted is 0.90', near(market.participation, 0.9));
+  ok('participation: advWeight/decWeight split 900/100', near(market.advWeight, 900) && near(market.decWeight, 100));
+  ok('participation: reported per sector too', near(sectors[0].participation, 0.9));
+}
+{
+  // Flat-only sector: nothing directional, so participation is null (not 0) —
+  // "no data" must never render as "0% advancing".
+  const { sectors, market } = aggregateSectorSnapshot([{ ticker: 'F', sector: 'Util', m: 10, changePct: 0 }]);
+  ok('participation: all-flat sector -> null', sectors[0].participation === null);
+  ok('participation: all-flat market -> null', market.participation === null);
+}
+{
+  // Unquoted rows contribute to neither weight bucket.
+  const { market } = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'Tech', m: 100, changePct: 2 },
+    { ticker: 'B', sector: 'Tech', m: 400, changePct: null },
+  ]);
+  ok('participation: unquoted cap excluded (1.0, not 0.2)', near(market.participation, 1));
+}
+{
+  const c = classifyRotation(aggregateSectorSnapshot([
+    { ticker: 'BIG', sector: 'Tech', m: 900, changePct: 1 },
+    { ticker: 'S1', sector: 'Energy', m: 100, changePct: -1 },
+  ]));
+  ok('participation: surfaced on the classification', near(c.participation, 0.9));
+}
+
+// ── 10. Thin-sector flag ─────────────────────────────────────────────────────
+{
+  // Energy is a single name AND ~1% of quoted cap; Tech is neither.
+  const { sectors } = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'Tech', m: 500, changePct: 1 },
+    { ticker: 'B', sector: 'Tech', m: 490, changePct: 1 },
+    { ticker: 'C', sector: 'Energy', m: 10, changePct: -1 },
+  ]);
+  const tech = sectors.find(s => s.sector === 'Tech');
+  const energy = sectors.find(s => s.sector === 'Energy');
+  ok('thin: single-name sector flagged', energy.thin === true);
+  ok('thin: broad sector not flagged', tech.thin === false);
+  ok('thin: thresholds exported (2 names / 1% cap)', THIN_SECTOR_MIN_NAMES === 2 && THIN_SECTOR_MIN_SHARE === 0.01);
+}
+{
+  // Two names but under the cap-share floor -> still thin.
+  const { sectors } = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'Tech', m: 1000, changePct: 1 },
+    { ticker: 'B', sector: 'RE', m: 4, changePct: 1 },
+    { ticker: 'C', sector: 'RE', m: 4, changePct: 1 },
+  ]);
+  ok('thin: 2 names but <1% of cap is thin', sectors.find(s => s.sector === 'RE').thin === true);
+}
+{
+  // A sector with no quotes at all is absent, not thin — wPct null already says it.
+  const { sectors } = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'Tech', m: 100, changePct: 1 },
+    { ticker: 'Q', sector: 'Util', m: 50, changePct: null },
+  ]);
+  const util = sectors.find(s => s.sector === 'Util');
+  ok('thin: zero-quoted sector is not flagged thin', util.thin === false && util.wPct === null);
+}
+
+// ── 11. dispersionRatio (scale-free companion to dispersion) ─────────────────
+{
+  // Same absolute dispersion, different market move -> different ratio. This is
+  // the number that makes a JSE day comparable to an S&P day.
+  const snap = synthSnapshot([
+    { sector: 'A', wPct: 1.0, m: 100, adv: 8, dec: 2 },
+    { sector: 'B', wPct: -1.0, m: 100, adv: 2, dec: 8 },
+  ]);
+  const c = classifyRotation(snap);
+  ok('dispersionRatio: flat market floors denominator at FLAT (0.15)',
+     near(c.dispersionRatio, c.dispersion / ROTATION_THRESHOLDS.FLAT));
+  const snap2 = synthSnapshot([
+    { sector: 'A', wPct: 2.0, m: 100, adv: 8, dec: 2 },
+    { sector: 'B', wPct: 0.0, m: 100, adv: 2, dec: 8 },
+  ]);
+  const c2 = classifyRotation(snap2);
+  ok('dispersionRatio: divides by |marketPct| once above FLAT',
+     near(c2.dispersionRatio, c2.dispersion / Math.abs(c2.marketPct)));
+  ok('dispersionRatio: never negative', c.dispersionRatio >= 0 && c2.dispersionRatio >= 0);
+}
+{
+  // Reported, never branched on: the verdict ladder must be untouched by it.
+  const snap = synthSnapshot([{ sector: 'A', wPct: 0.25, m: 100, adv: 7, dec: 3 }]);
+  ok('dispersionRatio: verdict unchanged by its presence', classifyRotation(snap).verdict === 'inflow');
+}
+
+// ── 12. regularClose (the extended-hours split) ──────────────────────────────
+{
+  // Grid: one pre bar, two regular, one post. The series ends at +3% on the post
+  // print but closed the regular session at +2%.
+  const built = buildIntradaySeries(
+    [{ key: 'A', weight: 1, prevClose: 100, points: [
+      { t: 10, p: 100.5 }, { t: 20, p: 101 }, { t: 30, p: 102 }, { t: 40, p: 103 },
+    ] }],
+    { regularStart: 20, regularEnd: 30 }
+  );
+  ok('regularClose: final cum is the post value (+3)', near(built.series[0].cum[3], 3));
+  ok('regularClose: regular close is +2, not +3', near(built.series[0].regularClose, 2));
+  ok('regularClose: benchmark gets one too', near(built.benchmarkRegularClose, 2));
+}
+{
+  // No regular bars at all (pre-market only) -> null rather than a pre value.
+  const built = buildIntradaySeries(
+    [{ key: 'A', weight: 1, prevClose: 100, points: [{ t: 10, p: 101 }] }],
+    { regularStart: 50, regularEnd: 90 }
+  );
+  ok('regularClose: pre-only session -> null', built.series[0].regularClose === null);
+}
+{
+  // Without a regular window every slot is 'regular', so it is just the last value.
+  const built = buildIntradaySeries([{ key: 'A', weight: 1, prevClose: 100, points: [{ t: 1, p: 101 }, { t: 2, p: 104 }] }], {});
+  ok('regularClose: no window -> last value (+4)', near(built.series[0].regularClose, 4));
+}
+
+// ── 13. Plan coverage-based name selection ───────────────────────────────────
+{
+  // Sector cap 1000: NPN 600 + PRX 300 = 90% at 2 names, but minN forces 3.
+  const def = { id: 'x', market: 'JSE', constituents: [
+    { t: 'NPN', s: 'Tech', m: 600 }, { t: 'PRX', s: 'Tech', m: 300 },
+    { t: 'AVV', s: 'Tech', m: 60 }, { t: 'B4', s: 'Tech', m: 30 }, { t: 'B5', s: 'Tech', m: 10 },
+  ] };
+  const plan = buildRotationFetchPlan(def, { coverage: 0.70, minN: 3, maxN: 6 });
+  const tech = plan.legs[0];
+  ok('coverage: minN floors the pick at 3 even when 2 suffice', tech.symbols.length === 3);
+  ok('coverage: reports achieved cap share (96%)', near(tech.covered, 0.96));
+  ok('coverage: reports the sector name count (5)', tech.names === 5);
+  ok('coverage: leg weight stays the FULL sector cap', near(tech.weight, 1000));
+}
+{
+  // Long flat tail: maxN caps the fetch even though coverage is unmet.
+  const cons = [];
+  for (let i = 0; i < 20; i++) cons.push({ t: 'T' + i, s: 'Fin', m: 10 });
+  const plan = buildRotationFetchPlan({ id: 'x', market: 'LSE', constituents: cons }, { coverage: 0.90, minN: 3, maxN: 6 });
+  ok('coverage: maxN caps the leg at 6 symbols', plan.legs[0].symbols.length === 6);
+  ok('coverage: covered reports the shortfall (30%), not 90%', near(plan.legs[0].covered, 0.3));
+}
+{
+  // Legacy call with no coverage keeps the exact old top-N behaviour.
+  const def = { id: 'x', market: 'JSE', constituents: [
+    { t: 'A', s: 'Tech', m: 600 }, { t: 'B', s: 'Tech', m: 400 }, { t: 'C', s: 'Tech', m: 30 }, { t: 'D', s: 'Tech', m: 10 },
+  ] };
+  const plan = buildRotationFetchPlan(def, { topN: 3 });
+  ok('coverage: absent -> legacy topN slice of 3', plan.legs[0].symbols.length === 3);
+  ok('coverage: absent -> covered still reported', near(plan.legs[0].covered, 1030 / 1040));
+}
+{
+  // ETF legs: covered is null (the SPDR tracks its own basket, not this index's
+  // sector cap) and the proxy ticker is named so the UI can label the line.
+  const usDef = { id: 'sp500', market: 'US', constituents: [
+    { t: 'AAPL', s: 'Technology', m: 100 }, { t: 'MSFT', s: 'Technology', m: 80 },
+  ] };
+  const plan = buildRotationFetchPlan(usDef, { sectorEtf: SECTOR_ETF, topN: 3 });
+  ok('coverage: etf leg covered is null, not 1', plan.legs[0].covered === null);
+  ok('coverage: etf leg names the proxy', plan.legs[0].proxy === 'XLK');
+}
+{
+  // Withholding sectorEtf is how the caller keeps S&P ETFs off the Dow/Nasdaq
+  // tabs — same US def, stocks mode, real constituents.
+  const usDef = { id: 'dow', market: 'US', constituents: [
+    { t: 'AAPL', s: 'Technology', m: 100 }, { t: 'MSFT', s: 'Technology', m: 80 },
+  ] };
+  const plan = buildRotationFetchPlan(usDef, { coverage: 0.70, minN: 3, maxN: 6 });
+  ok('coverage: US def without sectorEtf -> stocks mode', plan.mode === 'stocks');
+  ok('coverage: uses the index own names, not XLK', plan.legs[0].symbols.map(s => s.ticker).join() === 'AAPL,MSFT');
+}
+
+// ── 14. combineSectorSeries / downsample carry the new fields ────────────────
+{
+  const plan = { mode: 'stocks', legs: [
+    { key: 'Tech', weight: 100, names: 4, covered: 0.75, proxy: null, symbols: [{ ticker: 'A', market: 'US', w: 100 }] },
+  ] };
+  const bars = { 'US:A': { prevClose: 100, regularStart: 20, regularEnd: 30,
+    points: [{ t: 10, p: 100.5, v: 1 }, { t: 20, p: 101, v: 1 }, { t: 30, p: 102, v: 1 }, { t: 40, p: 105, v: 1 }] } };
+  const built = combineSectorSeries(plan, bars);
+  const line = built.series[0];
+  ok('combine: sector line carries regularClose (+2, not +5)', near(line.regularClose, 2));
+  ok('combine: sector line carries names/covered', line.names === 4 && near(line.covered, 0.75));
+  ok('combine: benchmarkRegularClose reported', near(built.benchmarkRegularClose, 2));
+  const thin = downsampleRotationSeries(built, 2);
+  ok('downsample: regularClose survives thinning', near(thin.series[0].regularClose, 2));
+  ok('downsample: names/covered survive thinning', thin.series[0].names === 4 && near(thin.series[0].covered, 0.75));
+  ok('downsample: benchmarkRegularClose survives', near(thin.benchmarkRegularClose, 2));
+}
+
+// ── 15. rotationSummary denominator counts every quoted sector ───────────────
+{
+  // Utilities prices but nets exactly zero, so it is in neither flow list. The
+  // old denominator (inflows+outflows) would have said "1 of 2".
+  const snap = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'Tech', m: 100, changePct: 1 },
+    { ticker: 'B', sector: 'Energy', m: 10, changePct: -0.2 },
+    { ticker: 'C', sector: 'Util', m: 50, changePct: 0 },
+  ]);
+  const c = classifyRotation(snap);
+  ok('summary: quotedSectors counts the zero-net sector (3)', c.quotedSectors === 3);
+  ok('summary: inflows+outflows would have undercounted (2)', c.inflows.length + c.outflows.length === 2);
+  ok('summary: sentence uses the full field', /of 3 sectors/.test(rotationSummary(c)));
+}
+{
+  // An unquoted sector is NOT in the denominator — it never priced.
+  const snap = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'Tech', m: 100, changePct: 1 },
+    { ticker: 'Q', sector: 'Util', m: 50, changePct: null },
+  ]);
+  ok('summary: unquoted sector excluded from the denominator', classifyRotation(snap).quotedSectors === 1);
+}
+
+// ── 16. Anti-drift source guards ─────────────────────────────────────────────
 ok('guard: app.js registers the rotation tab', /\['rotation',\s*'Rotation'\]/.test(appSrc));
 ok('guard: app.js binds MarketRotationView from PBViews', /const\s+MarketRotationView\s*=\s*PBViews\.MarketRotationView/.test(appSrc));
 ok('guard: app.js does NOT define function MarketRotationView', !/function\s+MarketRotationView\s*\(/.test(appSrc));

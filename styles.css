@@ -4327,14 +4327,47 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 
 /* ── Market rotation (Rotation tab) ── */
+/* Colour contract for this whole block: --emerald / --rose mean THE SIGN OF A
+   NUMBER and nothing else. Series identity uses --rot-1..6, a categorical ramp
+   with no green and no red in it, so a coloured line can never imply a sign it
+   doesn't have. Mixing the two is what painted negative percentages green. */
+:root, :root[data-theme="dark"] {
+  --rot-1: #60a5fa; --rot-2: #a78bfa; --rot-3: #fbbf24;
+  --rot-4: #22d3ee; --rot-5: #f472b6; --rot-6: #4ade80;
+}
+:root[data-theme="light"] {
+  --rot-1: #2563eb; --rot-2: #7c3aed; --rot-3: #b45309;
+  --rot-4: #0891b2; --rot-5: #be185d; --rot-6: #15803d;
+}
 .rot-view { display: flex; flex-direction: column; gap: 14px; }
 .rot-view .up { color: var(--emerald); }
 .rot-view .down { color: var(--rose); }
+.rot-view .flat { color: var(--text-muted); }
 .rot-empty { color: var(--text-dim); font-size: 13px; padding: 20px 4px; text-align: center; }
+/* Every figure in this tab is a column of digits that ticks; without tabular
+   figures the columns jitter on each refresh. */
+.rot-stat-val, .rot-row-num, .rot-val-lbl, .rot-flow-amt, .rot-head-val,
+.rot-head-side-val, .rot-cross-val, .rot-tkr-chip, .rot-row-sub { font-variant-numeric: tabular-nums; }
+
+/* Loading skeleton — a 145-symbol sweep is long enough that a bare progress bar
+   reads as a broken screen. */
+.rot-skeleton { display: flex; flex-direction: column; gap: 14px; }
+.rot-sk-card, .rot-sk-panel {
+  border-radius: 14px; border: 1px solid var(--border); background: var(--bg-raised);
+  position: relative; overflow: hidden;
+}
+.rot-sk-card { height: 190px; }
+.rot-sk-panel { height: 260px; }
+.rot-sk-panel.short { height: 150px; }
+.rot-sk-card::after, .rot-sk-panel::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-dim) 10%, transparent), transparent);
+  animation: pb-sweep 1.5s ease-in-out infinite;
+}
 
 .rot-verdict-card {
   background: var(--bg-raised); border: 1px solid var(--border);
-  border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 14px;
 }
 .rot-verdict-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .rot-verdict-pill {
@@ -4344,7 +4377,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .rot-verdict-pill.v-inflow, .rot-verdict-pill.v-inflow-rotation { background: color-mix(in srgb, var(--emerald) 16%, transparent); color: var(--emerald); }
 .rot-verdict-pill.v-outflow, .rot-verdict-pill.v-outflow-rotation { background: color-mix(in srgb, var(--rose) 16%, transparent); color: var(--rose); }
-.rot-verdict-pill.v-rotation { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
+.rot-verdict-pill.v-rotation { background: color-mix(in srgb, var(--rot-1) 16%, transparent); color: var(--rot-1); }
 .rot-verdict-pill.v-mixed { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
 .rot-verdict-pill.v-quiet { background: color-mix(in srgb, var(--text-dim) 16%, transparent); color: var(--text-muted); }
 .rot-phase-chip {
@@ -4354,43 +4387,136 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 }
 .rot-phase-chip.live { color: var(--emerald); }
 .rot-phase-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); animation: pb-fade 1.6s ease-in-out infinite; }
+
+/* Headline: the cap-weighted market move is what the tab is about, so it gets
+   the size. It used to be one 14px cell in a four-up grid of equals. */
+.rot-headline { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.rot-head-main, .rot-head-side { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rot-head-side { align-items: flex-end; text-align: right; }
+.rot-head-val { font-family: var(--serif); font-weight: 700; font-size: 38px; line-height: 1; letter-spacing: -0.02em; }
+.rot-head-side-val { font-family: var(--mono); font-weight: 700; font-size: 19px; line-height: 1.1; }
+.rot-head-lbl { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
 .rot-detail { font-size: 14px; line-height: 1.45; color: var(--text-muted); }
-.rot-stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+
+.rot-stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; align-items: start; }
 .rot-stat { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: var(--bg-elev); border-radius: 9px; }
+.rot-stat.open { background: color-mix(in srgb, var(--rot-1) 8%, var(--bg-elev)); }
+.rot-stat-head {
+  display: flex; align-items: center; gap: 4px; background: none; border: 0; padding: 0;
+  cursor: pointer; text-align: left; color: inherit; width: 100%;
+}
 .rot-stat-label { font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
-.rot-stat-val { font-family: var(--mono); font-size: 14px; font-weight: 700; }
-.rot-conf-low { font-family: var(--mono); font-size: 11px; color: var(--amber); }
+.rot-stat-q {
+  font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1;
+  width: 13px; height: 13px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim); border: 1px solid var(--border-strong);
+}
+.rot-stat-head:hover .rot-stat-q { color: var(--text); border-color: var(--text-dim); }
+.rot-stat-val { font-family: var(--mono); font-size: 15px; font-weight: 700; }
+.rot-stat-note { font-family: var(--mono); font-size: 9.5px; color: var(--text-dim); line-height: 1.3; }
+.rot-stat-help { font-size: 11.5px; line-height: 1.45; color: var(--text-muted); margin-top: 5px; }
+
+.rot-coverage {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+  padding-top: 2px; border-top: 1px solid var(--border);
+}
+.rot-cov-note::before { content: '\00b7'; margin-right: 10px; }
+.rot-conf-low { color: var(--amber); }
 
 .rot-panel { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .rot-panel-flat { align-items: center; }
-.rot-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.rot-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .rot-panel-title { font-family: var(--serif); font-weight: 700; font-size: 15px; }
 .rot-panel-sub { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.rot-sort { display: flex; gap: 4px; }
+.rot-sort-btn {
+  font-family: var(--mono); font-size: 10px; font-weight: 600; padding: 3px 8px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev);
+  color: var(--text-dim); cursor: pointer;
+}
+.rot-sort-btn.active { color: var(--text); border-color: var(--text-dim); background: var(--bg-raised); }
 
-.rot-flow-wrap { width: 100%; }
+.rot-flow-wrap { width: 100%; position: relative; }
 .rot-flow-svg { display: block; width: 100%; height: auto; overflow: visible; }
 .rot-flow-block { transition: opacity 0.2s; }
 .rot-flow-block.out { fill: color-mix(in srgb, var(--rose) 20%, var(--bg-elev)); stroke: color-mix(in srgb, var(--rose) 45%, transparent); stroke-width: 1; }
 .rot-flow-block.in { fill: color-mix(in srgb, var(--emerald) 20%, var(--bg-elev)); stroke: color-mix(in srgb, var(--emerald) 45%, transparent); stroke-width: 1; }
+.rot-flow-block.other { fill: var(--bg-elev); stroke: var(--border-strong); stroke-dasharray: 3 3; }
 .rot-flow-block.dim { opacity: 0.3; }
-.rot-flow-name { font-family: var(--mono); font-size: 11px; font-weight: 600; fill: var(--text); pointer-events: none; }
-.rot-flow-amt { font-family: var(--mono); font-size: 9.5px; fill: var(--text-dim); pointer-events: none; }
-.rot-flow-ribbon { opacity: 0.55; transition: opacity 0.2s; pointer-events: none; }
+.rot-flow-block:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.rot-flow-name { font-family: var(--mono); font-size: 11.5px; font-weight: 600; fill: var(--text); pointer-events: none; }
+.rot-flow-amt { font-family: var(--mono); font-size: 10px; fill: var(--text-muted); pointer-events: none; }
+/* Ribbons are interactive now — the whole point of the diagram is tracing one
+   sector's flow, which pointer-events: none made impossible. */
+.rot-flow-ribbon { opacity: 0.85; transition: opacity 0.2s; cursor: pointer; }
+.rot-flow-ribbon:hover { opacity: 1; }
 .rot-flow-ribbon.dim { opacity: 0.12; }
-.rot-grad-from { stop-color: var(--rose); stop-opacity: 0.5; }
-.rot-grad-to { stop-color: var(--emerald); stop-opacity: 0.55; }
 .rot-flow-note { font-family: var(--mono); font-size: 12px; fill: var(--text-dim); }
+.rot-flow-note-h { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
 .rot-flow-empty { fill: none; stroke: var(--border); stroke-dasharray: 4 4; stroke-width: 1; opacity: 0.7; }
+.rot-flow-tip {
+  position: absolute; transform: translate(-50%, -50%); pointer-events: none; z-index: 3;
+  display: flex; flex-direction: column; gap: 1px; padding: 5px 9px; border-radius: 8px;
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28); white-space: nowrap;
+}
+.rot-tip-main { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--text); }
+.rot-tip-sub { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+.rot-flow-collapse {
+  align-self: center; font-family: var(--mono); font-size: 10px; font-weight: 600;
+  padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text-dim); cursor: pointer; margin-top: 6px;
+}
 
 .rot-chart-outer { display: flex; flex-direction: column; gap: 10px; }
-.rot-chart-wrap { width: 100%; }
-.rot-chart-svg { display: block; width: 100%; height: auto; }
-.rot-line { transition: opacity 0.2s; }
-.rot-line-bench { stroke: var(--text); stroke-width: 2.25; stroke-linejoin: round; }
+.rot-chart-wrap { width: 100%; position: relative; }
+.rot-chart-svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.rot-line { transition: opacity 0.2s; stroke-linejoin: round; stroke-linecap: round; }
+/* Extended hours is a different day from the one the sector list is measuring,
+   so it is drawn as a visibly separate thing rather than a silent continuation. */
+.rot-line-ext { stroke-dasharray: 3 3; }
+.rot-line-bench { stroke: var(--text); stroke-width: 2.25; stroke-linejoin: round; fill: none; }
+.rot-line-bench-halo { stroke: var(--text); stroke-width: 7; stroke-linejoin: round; stroke-linecap: round; fill: none; }
 .rot-band { fill: color-mix(in srgb, var(--bg-elev) 60%, transparent); }
+.rot-band-lbl { font-family: var(--mono); font-size: 8.5px; fill: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; }
+.rot-grid { stroke: var(--border); stroke-width: 1; opacity: 0.5; }
 .rot-zero { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
 .rot-axis-lbl { font-family: var(--mono); font-size: 9px; fill: var(--text-dim); }
-.rot-val-lbl { font-family: var(--mono); font-size: 10px; }
+.rot-grid-lbl { font-size: 8.5px; opacity: 0.75; }
+.rot-val-lbl { font-family: var(--mono); font-size: 10px; font-weight: 600; }
+.rot-val-lbl.up { fill: var(--emerald); }
+.rot-val-lbl.down { fill: var(--rose); }
+.rot-val-lbl.flat { fill: var(--text-muted); }
+.rot-val-lbl.bench { font-weight: 700; }
+.rot-val-lbl.bench.flat { fill: var(--text); }
+.rot-cross { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 2 2; }
+.rot-cross-dot { stroke: var(--bg-raised); stroke-width: 1.5; }
+.rot-cross-dot.bench { fill: var(--text); }
+/* Scrub readout. Deliberately a strip UNDER the plot rather than a tooltip over
+   it: at phone width a floating card covers a large share of the very lines it
+   is describing. It occupies the legend's slot, so the panel height is stable
+   whether you are scrubbing or not. */
+.rot-cross-strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+  padding: 7px 9px; border-radius: 9px; min-height: 30px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+}
+.rot-cross-time {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--text-dim);
+  display: flex; align-items: center; gap: 5px;
+}
+.rot-cross-sess {
+  font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 999px; background: var(--bg-elev); color: var(--text-dim);
+}
+.rot-cross-row { display: inline-flex; align-items: center; gap: 5px; }
+.rot-cross-dotm { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; }
+.rot-cross-name { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
+.rot-cross-row.bench .rot-cross-name { color: var(--text); font-weight: 700; }
+.rot-cross-val { font-family: var(--mono); font-size: 10.5px; font-weight: 600; }
+
 .rot-legend { display: flex; flex-wrap: wrap; gap: 6px; }
 .rot-legend-chip {
   display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px;
@@ -4407,33 +4533,75 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .rot-row:first-child { border-top: none; }
 .rot-row.hl { background: var(--bg-elev); border-radius: 8px; }
 .rot-row.faded { opacity: 0.45; }
+.rot-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; border-radius: 8px; }
 .rot-row-main { display: grid; grid-template-columns: auto 1fr auto auto auto; align-items: center; gap: 8px; }
 .rot-row-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
-.rot-row-name { font-family: var(--mono); font-weight: 700; font-size: 13px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.rot-row-sub { font-family: var(--mono); font-size: 9.5px; font-weight: 500; color: var(--text-dim); }
+.rot-row-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rot-row-title { font-family: var(--mono); font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.rot-thin-tag {
+  font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; padding: 1px 5px; border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 18%, transparent); color: var(--amber);
+}
+.rot-row-sub { font-family: var(--mono); font-size: 9.5px; font-weight: 500; color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 8px; }
+.rot-row-sub-sep::before, .rot-row-sub-bps::before { content: '\00b7'; margin-right: 8px; }
+.rot-row-sub-bps { display: none; }
 .rot-row-num { font-family: var(--mono); font-size: 13px; font-weight: 600; text-align: right; white-space: nowrap; }
-.rot-row-bps { color: var(--text-dim); font-size: 11px; min-width: 48px; }
-.rot-row-flow { min-width: 66px; }
+.rot-row-bps { color: var(--text-dim); font-size: 11px; min-width: 52px; }
+.rot-row-flow { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; min-width: 66px; }
+.rot-row-flow-bn { font-family: var(--mono); font-size: 9.5px; color: var(--text-dim); white-space: nowrap; }
+.rot-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; padding-left: 17px; }
+.rot-cov-chip {
+  font-family: var(--mono); font-size: 9px; color: var(--text-dim);
+  padding: 1px 6px; border-radius: 5px; background: var(--bg-elev); border: 1px solid var(--border);
+}
+.rot-act { display: inline-flex; align-items: center; gap: 6px; }
+.rot-act-track { width: 54px; height: 4px; border-radius: 999px; background: var(--bg-elev); overflow: hidden; }
+.rot-act-fill { display: block; height: 100%; border-radius: 999px; opacity: 0.8; }
+.rot-act-lbl { font-family: var(--mono); font-size: 9px; color: var(--text-dim); }
 .rot-row-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; padding-left: 17px; }
+/* Tone is set from the value's sign in JS. .up/.down here must never be applied
+   by position — that is the bug that showed a sector's best-but-still-negative
+   name in green. */
 .rot-tkr-chip {
+  display: inline-flex; align-items: center; gap: 4px;
   font-family: var(--mono); font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--bg-elev); cursor: pointer; color: var(--text-muted);
 }
 .rot-tkr-chip.up { color: var(--emerald); }
 .rot-tkr-chip.down { color: var(--rose); }
+.rot-tkr-chip.flat { color: var(--text-muted); }
+.rot-tkr-rank { font-size: 7px; opacity: 0.65; line-height: 1; }
+
+/* Screen-reader mirror of the sector table: the SVGs above carry a single
+   aria-label and are otherwise opaque. */
+.rot-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 
 .rot-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-top: 2px; }
 .rot-foot-method { font-family: var(--mono); font-size: 10px; line-height: 1.4; color: var(--text-dim); max-width: 60%; }
 .rot-foot-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .rot-updated { font-family: var(--mono); font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.rot-updated.stale { color: var(--amber); }
 
 @media (max-width: 680px) {
   .rot-stats-row { grid-template-columns: repeat(2, 1fr); }
+  .rot-head-val { font-size: 32px; }
   .rot-row-main { grid-template-columns: auto 1fr auto auto; }
+  /* "vs market" is the one number that answers whether a sector led or lagged,
+     so on narrow screens it moves into the sub-line instead of being dropped. */
   .rot-row-bps { display: none; }
+  .rot-row-sub-bps { display: inline; }
   .rot-foot-method { max-width: 100%; }
   .rot-foot { flex-direction: column; align-items: stretch; gap: 8px; }
   .rot-foot-right { justify-content: space-between; }
+  .rot-cross-strip { gap: 4px 9px; font-size: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rot-phase-dot { animation: none; }
+  .rot-sk-card::after, .rot-sk-panel::after { animation: none; }
 }
 
 /* ─── Instrument logos ──────────────────────────────────────────────────────

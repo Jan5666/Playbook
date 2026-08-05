@@ -236,7 +236,9 @@ function PicksView(_ref9) {
     }, React.createElement("div", {
       className: "kv-label"
     }, "Upside"), React.createElement("div", {
-      className: "kv-val up"
+      // Tone from the value, not the slot: once the price passes the target
+      // upsideNow goes negative, and a hardcoded 'up' painted that green.
+      className: "kv-val " + (upsideNow == null ? "up" : upsideNow >= 0 ? "up" : "down")
     }, upsideNow != null ? (upsideNow >= 0 ? '+' : '') + upsideNow.toFixed(0) + '%' : '+' + p.upside + '%'))), React.createElement("div", {
       className: "text-sm text-muted mt-3",
       style: {
@@ -408,51 +410,127 @@ function OverviewView(_ref1) {
 // day" chart. All the number-crunching lives in PBCore (node-tested); this file
 // is fetch orchestration + SVG. Flow is a price-based proxy (index weight x day
 // move), NOT observed volume — labelled as an estimate throughout.
+//
+// Two rules this file holds to, because breaking either produced real bugs:
+//   1. COLOUR HAS ONE MEANING. Emerald/rose say "the sign of this number".
+//      Series identity is a separate categorical ramp (ROT_SERIES) that contains
+//      no green and no red. The old palette spent emerald on "rank 1 inflow",
+//      which painted negative percentages green whenever the snapshot rank and
+//      the intraday value disagreed — which is routine, they have different
+//      baselines and one of them includes extended hours.
+//   2. TONE COMES FROM THE ROUNDED VALUE. -0.004 must not render as a red
+//      "-0.00%"; it rounds to zero, so it reads flat.
 const RE = React.createElement;
-const ROT_PALETTE = ['var(--blue)', 'var(--amber)', 'var(--purple)', 'var(--brand)'];
+// Identity ramp: six hues, no green, no red. Sectors past the sixth mover fall
+// through to ROT_DIM so the eye lands on what actually moved.
+const ROT_SERIES = ['var(--rot-1)', 'var(--rot-2)', 'var(--rot-3)', 'var(--rot-4)', 'var(--rot-5)', 'var(--rot-6)'];
 const ROT_DIM = 'var(--text-dim)';
+const ROT_BENCH_KEY = '__bench';
 function rotShort(sector) { return (PBContent.ROTATION_SECTOR_SHORT && PBContent.ROTATION_SECTOR_SHORT[sector]) || sector; }
-function rotBn(sym, v, signed) {
-  const a = Math.abs(v);
-  const d = a >= 100 ? 0 : a >= 10 ? 1 : 2;
-  const sign = v < 0 ? '−' : (signed ? '+' : '');
-  return sign + sym + a.toFixed(d) + 'bn';
+
+// Round first, THEN take the sign — so a value that rounds to zero is flat, not
+// a signed zero wearing a colour. Every formatter and every tone below goes
+// through these two.
+function rotRound(v, dp) {
+  const f = Math.pow(10, dp);
+  const r = Math.round(v * f) / f;
+  return r === 0 ? 0 : r; // collapse -0
 }
-function rotPct(v, signed) { return (signed && v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+function rotTone(v, dp) {
+  if (v == null || !isFinite(v)) return 'flat';
+  const r = rotRound(v, dp == null ? 2 : dp);
+  return r > 0 ? 'up' : r < 0 ? 'down' : 'flat';
+}
+function rotSign(r, signed) { return r < 0 ? '\u2212' : (signed && r > 0 ? '+' : ''); }
+function rotPct(v, signed) {
+  if (v == null || !isFinite(v)) return '\u2013';
+  const r = rotRound(v, 2);
+  return rotSign(r, signed) + Math.abs(r).toFixed(2) + '%';
+}
+function rotBn(sym, v, signed) {
+  if (v == null || !isFinite(v)) return '\u2013';
+  const mag = Math.abs(v);
+  const dp = mag >= 100 ? 0 : mag >= 10 ? 1 : 2;
+  const r = rotRound(v, dp);
+  const a = Math.abs(r);
+  // Four-digit billions stop being readable; roll to trillions.
+  if (a >= 1000) return rotSign(r, signed) + sym + (a / 1000).toFixed(2) + 'tn';
+  return rotSign(r, signed) + sym + a.toFixed(dp) + 'bn';
+}
+// Basis points of the index's own quoted cap. This is the honest unit for flow:
+// the absolute bn figure inherits every error in the hand-maintained static caps
+// in data.js, while the bps share only depends on their RELATIVE sizes, and the
+// per-sector figures sum exactly to the market move in bp.
+function rotContribBps(deltaCap, quotedWeight) {
+  return quotedWeight > 0 ? deltaCap / quotedWeight * 10000 : null;
+}
+function rotBps(v, signed) {
+  if (v == null || !isFinite(v)) return '\u2013';
+  const r = Math.round(v);
+  // A real but sub-basis-point flow is not zero. Printing '0bp' beside a
+  // non-zero currency figure reads as a contradiction.
+  if (r === 0 && v !== 0) return (v < 0 ? '\u2212' : (signed ? '+' : '')) + '<1bp';
+  return rotSign(r, signed) + Math.abs(r) + 'bp';
+}
+function rotPctOf(frac) {
+  return (frac == null || !isFinite(frac)) ? '\u2013' : Math.round(frac * 100) + '%';
+}
 function rotTime(ms, tz) {
   try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(ms)); }
   catch (_e) { return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
 }
-// #1 inflow -> emerald, #1 outflow -> rose, next four movers -> a fixed palette,
-// everything else dimmed. Returns sector -> css color; sectors absent from the
-// map render in the dim default so the eye lands on the movers that matter.
+// sector -> identity colour, ranked by |estimated flow|. Thin sectors (one or two
+// names wearing a sector's name — PBCore flags them) are deliberately excluded:
+// giving a single stock a headline colour presents it as a sector signal.
 function rotColors(classified) {
   const map = {};
   if (!classified) return map;
-  if (classified.inflows[0]) map[classified.inflows[0].sector] = 'var(--emerald)';
-  if (classified.outflows[0]) map[classified.outflows[0].sector] = 'var(--rose)';
-  const rest = classified.inflows.slice(1).concat(classified.outflows.slice(1))
-    .sort((a, b) => Math.abs(b.deltaCap) - Math.abs(a.deltaCap));
-  let pi = 0;
-  for (const s of rest) { if (map[s.sector]) continue; if (pi < ROT_PALETTE.length) map[s.sector] = ROT_PALETTE[pi++]; }
+  const ranked = (classified.inflows || []).concat(classified.outflows || [])
+    .filter(s => !s.thin)
+    .slice().sort((a, b) => Math.abs(b.deltaCap) - Math.abs(a.deltaCap));
+  let i = 0;
+  for (const s of ranked) {
+    if (i >= ROT_SERIES.length) break;
+    if (map[s.sector]) continue;
+    map[s.sector] = ROT_SERIES[i++];
+  }
   return map;
 }
+// "Nice" axis steps (1/2/5 x 10^n) covering [min,max] — the chart had no y scale
+// at all beyond a single 0% label, which made every line unreadable in absolute
+// terms.
+function rotTicks(min, max, want) {
+  const span = max - min;
+  if (!(span > 0)) return [0];
+  const raw = span / Math.max(1, want || 4);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  const out = [];
+  for (let t = Math.ceil(min / step) * step; t <= max + step * 1e-6; t += step) {
+    out.push(Math.abs(t) < step * 1e-6 ? 0 : t);
+    if (out.length > 12) break;
+  }
+  return out;
+}
+
 // Fold each side to <=6 blocks (+ an "Others" bucket) and re-key the exact
 // pairFlows ribbons onto the folded blocks. Sentinels for the two "Others"
-// buckets can't collide with real GICS sector names.
-const ROT_OUT_OTHER = 'out-others', ROT_IN_OTHER = 'in-others';
-function rotFlowDisplay(classified, flows) {
+// buckets can't collide with real GICS sector names. expandOut/expandIn let the
+// user open a bucket instead of it being a dead end.
+const ROT_OUT_OTHER = 'out-others', ROT_IN_OTHER = 'in-others';
+function rotFlowDisplay(classified, flows, expandOut, expandIn) {
   const MAXSIDE = 6;
-  function fold(arr, sentinel) {
-    const mk = s => ({ sector: s.sector, label: rotShort(s.sector), amt: Math.abs(s.deltaCap), wPct: s.wPct });
-    if (arr.length <= MAXSIDE) return { blocks: arr.map(mk), folded: new Set() };
+  function fold(arr, sentinel, expanded) {
+    const mk = s => ({ sector: s.sector, label: rotShort(s.sector), amt: Math.abs(s.deltaCap), wPct: s.wPct, thin: !!s.thin });
+    if (expanded || arr.length <= MAXSIDE) return { blocks: arr.map(mk), folded: new Set(), hidden: 0 };
     const head = arr.slice(0, MAXSIDE).map(mk);
     const tail = arr.slice(MAXSIDE);
-    head.push({ sector: sentinel, label: 'Others (' + tail.length + ')', amt: tail.reduce((t, s) => t + Math.abs(s.deltaCap), 0), wPct: null });
-    return { blocks: head, folded: new Set(tail.map(s => s.sector)) };
+    head.push({ sector: sentinel, label: 'Others (' + tail.length + ')', amt: tail.reduce((t, s) => t + Math.abs(s.deltaCap), 0), wPct: null, thin: false });
+    return { blocks: head, folded: new Set(tail.map(s => s.sector)), hidden: tail.length };
   }
-  const outF = fold(classified.outflows, ROT_OUT_OTHER);
-  const inF = fold(classified.inflows, ROT_IN_OTHER);
+  const outF = fold(classified.outflows, ROT_OUT_OTHER, expandOut);
+  const inF = fold(classified.inflows, ROT_IN_OTHER, expandIn);
   const rem = (name, folded, sentinel) => folded.has(name) ? sentinel : name;
   const agg = new Map();
   for (const f of (flows.flows || [])) {
@@ -461,7 +539,7 @@ function rotFlowDisplay(classified, flows) {
     agg.set(key, (agg.get(key) || 0) + f.amount);
   }
   const ribbons = [...agg.entries()].map(([k, amount]) => { const parts = k.split(' '); return { from: parts[0], to: parts[1], amount }; });
-  return { outBlocks: outF.blocks, inBlocks: inF.blocks, ribbons };
+  return { outBlocks: outF.blocks, inBlocks: inF.blocks, ribbons, outHidden: outF.hidden, inHidden: inF.hidden };
 }
 
 // Measures a container element via ResizeObserver, returning [ref, width].
@@ -488,16 +566,22 @@ function useContainerWidth() {
 }
 
 // The rotation ribbons: outflow sectors stacked left (losing cap), inflow right
-// (gaining), curved bands between them sized by estimated matched flow.
+// (gaining), curved bands between them sized by estimated matched flow. Every
+// ribbon and block is hoverable, focusable and keyboard-operable — this is the
+// feature's signature visual and it used to be pointer-events: none, i.e. a
+// picture you could not interrogate.
 function RotationFlowDiagram(_p) {
-  const { classified, flows, sym, highlight, onHighlight } = _p;
+  const { classified, flows, sym, quotedWeight, colorMap, highlight, onHighlight } = _p;
   const [wrapRef, width] = useContainerWidth();
-  const disp = useMemo(() => rotFlowDisplay(classified, flows), [classified, flows]);
+  const [expandOut, setExpandOut] = useState(false);
+  const [expandIn, setExpandIn] = useState(false);
+  const [tip, setTip] = useState(null);
+  const disp = useMemo(() => rotFlowDisplay(classified, flows, expandOut, expandIn), [classified, flows, expandOut, expandIn]);
   const W = Math.max(280, width || 0);
-  const colW = Math.max(88, Math.min(150, W * 0.28));
+  const colW = Math.max(88, Math.min(160, W * 0.28));
   const maxRows = Math.max(disp.outBlocks.length, disp.inBlocks.length, 1);
-  const H = Math.max(220, Math.min(340, 44 * maxRows));
-  const GAP = 6, MINH = 24;
+  const H = Math.max(240, Math.min(420, 46 * maxRows));
+  const GAP = 6, MINH = 26;
   function layoutSide(blocks) {
     const n = blocks.length;
     if (n === 0) return [];
@@ -511,6 +595,7 @@ function RotationFlowDiagram(_p) {
     return out;
   }
   const els = [];
+  const defs = [];
   if (width > 20) {
     const outL = layoutSide(disp.outBlocks), inL = layoutSide(disp.inBlocks);
     const outA = {}, inA = {};
@@ -518,6 +603,17 @@ function RotationFlowDiagram(_p) {
     inL.forEach(b => { inA[b.sector] = { yTop: b.y, h: b.h, used: 0, sum: 0 }; });
     disp.ribbons.forEach(r => { if (outA[r.from]) outA[r.from].sum += r.amount; if (inA[r.to]) inA[r.to].sum += r.amount; });
     const x1 = colW, x2 = W - colW, dx = x2 - x1;
+    // One gradient per source block, so a ribbon can be traced back to where it
+    // came from. Previously every band shared one rose->emerald fill, which made
+    // the diagram decorative rather than readable.
+    const srcColor = name => (name === ROT_OUT_OTHER ? ROT_DIM : (colorMap[name] || ROT_DIM));
+    outL.forEach((b, i) => {
+      defs.push(RE('linearGradient', { key: 'g' + i, id: 'rotFlowGrad' + i, x1: '0', y1: '0', x2: '1', y2: '0' },
+        RE('stop', { offset: '0%', stopColor: srcColor(b.sector), stopOpacity: 0.55 }),
+        RE('stop', { offset: '100%', stopColor: srcColor(b.sector), stopOpacity: 0.12 })));
+    });
+    const gradIdx = {};
+    outL.forEach((b, i) => { gradIdx[b.sector] = i; });
     const ribbons = disp.ribbons.slice().sort((a, b) => (outA[a.from] ? outA[a.from].yTop : 0) - (outA[b.from] ? outA[b.from].yTop : 0));
     ribbons.forEach((r, idx) => {
       const o = outA[r.from], iA = inA[r.to];
@@ -528,23 +624,41 @@ function RotationFlowDiagram(_p) {
       const d = 'M ' + x1 + ',' + ys0.toFixed(1) + ' C ' + (x1 + dx * 0.45) + ',' + ys0.toFixed(1) + ' ' + (x2 - dx * 0.45) + ',' + yd0.toFixed(1) + ' ' + x2 + ',' + yd0.toFixed(1) +
         ' L ' + x2 + ',' + yd1.toFixed(1) + ' C ' + (x2 - dx * 0.45) + ',' + yd1.toFixed(1) + ' ' + (x1 + dx * 0.45) + ',' + ys1.toFixed(1) + ' ' + x1 + ',' + ys1.toFixed(1) + ' Z';
       const dim = highlight && highlight !== r.from && highlight !== r.to;
-      els.push(RE('path', { key: 'r' + idx, d, className: 'rot-flow-ribbon' + (dim ? ' dim' : ''), fill: 'url(#rotFlowGrad)' }));
+      const tipFor = () => setTip({
+        x: (x1 + x2) / 2 / W * 100,
+        y: (ys0 + sh / 2 + yd0 + dh / 2) / 2,
+        text: rotShort(r.from) + ' \u2192 ' + rotShort(r.to),
+        sub: '~' + rotBps(rotContribBps(r.amount, quotedWeight)) + ' \u00b7 ' + rotBn(sym, r.amount) + ' est.'
+      });
+      els.push(RE('path', {
+        key: 'r' + idx, d, className: 'rot-flow-ribbon' + (dim ? ' dim' : ''),
+        fill: 'url(#rotFlowGrad' + (gradIdx[r.from] || 0) + ')',
+        onPointerEnter: tipFor, onPointerMove: tipFor, onPointerLeave: () => setTip(null)
+      }));
     });
     function drawBlocks(list, side) {
       list.forEach(b => {
         const x = side === 'out' ? 0 : W - colW;
         const isOther = b.sector === ROT_OUT_OTHER || b.sector === ROT_IN_OTHER;
         const dim = highlight && highlight !== b.sector;
+        const act = isOther
+          ? () => (side === 'out' ? setExpandOut(true) : setExpandIn(true))
+          : () => onHighlight(highlight === b.sector ? null : b.sector);
         els.push(RE('rect', {
-          key: side + b.sector, x, y: b.y, width: colW, height: b.h, rx: 8,
-          className: 'rot-flow-block ' + side + (dim ? ' dim' : ''),
-          onClick: isOther ? undefined : (() => onHighlight(highlight === b.sector ? null : b.sector)),
-          style: isOther ? undefined : { cursor: 'pointer' }
+          key: side + b.sector, x, y: b.y, width: colW, height: b.h, rx: 9,
+          className: 'rot-flow-block ' + side + (dim ? ' dim' : '') + (isOther ? ' other' : ''),
+          role: 'button', tabIndex: 0,
+          'aria-label': (isOther ? 'Expand ' + b.label : rotShort(b.sector) + ' ' + (side === 'out' ? 'outflow' : 'inflow') + ' ' + rotBn(sym, b.amt)),
+          onClick: act,
+          onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); } },
+          style: { cursor: 'pointer' }
         }));
         const cx = x + colW / 2;
-        els.push(RE('text', { key: side + b.sector + 'n', x: cx, y: b.y + (b.h >= 34 ? b.h / 2 - 4 : b.h / 2 + 3), className: 'rot-flow-name', textAnchor: 'middle' }, b.label));
-        if (b.h >= 34) els.push(RE('text', { key: side + b.sector + 'a', x: cx, y: b.y + b.h / 2 + 11, className: 'rot-flow-amt', textAnchor: 'middle' },
-          (b.wPct != null ? rotPct(b.wPct, true) + '  ' : '') + rotBn(sym, side === 'out' ? -b.amt : b.amt, side !== 'out')));
+        const twoLine = b.h >= 36;
+        els.push(RE('text', { key: side + b.sector + 'n', x: cx, y: b.y + (twoLine ? b.h / 2 - 4 : b.h / 2 + 4), className: 'rot-flow-name', textAnchor: 'middle' },
+          b.label));
+        if (twoLine) els.push(RE('text', { key: side + b.sector + 'a', x: cx, y: b.y + b.h / 2 + 12, className: 'rot-flow-amt', textAnchor: 'middle' },
+          rotBps(rotContribBps(side === 'out' ? -b.amt : b.amt, quotedWeight), true) + '  ' + rotBn(sym, side === 'out' ? -b.amt : b.amt, true)));
       });
     }
     drawBlocks(outL, 'out'); drawBlocks(inL, 'in');
@@ -561,27 +675,46 @@ function RotationFlowDiagram(_p) {
     }
   }
   return RE('div', { ref: wrapRef, className: 'rot-flow-wrap' },
-    width > 20 ? RE('svg', { className: 'rot-flow-svg', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H, role: 'img', 'aria-label': 'Sector money-flow diagram' },
-      RE('defs', null, RE('linearGradient', { id: 'rotFlowGrad', x1: '0', y1: '0', x2: '1', y2: '0' },
-        RE('stop', { offset: '0%', className: 'rot-grad-from' }), RE('stop', { offset: '100%', className: 'rot-grad-to' }))),
-      els) : null);
+    width > 20 ? RE('svg', {
+      className: 'rot-flow-svg', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H,
+      role: 'img', 'aria-label': 'Sector money-flow diagram', onPointerLeave: () => setTip(null)
+    },
+      RE('defs', null, defs), els) : null,
+    tip ? RE('div', { className: 'rot-flow-tip', style: { left: tip.x + '%', top: tip.y + 'px' } },
+      RE('span', { className: 'rot-tip-main' }, tip.text),
+      RE('span', { className: 'rot-tip-sub' }, tip.sub)) : null,
+    (disp.outHidden || disp.inHidden) ? null : ((expandOut || expandIn) ? RE('button', {
+      className: 'rot-flow-collapse', onClick: () => { setExpandOut(false); setExpandIn(false); }
+    }, 'Collapse') : null));
 }
 
 // Cumulative sector performance through the trading day, benchmark emphasised,
-// top movers coloured, the rest dimmed. Tap a line's legend chip (or a list row)
-// to isolate it.
+// top movers coloured, the rest dimmed. Tap a legend chip or a list row to
+// isolate a sector; drag/hover anywhere on the plot for a crosshair readout.
+//
+// The extended-hours tail is drawn dashed and the right-edge labels report the
+// REGULAR-session close, because the sector list beside this chart is
+// regular-session anchored (fetchQuoteLight has no includePrePost). Reading a
+// post-market number off the chart against a regular number in the list is the
+// exact trap PBCore.deriveDayMove exists to prevent.
 function RotationIntradayChart(_p) {
-  const { built, colorMap, market, highlight, onHighlight } = _p;
+  const { built, colorMap, market, sym, quotedWeight, highlight, onHighlight } = _p;
   const [wrapRef, width] = useContainerWidth();
-  const W = Math.max(280, width || 0), H = 240;
-  const padL = 8, padR = 48, padT = 10, padB = 22;
+  const [cursor, setCursor] = useState(null);
+  const W = Math.max(280, width || 0);
+  const H = width && width < 420 ? 210 : 260;
+  const padL = 8, padR = 52, padT = 12, padB = 24;
   const ts = built && built.ts ? built.ts : [];
   const ready = width > 20 && ts.length >= 2;
   const tz = PBCore.SESSIONS[market] ? PBCore.SESSIONS[market].tz : undefined;
   const svgKids = [];
+  let readout = null;
+  let xSRef = null, xminRef = 0, xmaxRef = 0;
   if (ready) {
     const rs = built.regularStart, re = built.regularEnd, lastTs = ts[ts.length - 1];
-    const hasPost = built.sessionAt && built.sessionAt.some(s => s === 'post');
+    const sessAt = built.sessionAt || [];
+    const hasPost = sessAt.some(s => s === 'post');
+    const hasPre = sessAt.some(s => s === 'pre');
     const xmin = rs != null ? Math.max(ts[0], rs - 3600000) : ts[0];
     const xmax = re != null ? Math.max(lastTs, re + (hasPost ? 3600000 : 0)) : lastTs;
     let ymin = 0, ymax = 0;
@@ -591,25 +724,41 @@ function RotationIntradayChart(_p) {
     const py = (ymax - ymin) * 0.08; ymax += py; ymin -= py;
     const xS = t => padL + (t - xmin) / (xmax - xmin || 1) * (W - padL - padR);
     const yS = v => padT + (ymax - v) / (ymax - ymin || 1) * (H - padT - padB);
-    // pre/post shading
-    if (rs != null && rs > xmin) svgKids.push(RE('rect', { key: 'pre', className: 'rot-band', x: xS(xmin), y: padT, width: Math.max(0, xS(rs) - xS(xmin)), height: H - padT - padB }));
-    if (re != null && re < xmax) svgKids.push(RE('rect', { key: 'post', className: 'rot-band', x: xS(re), y: padT, width: Math.max(0, xS(xmax) - xS(re)), height: H - padT - padB }));
-    // zero line
-    const yz = yS(0);
-    svgKids.push(RE('line', { key: 'zero', className: 'rot-zero', x1: padL, y1: yz, x2: W - padR, y2: yz }));
-    svgKids.push(RE('text', { key: 'zlbl', className: 'rot-axis-lbl', x: W - padR + 3, y: yz + 3 }, '0%'));
+    xSRef = xS; xminRef = xmin; xmaxRef = xmax;
+    // pre/post shading, now labelled — an unexplained grey rectangle is noise.
+    if (rs != null && rs > xmin) {
+      svgKids.push(RE('rect', { key: 'pre', className: 'rot-band', x: xS(xmin), y: padT, width: Math.max(0, xS(rs) - xS(xmin)), height: H - padT - padB }));
+      if (hasPre && xS(rs) - xS(xmin) > 30) svgKids.push(RE('text', { key: 'prel', className: 'rot-band-lbl', x: (xS(xmin) + xS(rs)) / 2, y: padT + 10, textAnchor: 'middle' }, 'Pre'));
+    }
+    if (re != null && re < xmax) {
+      svgKids.push(RE('rect', { key: 'post', className: 'rot-band', x: xS(re), y: padT, width: Math.max(0, xS(xmax) - xS(re)), height: H - padT - padB }));
+      if (hasPost && xS(xmax) - xS(re) > 30) svgKids.push(RE('text', { key: 'postl', className: 'rot-band-lbl', x: (xS(re) + xS(xmax)) / 2, y: padT + 10, textAnchor: 'middle' }, 'After'));
+    }
+    // y gridlines + labels
+    // Gridline labels sit inline above their own line on the LEFT. The right
+    // gutter is reserved for the series value labels; sharing it made the 0%
+    // tick collide with whichever line happened to end near zero.
+    rotTicks(ymin, ymax, 4).forEach((t, i) => {
+      const y = yS(t);
+      if (y < padT - 1 || y > H - padB + 1) return;
+      svgKids.push(RE('line', { key: 'gl' + i, className: t === 0 ? 'rot-zero' : 'rot-grid', x1: padL, y1: y, x2: W - padR, y2: y }));
+      if (y > padT + 9) svgKids.push(RE('text', { key: 'gt' + i, className: 'rot-axis-lbl rot-grid-lbl', x: padL + 2, y: y - 3 }, rotPct(t, t !== 0)));
+    });
     // time ticks
     const ticks = (rs != null && re != null) ? [rs, (rs + re) / 2, re] : [xmin, (xmin + xmax) / 2, xmax];
     ticks.forEach((t, i) => {
       if (t < xmin || t > xmax) return;
-      svgKids.push(RE('text', { key: 'tick' + i, className: 'rot-axis-lbl', x: xS(t), y: H - 6, textAnchor: i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle' }, rotTime(t, tz)));
+      svgKids.push(RE('text', { key: 'tick' + i, className: 'rot-axis-lbl', x: xS(t), y: H - 7, textAnchor: i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle' }, rotTime(t, tz)));
     });
-    const linePath = cum => {
+    // Path builder restricted to a session predicate, so the regular line and the
+    // extended-hours tail are separate strokes that can be styled differently.
+    const linePath = (cum, want) => {
       let d = '', pen = false;
       for (let g = 0; g < ts.length; g++) {
-        if (ts[g] < xmin || ts[g] > xmax) { continue; }
+        if (ts[g] < xmin || ts[g] > xmax) continue;
+        const inWant = want == null ? true : (want === 'regular' ? sessAt[g] === 'regular' : sessAt[g] !== 'regular');
         const v = cum[g];
-        if (v == null || !isFinite(v)) { pen = false; continue; }
+        if (!inWant || v == null || !isFinite(v)) { pen = false; continue; }
         d += (pen ? ' L ' : ' M ') + xS(ts[g]).toFixed(1) + ',' + yS(v).toFixed(1);
         pen = true;
       }
@@ -621,72 +770,201 @@ function RotationIntradayChart(_p) {
       const col = colorMap[s.key] || ROT_DIM;
       const isMover = !!colorMap[s.key];
       const faded = highlight && highlight !== s.key;
-      const op = faded ? 0.12 : (isMover ? 0.95 : 0.35);
-      const d = linePath(s.cum);
-      if (d) svgKids.push(RE('path', { key: 'ln' + s.key, className: 'rot-line', d, stroke: col, strokeWidth: highlight === s.key ? 2.6 : (isMover ? 1.7 : 1.2), opacity: op, fill: 'none' }));
+      const op = faded ? 0.1 : (isMover ? 0.95 : 0.3);
+      const sw = highlight === s.key ? 2.6 : (isMover ? 1.8 : 1.1);
+      const dReg = linePath(s.cum, 'regular');
+      if (dReg) svgKids.push(RE('path', { key: 'ln' + s.key, className: 'rot-line', d: dReg, stroke: col, strokeWidth: sw, opacity: op, fill: 'none' }));
+      const dExt = linePath(s.cum, 'ext');
+      if (dExt) svgKids.push(RE('path', { key: 'lx' + s.key, className: 'rot-line rot-line-ext', d: dExt, stroke: col, strokeWidth: sw, opacity: op * 0.8, fill: 'none' }));
     });
-    const bd = linePath(built.benchmark);
-    if (bd) svgKids.push(RE('path', { key: 'bench', className: 'rot-line-bench', d: bd, opacity: highlight ? 0.5 : 0.95, fill: 'none' }));
-    // right-edge value labels (benchmark + movers), collision-pushed
+    // Benchmark: a wide low-opacity halo under a solid core, so it anchors the
+    // plot instead of competing with the coloured lines for the same weight.
+    const bReg = linePath(built.benchmark, 'regular');
+    if (bReg) {
+      svgKids.push(RE('path', { key: 'bhalo', className: 'rot-line-bench-halo', d: bReg, opacity: highlight ? 0.18 : 0.32, fill: 'none' }));
+      svgKids.push(RE('path', { key: 'bench', className: 'rot-line-bench', d: bReg, opacity: highlight ? 0.5 : 1, fill: 'none' }));
+    }
+    const bExt = linePath(built.benchmark, 'ext');
+    if (bExt) svgKids.push(RE('path', { key: 'benchx', className: 'rot-line-bench rot-line-ext', d: bExt, opacity: highlight ? 0.4 : 0.8, fill: 'none' }));
+    // Right-edge value labels. After the bell these report the REGULAR close, so
+    // they agree with the sector list underneath; the dashed tail carries the
+    // extended-hours move and the panel subtitle says so.
+    const finalOf = cum => { for (let g = ts.length - 1; g >= 0; g--) { if (ts[g] > xmax) continue; if (cum[g] != null && isFinite(cum[g])) return cum[g]; } return null; };
+    const labelVal = (cum, regClose) => (hasPost && regClose != null) ? regClose : finalOf(cum);
     const labels = [];
-    const finalOf = cum => { for (let g = ts.length - 1; g >= 0; g--) { if (ts[g] > xmax) continue; if (cum[g] != null && isFinite(cum[g])) return { v: cum[g], g }; } return null; };
-    const bf = finalOf(built.benchmark);
-    if (bf) labels.push({ y: yS(bf.v), text: rotPct(bf.v, true), col: 'var(--text)', w: 700 });
-    built.series.forEach(s => { if (!colorMap[s.key]) return; const f = finalOf(s.cum); if (f) labels.push({ y: yS(f.v), text: rotPct(f.v, true), col: colorMap[s.key], w: 600 }); });
+    const bv = labelVal(built.benchmark, built.benchmarkRegularClose);
+    if (bv != null) labels.push({ y: yS(bv), text: rotPct(bv, true), tone: rotTone(bv), bench: true });
+    built.series.forEach(s => {
+      if (!colorMap[s.key]) return;
+      const v = labelVal(s.cum, s.regularClose);
+      if (v != null) labels.push({ y: yS(v), text: rotPct(v, true), tone: rotTone(v), bench: false });
+    });
     labels.sort((a, b) => a.y - b.y);
     for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 11) labels[i].y = labels[i - 1].y + 11;
-    labels.forEach((l, i) => svgKids.push(RE('text', { key: 'vl' + i, className: 'rot-val-lbl', x: W - padR + 3, y: l.y + 3, fill: l.col, style: { fontWeight: l.w } }, l.text)));
+    // Tone, not identity: the label states a signed number, so it is coloured by
+    // that number's sign. Which series it belongs to is carried by the dot in the
+    // legend and by the line it sits at the end of.
+    labels.forEach((l, i) => svgKids.push(RE('text', {
+      key: 'vl' + i, className: 'rot-val-lbl ' + l.tone + (l.bench ? ' bench' : ''),
+      x: W - padR + 4, y: l.y + 3
+    }, l.text)));
+    // Crosshair
+    if (cursor != null && cursor >= 0 && cursor < ts.length) {
+      const cx = xS(ts[cursor]);
+      if (cx >= padL && cx <= W - padR) {
+        svgKids.push(RE('line', { key: 'cx', className: 'rot-cross', x1: cx, y1: padT, x2: cx, y2: H - padB }));
+        const bvv = built.benchmark[cursor];
+        if (bvv != null && isFinite(bvv)) svgKids.push(RE('circle', { key: 'cxb', className: 'rot-cross-dot bench', cx, cy: yS(bvv), r: 3.2 }));
+        built.series.forEach(s => {
+          if (!colorMap[s.key]) return;
+          const v = s.cum[cursor];
+          if (v == null || !isFinite(v)) return;
+          svgKids.push(RE('circle', { key: 'cxd' + s.key, className: 'rot-cross-dot', cx, cy: yS(v), r: 3, style: { fill: colorMap[s.key] } }));
+        });
+        const rows = built.series.filter(s => colorMap[s.key] && s.cum[cursor] != null && isFinite(s.cum[cursor]))
+          .map(s => ({ key: s.key, v: s.cum[cursor] }))
+          .sort((a, b) => b.v - a.v);
+        readout = RE('div', { className: 'rot-cross-strip' },
+          RE('div', { className: 'rot-cross-time' }, rotTime(ts[cursor], tz),
+            sessAt[cursor] && sessAt[cursor] !== 'regular' ? RE('span', { className: 'rot-cross-sess' }, sessAt[cursor] === 'pre' ? 'Pre' : 'After') : null),
+          (bvv != null && isFinite(bvv)) ? RE('div', { className: 'rot-cross-row bench' },
+            RE('span', { className: 'rot-cross-dotm', style: { background: 'var(--text)' } }),
+            RE('span', { className: 'rot-cross-name' }, 'Market'),
+            RE('span', { className: 'rot-cross-val ' + rotTone(bvv) }, rotPct(bvv, true))) : null,
+          rows.map(r => RE('div', { key: r.key, className: 'rot-cross-row' },
+            RE('span', { className: 'rot-cross-dotm', style: { background: colorMap[r.key] } }),
+            RE('span', { className: 'rot-cross-name' }, rotShort(r.key)),
+            RE('span', { className: 'rot-cross-val ' + rotTone(r.v) }, rotPct(r.v, true)))));
+      }
+    }
   }
-  // legend chips (HTML), tap to isolate
-  const legendItems = built && built.series ? built.series.filter(s => colorMap[s.key]).sort((a, b) => {
-    const fa = a.cum[a.cum.length - 1], fb = b.cum[b.cum.length - 1];
+  // Pointer -> nearest grid index. Uses the rendered rect so it stays correct
+  // when the viewBox is scaled (narrow phones scale below the 280 floor).
+  const locate = e => {
+    if (!ready || !xSRef) return;
+    const svg = e.currentTarget;
+    const r = svg.getBoundingClientRect();
+    if (!r.width) return;
+    const x = (e.clientX - r.left) * (W / r.width);
+    const t = xminRef + (x - padL) / Math.max(1, W - padL - padR) * (xmaxRef - xminRef);
+    let best = -1, bestD = Infinity;
+    for (let g = 0; g < ts.length; g++) {
+      if (ts[g] < xminRef || ts[g] > xmaxRef) continue;
+      const d = Math.abs(ts[g] - t);
+      if (d < bestD) { bestD = d; best = g; }
+    }
+    if (best >= 0) setCursor(best);
+  };
+  const legendItems = built && built.series ? built.series.filter(s => colorMap[s.key]).slice().sort((a, b) => {
+    const fa = a.regularClose != null ? a.regularClose : a.cum[a.cum.length - 1];
+    const fb = b.regularClose != null ? b.regularClose : b.cum[b.cum.length - 1];
     return Math.abs(fb || 0) - Math.abs(fa || 0);
   }) : [];
   const legend = RE('div', { className: 'rot-legend' },
-    RE('button', { className: 'rot-legend-chip' + (highlight === '__bench' ? ' active' : ''), onClick: () => onHighlight(highlight === '__bench' ? null : '__bench') },
+    RE('button', { className: 'rot-legend-chip' + (highlight === ROT_BENCH_KEY ? ' active' : ''), onClick: () => onHighlight(highlight === ROT_BENCH_KEY ? null : ROT_BENCH_KEY) },
       RE('span', { className: 'rot-legend-dot', style: { background: 'var(--text)' } }), 'Market'),
     legendItems.map(s => RE('button', {
       key: s.key, className: 'rot-legend-chip' + (highlight === s.key ? ' active' : ''),
+      'aria-pressed': highlight === s.key,
       onClick: () => onHighlight(highlight === s.key ? null : s.key)
     }, RE('span', { className: 'rot-legend-dot', style: { background: colorMap[s.key] } }), rotShort(s.key))));
   return RE('div', { className: 'rot-chart-outer' },
     RE('div', { ref: wrapRef, className: 'rot-chart-wrap' },
-      ready ? RE('svg', { className: 'rot-chart-svg', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H, role: 'img', 'aria-label': 'Intraday sector performance' }, svgKids) : null),
-    legend);
+      ready ? RE('svg', {
+        className: 'rot-chart-svg', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H,
+        role: 'img', 'aria-label': 'Intraday sector performance',
+        onPointerMove: locate, onPointerDown: locate, onPointerLeave: () => setCursor(null)
+      }, svgKids) : null),
+    // The readout is a strip UNDER the plot, not a card floating over it: on a
+    // phone an overlay covers ~40% of the very lines it is describing.
+    readout || legend);
 }
 
-// Per-sector detail: the numbers behind the picture. Sorted by estimated flow.
+// Per-sector detail: the numbers behind the picture.
 function RotationSectorList(_p) {
-  const { sectors, marketPct, sym, market, colorMap, highlight, onHighlight, onOpenDetail } = _p;
+  const { sectors, marketPct, quotedWeight, sym, market, colorMap, coverage, activity,
+          highlight, onHighlight, onOpenDetail, sortBy } = _p;
+  const rows = sectors.filter(s => s.wPct != null).slice();
+  rows.sort((a, b) => {
+    if (sortBy === 'move') return (b.wPct - a.wPct);
+    if (sortBy === 'breadth') return ((b.participation == null ? -1 : b.participation) - (a.participation == null ? -1 : a.participation));
+    return b.deltaCap - a.deltaCap;
+  });
   return RE('div', { className: 'rot-list' },
-    sectors.map(s => {
-      if (s.wPct == null) return null;
+    rows.map(s => {
       const col = colorMap[s.sector] || ROT_DIM;
-      const bps = Math.round((s.wPct - marketPct) * 100);
+      const bps = (s.wPct - marketPct) * 100;
+      const flowBps = rotContribBps(s.deltaCap, quotedWeight);
       const faded = highlight && highlight !== s.sector;
+      const cov = coverage[s.sector];
+      const act = activity[s.sector];
+      const act2 = (act != null && isFinite(act)) ? act : null;
+      const toggle = () => onHighlight(highlight === s.sector ? null : s.sector);
+      // Best/worst in the sector. The tone comes from the VALUE, never from the
+      // slot: in a sector where everything fell, the best name is still negative
+      // and must not be green. The caret carries the rank instead.
+      const chip = (rec, rank) => RE('button', {
+        key: rank, className: 'rot-tkr-chip ' + rotTone(rec.changePct),
+        title: (rank === 'best' ? 'Best' : 'Worst') + ' in ' + rotShort(s.sector),
+        onClick: e => { e.stopPropagation(); onOpenDetail(rec.ticker, market); }
+      }, RE('span', { className: 'rot-tkr-rank' }, rank === 'best' ? '\u25b2' : '\u25bc'), rec.ticker, ' ', rotPct(rec.changePct, true));
       return RE('div', {
         key: s.sector, className: 'rot-row' + (highlight === s.sector ? ' hl' : '') + (faded ? ' faded' : ''),
-        onClick: () => onHighlight(highlight === s.sector ? null : s.sector)
+        role: 'button', tabIndex: 0, 'aria-pressed': highlight === s.sector,
+        onClick: toggle,
+        onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }
       },
         RE('div', { className: 'rot-row-main' },
           RE('span', { className: 'rot-row-dot', style: { background: col } }),
-          RE('div', { className: 'rot-row-name' }, rotShort(s.sector),
-            RE('span', { className: 'rot-row-sub' }, '▲ ' + s.adv + ' / ▼ ' + s.dec)),
-          RE('span', { className: 'rot-row-num ' + (s.wPct >= 0 ? 'up' : 'down') }, rotPct(s.wPct, true)),
-          RE('span', { className: 'rot-row-num rot-row-bps' }, (bps >= 0 ? '+' : '') + bps + ' bp'),
-          RE('span', { className: 'rot-row-num rot-row-flow ' + (s.deltaCap >= 0 ? 'up' : 'down') }, rotBn(sym, s.deltaCap, true))
+          RE('div', { className: 'rot-row-name' },
+            RE('span', { className: 'rot-row-title' }, rotShort(s.sector),
+              s.thin ? RE('span', { className: 'rot-thin-tag', title: 'Only ' + s.quoted + ' name' + (s.quoted === 1 ? '' : 's') + ' quoted - too thin to read as a sector' }, 'thin') : null),
+            RE('span', { className: 'rot-row-sub' },
+              '\u25b2 ' + s.adv + ' / \u25bc ' + s.dec,
+              s.participation != null ? RE('span', { className: 'rot-row-sub-sep' }, rotPctOf(s.participation) + ' of cap') : null,
+              RE('span', { className: 'rot-row-sub-bps ' + rotTone(bps, 0) }, rotBps(bps, true) + ' vs mkt'))),
+          RE('span', { className: 'rot-row-num ' + rotTone(s.wPct) }, rotPct(s.wPct, true)),
+          RE('span', { className: 'rot-row-num rot-row-bps ' + rotTone(bps, 0) }, rotBps(bps, true)),
+          RE('div', { className: 'rot-row-flow' },
+            RE('span', { className: 'rot-row-num ' + rotTone(flowBps, 0) }, rotBps(flowBps, true)),
+            RE('span', { className: 'rot-row-flow-bn' }, rotBn(sym, s.deltaCap, true)))
+        ),
+        RE('div', { className: 'rot-row-meta' },
+          cov ? RE('span', { className: 'rot-cov-chip', title: cov.proxy ? 'Chart line uses the ' + cov.proxy + ' sector ETF as a proxy' : 'Chart line built from the largest names in this sector' },
+            cov.proxy ? cov.proxy + ' proxy' : (cov.fetched + ' of ' + cov.names + ' names' + (cov.covered != null ? ' \u00b7 ' + rotPctOf(cov.covered) + ' of cap' : ''))) : null,
+          act2 != null ? RE('span', { className: 'rot-act', title: rotPctOf(act2) + ' of the session dollar volume' },
+            RE('span', { className: 'rot-act-track' }, RE('span', { className: 'rot-act-fill', style: { width: Math.max(2, Math.round(act2 * 100)) + '%', background: col } })),
+            RE('span', { className: 'rot-act-lbl' }, rotPctOf(act2) + ' vol')) : null
         ),
         RE('div', { className: 'rot-row-chips' },
-          s.top ? RE('button', { className: 'rot-tkr-chip up', onClick: e => { e.stopPropagation(); onOpenDetail(s.top.ticker, market); } }, s.top.ticker + ' ' + rotPct(s.top.changePct, true)) : null,
-          s.bottom && s.bottom.ticker !== (s.top && s.top.ticker) ? RE('button', { className: 'rot-tkr-chip down', onClick: e => { e.stopPropagation(); onOpenDetail(s.bottom.ticker, market); } }, s.bottom.ticker + ' ' + rotPct(s.bottom.changePct, true)) : null
+          s.top ? chip(s.top, 'best') : null,
+          s.bottom && s.bottom.ticker !== (s.top && s.top.ticker) ? chip(s.bottom, 'worst') : null
         )
       );
     }));
 }
 
+// A stat tile with a tap-to-explain body. "Dispersion 0.42pp" means nothing
+// without the sentence, and the sentence has no business living in the math, so
+// the copy comes from PBContent.ROTATION_GLOSSARY.
+function RotationStat(_p) {
+  const { label, value, tone, note, glossKey, open, onToggle } = _p;
+  const g = (PBContent.ROTATION_GLOSSARY || {})[glossKey];
+  return RE('div', { className: 'rot-stat' + (open ? ' open' : '') },
+    RE('button', {
+      className: 'rot-stat-head', onClick: () => onToggle(open ? null : glossKey),
+      'aria-expanded': !!open, 'aria-label': label + ' - what is this?'
+    },
+      RE('span', { className: 'rot-stat-label' }, label),
+      g ? RE('span', { className: 'rot-stat-q' }, '?') : null),
+    RE('span', { className: 'rot-stat-val ' + (tone || '') }, value),
+    note ? RE('span', { className: 'rot-stat-note' }, note) : null,
+    open && g ? RE('span', { className: 'rot-stat-help' }, g) : null);
+}
+
 function MarketRotationView(_refMR) {
   const { Icon, usePersistedState } = window.PBApp;
-  let { onOpenDetail, toast } = _refMR;
+  let { onOpenDetail } = _refMR;
   const exchanges = window.PB_DATA.HEATMAPS;
   const [selectedId, setSelectedId] = usePersistedState('pb.rotation.exchange.v1', 'sp500');
   const exchange = exchanges.find(e => e.id === selectedId) || exchanges[0];
@@ -697,6 +975,9 @@ function MarketRotationView(_refMR) {
   const [error, setError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(() => persisted[exchange.id] && persisted[exchange.id].fetchedAt ? new Date(persisted[exchange.id].fetchedAt) : null);
   const [highlight, setHighlight] = useState(null);
+  const [sortBy, setSortBy] = useState('flow');
+  const [openGloss, setOpenGloss] = useState(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const loadRef = useRef(false);
   const cacheKey = exchange.id;
   const cached = cache[cacheKey];
@@ -724,7 +1005,16 @@ function MarketRotationView(_refMR) {
       const items = constituents.map(c => ({ ticker: c.t, market: exchange.market }));
       const quotes = await PBData.fetchQuoteBatchLight(items, (done, total, partial) => {
         setProgress({ phase: 'quotes', done, total });
-        if (partial) setCache(prev => Object.assign({}, prev, { [cacheKey]: aggregate(partial, prev[cacheKey] && prev[cacheKey].series, prev[cacheKey] && prev[cacheKey].activity, 0) }));
+        // Only repaint from a partial that actually carries quotes. A sweep that
+        // fails outright (offline, proxy down) reports partial = {}, and folding
+        // that in used to overwrite the last-good snapshot with an empty one --
+        // the tab went blank behind the error banner even though
+        // pb.rotation.lastgood.v1 still held a perfectly good session.
+        if (partial && Object.keys(partial).length) setCache(prev => {
+          const next = aggregate(partial, prev[cacheKey] && prev[cacheKey].series, prev[cacheKey] && prev[cacheKey].activity, 0);
+          if (!(next.snapshot.market.quoted > 0)) return prev;
+          return Object.assign({}, prev, { [cacheKey]: next });
+        });
       });
       if (buildRows(quotes).filter(r => r.changePct != null).length === 0) {
         setError('No live data returned. Try again shortly.');
@@ -732,10 +1022,17 @@ function MarketRotationView(_refMR) {
       }
       const snapEntry = aggregate(quotes, cached && cached.series, cached && cached.activity, 0);
       setCache(prev => Object.assign({}, prev, { [cacheKey]: snapEntry }));
-      // Phase B: intraday sector lines.
+      // Phase B: intraday sector lines. SECTOR_ETF is passed ONLY for the S&P
+      // universe — the SPDRs track S&P sectors, so handing them to the Dow or
+      // Nasdaq-100 would draw XLK against a Technology row built from that
+      // index's own names. Everything else builds sector lines from real
+      // constituents, deep enough to cover ~70% of each sector's cap.
       let built = null;
       try {
-        const plan = PBCore.buildRotationFetchPlan(exchange, { sectorEtf: PBContent.SECTOR_ETF, topN: 3 });
+        const plan = PBCore.buildRotationFetchPlan(exchange, {
+          sectorEtf: exchange.id === 'sp500' ? PBContent.SECTOR_ETF : null,
+          coverage: 0.70, minN: 3, maxN: 6
+        });
         const syms = []; const seen = new Set();
         plan.legs.forEach(leg => leg.symbols.forEach(s => { const k = PBCore.priceKey(s.market, s.ticker); if (!seen.has(k)) { seen.add(k); syms.push(s); } }));
         const bars = {}; let done = 0;
@@ -769,9 +1066,28 @@ function MarketRotationView(_refMR) {
   useEffect(() => {
     const e = cache[cacheKey];
     if (e && e.fetchedAt) setLastUpdate(new Date(e.fetchedAt));
-    setHighlight(null);
+    setHighlight(null); setOpenGloss(null);
     load(false);
   }, [cacheKey]);
+
+  // Keep a visible tab honest while the market is open. Without this the numbers
+  // froze at whatever the first sweep returned while the "Market open" dot kept
+  // pulsing beside them. Hidden tabs do nothing (iOS throttles them anyway), and
+  // load()'s own 5-minute gate still applies.
+  const loadStable = useRef(load);
+  loadStable.current = load;
+  useEffect(() => {
+    const tick = () => {
+      setNowTick(Date.now());
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (PBCore.marketSession(exchange.market).phase !== 'open') return;
+      loadStable.current(false);
+    };
+    const id = setInterval(tick, 60000);
+    const onVis = () => { if (typeof document !== 'undefined' && document.visibilityState === 'visible') tick(); };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(id); if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis); };
+  }, [exchange.market]);
 
   const colorMap = useMemo(() => rotColors(cached && cached.classified), [cached && cached.classified]);
   const onHi = useCallback(name => setHighlight(name), []);
@@ -782,8 +1098,34 @@ function MarketRotationView(_refMR) {
   const series = cached && cached.series;
   const copy = PBContent.ROTATION_COPY;
   const marketPct = classified ? classified.marketPct : 0;
+  const quotedWeight = snapshot ? snapshot.market.quotedWeight : 0;
   const flowShown = classified && flows && (flows.totalIn > 0.05 || flows.totalOut > 0.05);
-  const progText = progress ? (progress.phase === 'intraday' ? 'Intraday ' + progress.done + ' / ' + progress.total : progress.done + ' / ' + progress.total + ' quotes') : '';
+  const progText = progress
+    ? (progress.phase === 'intraday'
+      ? 'Sector lines ' + progress.done + ' / ' + progress.total
+      : 'Quotes ' + progress.done + ' / ' + progress.total)
+    : '';
+  // Per-sector chart coverage + volume share, keyed for the list.
+  const coverage = useMemo(() => {
+    const m = {};
+    ((series && series.series) || []).forEach(s => { m[s.key] = { names: s.names, covered: s.covered, proxy: s.proxy, fetched: s.fetched }; });
+    return m;
+  }, [series]);
+  const activityMap = useMemo(() => {
+    const m = {};
+    ((cached && cached.activity) || []).forEach(a => { m[a.key] = a.share; });
+    return m;
+  }, [cached && cached.activity]);
+  // A cached snapshot from a previous session must say so. The footer used to
+  // print a bare "16:32", which reads as today at a glance.
+  const stale = useMemo(() => {
+    const at = cached && cached.fetchedAt;
+    if (!at) return false;
+    const a = PBCore.marketDayKey(at, exchange.market);
+    const b = PBCore.marketDayKey(nowTick, exchange.market);
+    return !!(a && b && a !== b);
+  }, [cached && cached.fetchedAt, exchange.market, nowTick]);
+  const skeleton = loading && !classified;
 
   return RE('div', { className: 'rot-view' },
     // Exchange chips
@@ -796,51 +1138,101 @@ function MarketRotationView(_refMR) {
     loading ? RE('div', { className: 'heatmap-progress' },
       RE('div', { className: 'heatmap-progress-bar' },
         RE('div', { className: 'heatmap-progress-fill', style: { width: (progress && progress.total ? Math.round(progress.done / progress.total * 100) : 5) + '%' } })),
-      RE('span', { className: 'heatmap-progress-text' }, progText || ('Loading ' + exchange.label + '…'))) : null,
+      RE('span', { className: 'heatmap-progress-text' }, progText || ('Loading ' + exchange.label + '\u2026'))) : null,
+    skeleton ? RE('div', { className: 'rot-skeleton' },
+      RE('div', { className: 'rot-sk-card' }),
+      RE('div', { className: 'rot-sk-panel' }),
+      RE('div', { className: 'rot-sk-panel short' })) : null,
     // Verdict card
     classified ? RE('div', { className: 'rot-verdict-card' },
       RE('div', { className: 'rot-verdict-top' },
         RE('span', { className: 'rot-verdict-pill v-' + classified.verdict }, copy.verdicts[classified.verdict] || 'Market'),
-        RE('span', { className: 'rot-phase-chip' + (session.phase !== 'closed' ? ' live' : '') },
-          session.phase !== 'closed' ? RE('span', { className: 'rot-phase-dot' }) : null,
-          copy.phase[session.phase] || 'Market')),
+        RE('span', { className: 'rot-phase-chip' + (session.phase !== 'closed' && !stale ? ' live' : '') },
+          session.phase !== 'closed' && !stale ? RE('span', { className: 'rot-phase-dot' }) : null,
+          stale ? 'Previous session' : (copy.phase[session.phase] || 'Market'))),
+      // Headline: the market move is the number this whole tab is about, so it
+      // gets the size. It used to be a 14px cell in a four-up grid.
+      RE('div', { className: 'rot-headline' },
+        RE('div', { className: 'rot-head-main' },
+          RE('span', { className: 'rot-head-val ' + rotTone(marketPct) }, rotPct(marketPct, true)),
+          RE('span', { className: 'rot-head-lbl' }, 'Cap-weighted move')),
+        flows ? RE('div', { className: 'rot-head-side' },
+          RE('span', { className: 'rot-head-side-val ' + rotTone(rotContribBps(flows.net, quotedWeight), 0) }, rotBps(rotContribBps(flows.net, quotedWeight), true)),
+          RE('span', { className: 'rot-head-lbl' }, 'Net flow ' + rotBn(sym, flows.net, true))) : null),
       RE('div', { className: 'rot-detail' }, PBCore.rotationSummary(classified)),
       RE('div', { className: 'rot-stats-row' },
-        RE('div', { className: 'rot-stat' }, RE('span', { className: 'rot-stat-label' }, 'Market'), RE('span', { className: 'rot-stat-val ' + (marketPct >= 0 ? 'up' : 'down') }, rotPct(marketPct, true))),
-        RE('div', { className: 'rot-stat' }, RE('span', { className: 'rot-stat-label' }, 'Breadth'), RE('span', { className: 'rot-stat-val' }, Math.round(classified.breadthPct * 100) + '% adv')),
-        RE('div', { className: 'rot-stat' }, RE('span', { className: 'rot-stat-label' }, 'Dispersion'), RE('span', { className: 'rot-stat-val' }, classified.dispersion.toFixed(2) + 'pp')),
-        RE('div', { className: 'rot-stat' }, RE('span', { className: 'rot-stat-label' }, 'Net flow'), RE('span', { className: 'rot-stat-val ' + (flows.net >= 0 ? 'up' : 'down') }, rotBn(sym, flows.net, true)))),
-      classified.confidence === 'low' && snapshot ? RE('div', { className: 'rot-conf-low' }, 'Partial data — ' + snapshot.market.quoted + ' of ' + snapshot.market.count + ' names quoted') : null
-    ) : (!loading && !error ? RE('div', { className: 'rot-empty' }, 'Loading rotation…') : null),
+        RE(RotationStat, {
+          label: 'Participation', glossKey: 'participation', open: openGloss === 'participation', onToggle: setOpenGloss,
+          value: rotPctOf(classified.participation), note: 'of cap advancing'
+        }),
+        RE(RotationStat, {
+          label: 'Breadth', glossKey: 'breadth', open: openGloss === 'breadth', onToggle: setOpenGloss,
+          value: rotPctOf(classified.breadthPct), note: snapshot ? 'of ' + snapshot.market.quoted + ' names' : null
+        }),
+        RE(RotationStat, {
+          label: 'Dispersion', glossKey: 'dispersion', open: openGloss === 'dispersion', onToggle: setOpenGloss,
+          value: classified.dispersion.toFixed(2) + 'pp',
+          note: classified.dispersionRatio != null ? (classified.dispersionRatio.toFixed(1) + 'x the move') : null
+        }),
+        RE(RotationStat, {
+          label: 'Rotating', glossKey: 'matched', open: openGloss === 'matched', onToggle: setOpenGloss,
+          value: flows ? rotBps(rotContribBps(flows.matched, quotedWeight)) : '\u2013',
+          note: flows ? rotBn(sym, flows.matched) + ' est.' : null
+        })),
+      snapshot ? RE('div', { className: 'rot-coverage' },
+        RE('span', null, snapshot.market.quoted + ' of ' + snapshot.market.count + ' names quoted'),
+        exchange.coverageNote ? RE('span', { className: 'rot-cov-note' }, exchange.coverageNote) : null,
+        classified.confidence === 'low' ? RE('span', { className: 'rot-conf-low' }, 'Partial data') : null) : null
+    ) : (!loading && !error && !skeleton ? RE('div', { className: 'rot-empty' }, 'Loading rotation\u2026') : null),
     // Flow diagram panel
     flowShown ? RE('div', { className: 'rot-panel' },
       RE('div', { className: 'rot-panel-head' },
         RE('span', { className: 'rot-panel-title' }, 'Money flow'),
-        RE('span', { className: 'rot-panel-sub' }, flows.matched > 0.05 ? '~' + rotBn(sym, flows.matched) + ' rotating · net ' + rotBn(sym, flows.net, true) : 'One-sided · net ' + rotBn(sym, flows.net, true))),
-      RE(RotationFlowDiagram, { classified, flows, sym, highlight, onHighlight: onHi })
-    ) : (classified && !flowShown ? RE('div', { className: 'rot-panel rot-panel-flat' }, RE('span', { className: 'rot-flow-note' }, 'No meaningful sector flows this session.')) : null),
+        RE('span', { className: 'rot-panel-sub' }, flows.matched > 0.05
+          ? '~' + rotBps(rotContribBps(flows.matched, quotedWeight)) + ' rotating \u00b7 net ' + rotBps(rotContribBps(flows.net, quotedWeight), true)
+          : 'One-sided \u00b7 net ' + rotBps(rotContribBps(flows.net, quotedWeight), true))),
+      RE(RotationFlowDiagram, { classified, flows, sym, quotedWeight, colorMap, highlight, onHighlight: onHi })
+    ) : (classified && !flowShown ? RE('div', { className: 'rot-panel rot-panel-flat' }, RE('span', { className: 'rot-flow-note-h' }, 'No meaningful sector flows this session.')) : null),
     // Intraday chart panel
     classified ? RE('div', { className: 'rot-panel' },
       RE('div', { className: 'rot-panel-head' },
         RE('span', { className: 'rot-panel-title' }, 'Through the day'),
-        RE('span', { className: 'rot-panel-sub' }, 'Cumulative % vs prior close')),
-      series ? RE(RotationIntradayChart, { built: series, colorMap, market: exchange.market, highlight, onHighlight: onHi })
+        RE('span', { className: 'rot-panel-sub' }, 'Cumulative % vs prior close \u00b7 dashed = extended hours')),
+      series ? RE(RotationIntradayChart, { built: series, colorMap, market: exchange.market, sym, quotedWeight, highlight, onHighlight: onHi })
         : RE('div', { className: 'rot-chart-missing' },
-          RE('span', null, loading ? 'Loading intraday lines…' : 'Intraday lines unavailable.'),
+          RE('span', null, loading ? 'Loading intraday lines\u2026' : 'Intraday lines unavailable.'),
           !loading ? RE('button', { className: 'btn btn-ghost btn-xs', onClick: () => load(true) }, 'Retry') : null)
     ) : null,
     // Sector list
     classified && snapshot ? RE('div', { className: 'rot-panel' },
       RE('div', { className: 'rot-panel-head' },
         RE('span', { className: 'rot-panel-title' }, 'By sector'),
-        series && series.activity ? null : null),
-      RE(RotationSectorList, { sectors: snapshot.sectors, marketPct, sym, market: exchange.market, colorMap, highlight, onHighlight: onHi, onOpenDetail })
+        RE('div', { className: 'rot-sort' },
+          ['flow', 'move', 'breadth'].map(k => RE('button', {
+            key: k, className: 'rot-sort-btn' + (sortBy === k ? ' active' : ''),
+            'aria-pressed': sortBy === k, onClick: () => setSortBy(k)
+          }, k === 'flow' ? 'Flow' : k === 'move' ? 'Move' : 'Breadth')))),
+      RE(RotationSectorList, {
+        sectors: snapshot.sectors, marketPct, quotedWeight, sym, market: exchange.market,
+        colorMap, coverage, activity: activityMap, highlight, onHighlight: onHi, onOpenDetail, sortBy
+      }),
+      // Screen readers get the same table as a real table; the SVGs above are
+      // decorative to them.
+      RE('table', { className: 'rot-sr' },
+        RE('caption', null, exchange.label + ' sector rotation'),
+        RE('thead', null, RE('tr', null,
+          RE('th', null, 'Sector'), RE('th', null, 'Move'), RE('th', null, 'vs market'), RE('th', null, 'Estimated flow'))),
+        RE('tbody', null, snapshot.sectors.filter(s => s.wPct != null).map(s => RE('tr', { key: s.sector },
+          RE('td', null, s.sector), RE('td', null, rotPct(s.wPct, true)),
+          RE('td', null, rotBps((s.wPct - marketPct) * 100, true)),
+          RE('td', null, rotBps(rotContribBps(s.deltaCap, quotedWeight), true))))))
     ) : null,
     // Footer: method note + updated + refresh
     classified ? RE('div', { className: 'rot-foot' },
       RE('span', { className: 'rot-foot-method' }, copy.method),
       RE('div', { className: 'rot-foot-right' },
-        lastUpdate ? RE('span', { className: 'rot-updated' }, 'Updated ' + lastUpdate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : null,
+        lastUpdate ? RE('span', { className: 'rot-updated' + (stale ? ' stale' : '') },
+          'Updated ' + PBCore.fmtAgo(lastUpdate.getTime(), nowTick)) : null,
         RE('button', { className: 'btn btn-ghost btn-xs ' + (loading ? 'spin' : ''), onClick: () => load(true), disabled: loading, 'aria-label': 'Refresh rotation' },
           RE(Icon, { name: 'refresh', size: 13 }), ' ', loading ? 'Loading' : 'Refresh'))) : null
   );
