@@ -3353,8 +3353,7 @@ function App() {
       fxRates: fxRates
     }),
     rotation: React.createElement(MarketRotationView, {
-      onOpenDetail: openDetail,
-      toast: toast
+      onOpenDetail: openDetail
     }),
     picks: React.createElement(PicksView, {
       onOpenDetail: openDetail

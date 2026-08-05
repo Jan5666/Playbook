@@ -302,7 +302,7 @@ window.PB_DATA = {
     { num:'03', title:'Diversify', body:'Into healthcare (UNH, VRTX, LLY), nuclear (CEG), defense (GD, ITA), semi-ADRs (TSM).', action:'8 new picks' }
   ],
   HEATMAPS: [
-    { id:'sp500', label:'S&P 500', market:'US', constituents: [
+    { id:'sp500', label:'S&P 500', market:'US', coverageNote:'145 largest names ~ 87% of index cap', constituents: [
       // Technology
       {t:'AAPL',s:'Technology',i:'Consumer Electronics',m:3600},
       {t:'MSFT',s:'Technology',i:'Software - Infrastructure',m:3400},
@@ -460,7 +460,7 @@ window.PB_DATA = {
       {t:'AEP',s:'Utilities',i:'Utilities - Regulated Electric',m:50},
       {t:'D',s:'Utilities',i:'Utilities - Regulated Electric',m:50}
     ]},
-    { id:'nasdaq100', label:'NASDAQ 100', market:'US', constituents: [
+    { id:'nasdaq100', label:'NASDAQ 100', market:'US', coverageNote:'50 largest names ~ 90% of index cap', constituents: [
       {t:'AAPL',s:'Technology',i:'Consumer Electronics',m:3600},
       {t:'MSFT',s:'Technology',i:'Software - Infrastructure',m:3400},
       {t:'NVDA',s:'Technology',i:'Semiconductors',m:3300},
@@ -512,7 +512,7 @@ window.PB_DATA = {
       {t:'MDLZ',s:'Consumer Defensive',i:'Confectioners',m:90},
       {t:'MNST',s:'Consumer Defensive',i:'Beverages - Non-Alcoholic',m:55}
     ]},
-    { id:'dow', label:'Dow Jones 30', market:'US', constituents: [
+    { id:'dow', label:'Dow Jones 30', market:'US', coverageNote:'all 30 constituents', constituents: [
       {t:'AAPL',s:'Technology',i:'Consumer Electronics',m:3600},
       {t:'MSFT',s:'Technology',i:'Software - Infrastructure',m:3400},
       {t:'NVDA',s:'Technology',i:'Semiconductors',m:3300},
@@ -544,7 +544,7 @@ window.PB_DATA = {
       {t:'DOW',s:'Basic Materials',i:'Specialty Chemicals',m:35},
       {t:'WBA',s:'Healthcare',i:'Pharmaceutical Retailers',m:10}
     ]},
-    { id:'ftse100', label:'FTSE 100 (UK)', market:'LSE', constituents: [
+    { id:'ftse100', label:'FTSE 100 (UK)', market:'LSE', coverageNote:'41 largest names ~ 80% of index cap', constituents: [
       {t:'AZN',s:'Healthcare',i:'Drug Manufacturers - General',m:200},
       {t:'SHEL',s:'Energy',i:'Oil & Gas Integrated',m:230},
       {t:'HSBA',s:'Financial Services',i:'Banks - Diversified',m:170},
@@ -587,7 +587,7 @@ window.PB_DATA = {
       {t:'III',s:'Financial Services',i:'Asset Management',m:5},
       {t:'LSE',s:'Financial Services',i:'Financial Data & Stock Exchanges',m:65}
     ]},
-    { id:'jse40', label:'JSE Top 40 (SA)', market:'JSE', constituents: [
+    { id:'jse40', label:'JSE Top 40 (SA)', market:'JSE', coverageNote:'37 of the Top 40', constituents: [
       {t:'NPN',s:'Communication Services',i:'Internet Content & Information',m:600},
       {t:'PRX',s:'Communication Services',i:'Internet Content & Information',m:500},
       {t:'BHG',s:'Basic Materials',i:'Industrial Metals & Mining',m:380},
@@ -626,7 +626,7 @@ window.PB_DATA = {
       {t:'EXX',s:'Basic Materials',i:'Industrial Metals & Mining',m:55},
       {t:'HMN',s:'Basic Materials',i:'Other Precious Metals',m:50}
     ]},
-    { id:'asx50', label:'ASX 50 (Australia)', market:'ASX', constituents: [
+    { id:'asx50', label:'ASX 50 (Australia)', market:'ASX', coverageNote:'42 largest names ~ 90% of index cap', constituents: [
       {t:'CBA',s:'Financial Services',i:'Banks - Diversified',m:240},
       {t:'BHP',s:'Basic Materials',i:'Industrial Metals & Mining',m:200},
       {t:'CSL',s:'Healthcare',i:'Biotechnology',m:130},
@@ -670,7 +670,7 @@ window.PB_DATA = {
       {t:'RMD',s:'Healthcare',i:'Medical Devices',m:50},
       {t:'SEK',s:'Communication Services',i:'Internet Content & Information',m:9}
     ]},
-    { id:'dax', label:'DAX 40 (Germany)', market:'FRA', constituents: [
+    { id:'dax', label:'DAX 40 (Germany)', market:'FRA', coverageNote:'37 of the DAX 40', constituents: [
       {t:'SAP',s:'Technology',i:'Software - Application',m:280},
       {t:'SIE',s:'Industrials',i:'Specialty Industrial Machinery',m:170},
       {t:'ALV',s:'Financial Services',i:'Insurance - Diversified',m:120},
@@ -709,7 +709,7 @@ window.PB_DATA = {
       {t:'ENR',s:'Industrials',i:'Specialty Industrial Machinery',m:65},
       {t:'PORS',s:'Consumer Cyclical',i:'Auto Manufacturers',m:60}
     ]},
-    { id:'cac', label:'CAC 40 (France)', market:'PAR', constituents: [
+    { id:'cac', label:'CAC 40 (France)', market:'PAR', coverageNote:'36 of the CAC 40', constituents: [
       {t:'MC',s:'Consumer Cyclical',i:'Luxury Goods',m:330},
       {t:'TTE',s:'Energy',i:'Oil & Gas Integrated',m:140},
       {t:'SAN',s:'Healthcare',i:'Drug Manufacturers - General',m:120},
@@ -747,7 +747,7 @@ window.PB_DATA = {
       {t:'EDEN',s:'Consumer Cyclical',i:'Travel Services',m:10},
       {t:'ERF',s:'Healthcare',i:'Medical Devices',m:25}
     ]},
-    { id:'aex', label:'AEX (Netherlands)', market:'AMS', constituents: [
+    { id:'aex', label:'AEX (Netherlands)', market:'AMS', coverageNote:'22 of the AEX 25', constituents: [
       {t:'ASML',s:'Technology',i:'Semiconductors',m:280},
       {t:'PRX',s:'Communication Services',i:'Internet Content & Information',m:90},
       {t:'UNA',s:'Consumer Defensive',i:'Household & Personal Products',m:130},

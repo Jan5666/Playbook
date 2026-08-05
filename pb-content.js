@@ -240,7 +240,17 @@ const ROTATION_COPY = {
     post: 'After hours',
     closed: 'Closed - last session',
   },
-  method: 'Flow estimate = index weight x day move (market-cap delta). A price-based proxy, not traded volume.',
+  method: 'Flow estimate = index weight x day move (market-cap delta). A price-based proxy, not traded volume. Index weights are static reference caps, so read the bp shares as reliable and the currency totals as indicative.',
+};
+// Plain-language definitions for the verdict card's stat tiles. Every one of
+// these was previously an unexplained number ("Dispersion 0.42pp"), which is
+// jargon the user has no way to resolve. Copy lives here, never in the math.
+// ASCII only, like the rest of this file.
+const ROTATION_GLOSSARY = {
+  participation: 'The share of index market cap that rose today. Cap-weighted, so a handful of giants moving counts for more than a long tail of small names. This is the figure the flow estimate rests on.',
+  breadth: 'The share of quoted names that rose - one vote each, regardless of size. Compare it against participation: high participation with low breadth means a few large names carried the day.',
+  dispersion: 'How far apart the sectors moved, in percentage points around the market. "2.0x the move" means sectors disagreed with each other twice as much as the market moved overall - that is what rotation looks like.',
+  matched: 'How much of the estimated outflow is matched by inflow elsewhere, i.e. money that appears to have changed sectors rather than left. Shown in basis points of index cap.',
 };
 // Shortened sector names for the tight flow-diagram blocks and legend chips.
 const ROTATION_SECTOR_SHORT = {
@@ -5713,5 +5723,5 @@ function logoFor(ticker, market) {
   return entry;
 }
 
-return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS, ROTATION_COPY, ROTATION_SECTOR_SHORT, LOGO_MANIFEST, logoFor };
+return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS, ROTATION_COPY, ROTATION_GLOSSARY, ROTATION_SECTOR_SHORT, LOGO_MANIFEST, logoFor };
 });
