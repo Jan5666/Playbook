@@ -55,5 +55,22 @@ ok('no tick + US closed rejected',
 ok('no tick + CRYPTO counts (always open)',
    quoteTradedToday({ price: 1 }, 'CRYPTO', Date.UTC(2026, 6, 4, 3, 0)) === true);
 
+// ── sessionDay: a quote that knows its own session must be from TODAY's ──────
+// The no-tick fallback above is the hole this closes. Stooq's end-of-day CSV
+// carries no regularMarketTime, so a row for YESTERDAY used to fall straight
+// through to "US session is open → true" and be counted as today's move.
+// sessionDay absent still passes, so every case above is unaffected.
+const usOpen = Date.UTC(2026, 6, 1, 14, 0);           // Wed 2026-07-01, 10:00 EDT
+ok('no tick + sessionDay is today counts',
+   quoteTradedToday({ price: 1, sessionDay: '2026-07-01' }, 'US', usOpen) === true);
+ok('no tick + sessionDay is yesterday rejected (the stooq EOD trap)',
+   quoteTradedToday({ price: 1, sessionDay: '2026-06-30' }, 'US', usOpen) === false);
+ok('sessionDay is market-local: a JSE quote is judged in Johannesburg',
+   quoteTradedToday({ price: 1, sessionDay: '2026-07-01' }, 'JSE', Date.UTC(2026, 6, 1, 9, 0)) === true);
+ok('a fresh tick cannot rescue a quote anchored to another session',
+   quoteTradedToday({ regularMarketTime: usOpen, sessionDay: '2026-06-30' }, 'US', usOpen) === false);
+ok('sessionDay null still passes (unknown = do not block)',
+   quoteTradedToday({ price: 1, sessionDay: null }, 'US', usOpen) === true);
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll traded-today tests passed');
 process.exit(failures ? 1 : 0);

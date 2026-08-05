@@ -18,6 +18,7 @@
   // ladder itself could need; the rest are forward-looking.)
   const { yahooSymbol, centDivisor, parseYahooQuote, buildDailyBars,
           deriveDayMove, deriveIntradayExt, plausiblePriceMove, marketSession,
+          marketDayKey, regularTickAfterBars,
           MARKET_CURRENCY, priceKey, pLimit } = PBCore;
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
@@ -194,6 +195,13 @@
     // high and labelled USD, which then got FX-converted a second time.
     const zar = market === 'JSE' || market === 'TFSA';
     if (zar) { close = close / 100; priorClose = priorClose / 100; }
+    // Column 0 is the row's own session date (YYYY-MM-DD — already exactly the
+    // sessionDay format). Carrying it is what stops an END-OF-DAY row being read as
+    // today's live move: this file is EOD and its latest .jo row is routinely the
+    // previous session, and a Stooq quote has no regularMarketTime, so
+    // quoteTradedToday used to fall through to the market clock and count yesterday's
+    // close as today's the instant the JSE opened.
+    const dateCol = /^\d{4}-\d{2}-\d{2}$/.test((last[0] || '').trim()) ? last[0].trim() : null;
     return {
       price: close,
       prevClose: priorClose,
@@ -201,6 +209,7 @@
       changePct: (close - priorClose) / priorClose * 100,
       currency: zar ? 'ZAR' : 'USD',
       marketState: 'UNKNOWN',
+      sessionDay: dateCol,
       fetchedAt: Date.now(),
       source: 'stooq'
     };
@@ -610,7 +619,17 @@
                 // session. Only with no ext reading at all do we fall back to the
                 // clock — and then meta's "last traded" price is the live regular
                 // price, which is exactly what we want.
-                const sessionPrice = (ext && ext.regPrice > 0)
+                // ...but only if the intraday response is not itself a session
+                // BEHIND the daily one. The two calls are separate requests and can
+                // land on different proxies with different cache ages, so a 1m chart
+                // still serving the previous session would otherwise drag a correct
+                // daily price back a day — undoing the lagging-series fix one line
+                // upstream. Both keys are YYYY-MM-DD, so a string compare is a date
+                // compare; an unknown day on either side stays permissive.
+                const extRegDay = (ext && ext.regAsOf) ? marketDayKey(ext.regAsOf, market) : null;
+                const extRegUsable = !!(ext && ext.regPrice > 0)
+                  && (extRegDay == null || quote.sessionDay == null || extRegDay >= quote.sessionDay);
+                const sessionPrice = extRegUsable
                   ? ext.regPrice
                   : (phase === 'open' ? fresh.price : quote.price);
                 // Splice fresher price/change/extended-hours onto the daily quote.
@@ -730,12 +749,17 @@
       // same guard in fetchQuote); this path never fetches an intraday chart, so
       // it is the only signal available here.
       const feedState = (meta.marketState || '').toUpperCase();
+      const lastTick = typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null;
+      // Same lagging-series exception as parseYahooQuote: when the feed's own last
+      // regular print post-dates the newest daily bar, that bar is a session behind
+      // and meta carries the real close. Without this the heatmap tile disagrees
+      // with the holding row for the same symbol.
       const outsideRegular = market !== 'CRYPTO' && bars.length >= 2
         && (marketSession(market).phase !== 'open'
             || feedState === 'PRE' || feedState === 'PREPRE'
-            || feedState === 'POST' || feedState === 'POSTPOST');
+            || feedState === 'POST' || feedState === 'POSTPOST')
+        && regularTickAfterBars(bars, lastTick, market) == null;
       const price = outsideRegular ? lastBar.p : meta.regularMarketPrice / divisor;
-      const lastTick = typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null;
       const move = deriveDayMove(bars, price, meta.chartPreviousClose / divisor, market, { lastTick });
       const prevClose = move.prevClose;
       const changePct = prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0;

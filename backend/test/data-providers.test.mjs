@@ -95,6 +95,16 @@ ok('stooq TFSA matches JSE exactly', stooqTfsa.price === stooqJse.price && stooq
 ok('stooq TFSA change % survives the divisor', near(stooqTfsa.changePct, stooqJse.changePct));
 ok('stooq US untouched: no divisor, USD', near(stooqUs.price, 9250) && stooqUs.currency === 'USD');
 ok('stooqSymbol maps TFSA to the .jo listing', PBData.stooqSymbol('AIETF', 'TFSA') === PBData.stooqSymbol('AIETF', 'JSE'));
+// Column 0 is the row's own session date. Stooq's .jo file is END OF DAY and its
+// latest row is routinely the previous session; the quote carries no
+// regularMarketTime, so without sessionDay quoteTradedToday fell through to the
+// market clock and counted yesterday's close as today's move at the JSE open.
+ok('stooq carries the session date it actually came from', stooqJse.sessionDay === '2026-07-31');
+ok('stooq sessionDay is market-agnostic', stooqUs.sessionDay === '2026-07-31' && stooqTfsa.sessionDay === '2026-07-31');
+ok('stooq sessionDay null when the date column is not a date',
+  PBData.parseStooqCsv('Date,Open,High,Low,Close,Volume\nx,1,1,1,90,1\ny,1,1,1,92.5,1\n', 'US').sessionDay === null);
+ok('a stale stooq row is refused by the Today gate',
+  PBCore.quoteTradedToday(stooqJse, 'JSE', Date.parse('2026-08-04T12:00:00Z')) === false);
 
 // fetchQuoteBatch: keys by priceKey, fires onBatch, second pass retries missing.
 installYahoo({ AAPL: yahooChart('AAPL', 150, 145, 'Apple'), MSFT: yahooChart('MSFT', 400, 390, 'Microsoft') });
