@@ -168,6 +168,25 @@ Adding a **new runtime file** additionally requires ALL of:
   and separately collapsed every after-hours % to ~0.00% by measuring the session
   against itself. Day move → `PBCore.deriveDayMove`; ext baseline → the regular
   window's own last bar. `backend/test/day-move.test.mjs` pins both.
+- **The last daily bar is NOT unconditionally "the last completed regular close."**
+  Yahoo's daily series can lag its own tape: the bar for a finished session arrives
+  late, or arrives with a `null` close that `buildDailyBars` drops. Taking `lastBar.p`
+  there costs a whole session — and `deriveDayMove` then anchors `prevClose` one
+  session further back too, so `price` and the "At close" chip slide together and the
+  quote looks perfectly consistent. That is invisible by construction: it is what left
+  the entire SA/TFSA book short yesterday's rise before the JSE open (2026-08-05), with
+  a green refresh dot. `PBCore.regularTickAfterBars` is the detector — a REGULAR-hours
+  `meta.regularMarketTime` on a market-local day *after* the newest bar means meta's
+  price is the newer close. The regular-hours half is load-bearing: a US pre/post print
+  also post-dates the series and must never be trusted as a close (that is the Oracle
+  +11.18% trap). Pre-open is the window where **only** this branch can fire — the
+  "no bar yet" branch is gated on `regularSessionStartedToday`, false until the bell.
+- **A quote's `sessionDay` is a claim about which session it came from — honour it.**
+  `quoteTradedToday` rejects a quote whose `sessionDay` isn't today's market day;
+  `null` still passes. Stooq's CSV is end-of-day and carries no `regularMarketTime`,
+  so without this its previous-session row fell through to the market clock and got
+  counted as *today's* move the instant the JSE opened. `parseStooqCsv` now reads
+  column 0 (the row's own date) for exactly this reason.
 - **Never put `includePrePost` on an `interval=1d` quote fetch.** It lets the
   current day's *daily* bar absorb pre/post trades, so the bar the day move treats
   as "the regular close" quietly stops being one. The intraday (`1m`) fetch keeps

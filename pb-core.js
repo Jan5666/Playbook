@@ -150,6 +150,12 @@
     // yesterday's whole US session used to land in the SA morning's "Today".
     // We derive the answer from SESSIONS instead of trusting the feed.
     if (!regularSessionStartedToday(market, nowMs)) return false;
+    // A quote that KNOWS which session produced it must have come from today's.
+    // Sources with no tick timestamp (Stooq's end-of-day CSV) otherwise fall through
+    // to the clock check below, and yesterday's close gets counted as today's move
+    // the moment the market opens. null/undefined still passes — exactly the rule
+    // the two "Today" aggregates in pb-views.js already apply on their own.
+    if (quote.sessionDay != null && quote.sessionDay !== marketDayKey(nowMs, market)) return false;
     if (typeof quote.regularMarketTime === 'number' && isFinite(quote.regularMarketTime)) {
       return tradedToday(quote.regularMarketTime, nowMs);
     }
@@ -531,6 +537,38 @@
       }).format(new Date(ms));
     } catch (_e) { return null; }
   }
+  // Is the feed's own last REGULAR-hours print NEWER than the newest daily bar?
+  // Yahoo's daily series can lag its own tape: the bar for a completed session
+  // arrives late, or arrives with a null close (which buildDailyBars drops). The
+  // last daily bar is then NOT "the last completed regular close" — it is the one
+  // BEFORE it — while meta.regularMarketPrice already carries the right number.
+  // Returns the market-local day that tick belongs to, or null when the series is
+  // level with the tape (the normal case, and a no-op for every caller).
+  //
+  // The regular-HOURS test is load-bearing, not decoration. meta.regularMarketTime
+  // is the last TRADED print, so during US pre/post it is an EXTENDED-hours tick on
+  // a day the daily series legitimately has no bar for yet. Believing it there is
+  // precisely the defect deriveDayMove exists to prevent (Oracle read +11.18%
+  // against Yahoo's +9.00%), so a tick outside [regOpen, regClose] never qualifies.
+  // Markets with no extended session (JSE/TFSA/LSE/ASX/EU) have regOpen/regClose
+  // spanning their whole window — see SESSIONS — so their close print qualifies.
+  function regularTickAfterBars(bars, lastTickMs, market) {
+    if (!Array.isArray(bars) || !bars.length) return null;
+    if (typeof lastTickMs !== 'number' || !isFinite(lastTickMs)) return null;
+    const lastBar = bars[bars.length - 1];
+    if (!lastBar || lastBar.t == null) return null;
+    const barDay = marketDayKey(lastBar.t, market);
+    const tickDay = marketDayKey(lastTickMs, market);
+    // Both are YYYY-MM-DD, so a string compare IS a date compare.
+    if (barDay == null || tickDay == null || !(tickDay > barDay)) return null;
+    const s = SESSIONS[market] || SESSIONS.US;
+    try {
+      const { mins } = localWeekdayMins(s.tz, lastTickMs);
+      const regOpen = typeof s.regOpen === 'number' ? s.regOpen : s.open;
+      const regClose = typeof s.regClose === 'number' ? s.regClose : s.close;
+      return (mins >= regOpen && mins <= regClose) ? tickDay : null;
+    } catch (_e) { return null; } // Intl failure → keep the bar, the cautious side
+  }
   // Yahoo's regularMarketPreviousClose is often stale, in the wrong unit, or
   // missing — which produces an inflated %-change. Derive it from the daily bars
   // instead, anchored to the market's OWN trading day: the last bar is the current
@@ -610,10 +648,23 @@
       return null;
     };
     let candidate = null;
+    // Has the feed printed a regular close for a session the daily series hasn't
+    // caught up with? (null in the normal case — see regularTickAfterBars.)
+    const aheadDay = regularTickAfterBars(bars, lastTick, market);
     if (lastDay != null && todayKey != null && lastDay === todayKey) {
       // Today's session is on the chart — `price` belongs to it.
       out.sessionDay = todayKey;
       candidate = closeBefore(lastDay, bars.length - 2);
+    } else if (lastBarRecent && aheadDay != null) {
+      // The daily series lags its own tape, so `price` is the close of `aheadDay`
+      // and the last bar IS that session's previous close. BEFORE A MARKET'S OPEN
+      // this is the only branch that can fire — the one below is gated on
+      // regularSessionStartedToday, which is false until the bell — and without it
+      // both `price` and `prevClose` slid back a session together, which is what
+      // left the whole SA book short yesterday's move at 07:53 SAST. No holiday
+      // guard is needed here: a holiday produces no regular-hours tick at all.
+      out.sessionDay = aheadDay;
+      candidate = lastBar.p;
     } else if (lastBarRecent && regularSessionStartedToday(market, now) && tickedOn(lastTick, todayKey)) {
       // The regular session has opened today but Yahoo hasn't printed its daily
       // bar yet: `price` is today's live price, so the last bar IS the previous
@@ -885,9 +936,21 @@
     // the SAME source. A single-bar result (range=1d, or a sparse listing) has no
     // series to derive a previous close from, so prevClose falls back to meta —
     // and the price must then come from meta too, or the pair straddles sources.
+    // ONE exception to "the last daily bar wins", and it is the whole of "the SA
+    // book was a session behind before the open": when the feed's own last REGULAR
+    // print is NEWER than the newest daily bar, that bar is not the last completed
+    // close — meta's price is. Taking the bar there drops a whole session out of
+    // every holding's value, and does it invisibly, because deriveDayMove then
+    // anchors prevClose one session further back and the "At close" chip stays
+    // internally consistent. plausiblePriceMove keeps a cents/rand divisor glitch
+    // from riding in on this path; if it trips, the bar (same units as prevClose)
+    // still wins.
+    const seriesLagsTape = regularTickAfterBars(bars, lastTick, market) != null;
+    const metaLeadsSeries = seriesLagsTape && lastBar != null && plausiblePriceMove(lastBar.p, price);
     if (opts.regularPrice > 0 && isFinite(opts.regularPrice)) {
       price = opts.regularPrice;
-    } else if (market !== 'CRYPTO' && bars.length >= 2 && marketSession(market, now).phase !== 'open') {
+    } else if (market !== 'CRYPTO' && bars.length >= 2 && marketSession(market, now).phase !== 'open'
+               && !metaLeadsSeries) {
       price = lastBar.p;
     }
     // `price` and `prevClose` are resolved together so they always bracket the
@@ -1707,6 +1770,7 @@ function rotationSummary(classified) {
     mergeCostBasis,
     buildDailyBars,
     marketDayKey,
+    regularTickAfterBars,
     derivePrevClose,
     deriveDayMove,
     plausiblePriceMove,

@@ -184,6 +184,19 @@ Key mechanics:
   — a completed regular close — wins. The daily quote URLs therefore carry **no**
   `includePrePost`: with it, the current day's daily bar absorbs pre/post trades
   and stops being a regular close. Guarded by `backend/test/day-move.test.mjs`.
+  **One exception, and it is not optional**: the daily series can lag its own tape —
+  the bar for a finished session arrives late, or arrives with a `null` close that
+  `buildDailyBars` drops — and then the newest bar is a session too far back.
+  `PBCore.regularTickAfterBars` detects that from the response's own internal
+  contradiction (`meta.regularMarketTime` is a REGULAR-hours print on a market-local
+  day *after* the newest bar) and hands the session back to `meta.regularMarketPrice`,
+  with the last bar as its previous close. Without it, `price` **and** `prevClose`
+  slid back together, so the quote stayed self-consistent and nothing on screen
+  could reveal that every holding's value was short a whole session — which is
+  exactly what the SA/TFSA book showed before the JSE open (2026-08-05). The
+  regular-hours half of the test is what keeps the Oracle fix intact: a pre/post
+  print also lands on a day the series has no bar for, and must never be believed.
+  Same guard in `fetchQuoteLight`, so the heatmap can't disagree with the row.
 - **Extended-hours quotes**: `PBCore.deriveIntradayExt` turns the 1m intraday chart
   (which *does* keep `includePrePost`) into the pre/post readout. Two modes: a LIVE
   session (`extLive:true`, labels "Pre-market"/"After-hours", may assert marketState
