@@ -179,5 +179,40 @@ for (const fn of ['fetchQuote', 'fetchQuoteBatch', 'fetchHistory', 'searchUnitTr
 }
 ok('app.js injects the indicator catalog', /PBData\.configure\(\s*\{[^}]*indicatorCatalog/.test(appSrc));
 
+// ── Unit-trust NAV must declare its own session ─────────────────────────────
+// A unit trust strikes ONE NAV per day and Morningstar publishes it in arrears,
+// so ClosePriceDate is routinely the previous business day and ReturnD1 is that
+// day's move. The quote used to carry no sessionDay at all — skipping
+// quoteTradedToday's strongest gate — and, when ClosePriceDate was missing,
+// stamped regularMarketTime with Date.now(), inventing a tick for a NAV of
+// unknown age. Between them the gate returned true unconditionally and a
+// PREVIOUS-day move was summed into the Dashboard's "Today" pill every morning.
+const utRows = (row) => JSON.stringify({ rows: [row] }) + ' '.repeat(40);
+globalThis.fetch = async () => ({ ok: true, text: async () => utRows({
+  SecId: 'F000002CRJ', Name: 'Allan Gray Balanced', ClosePrice: 152.4,
+  PriceCurrency: 'ZAR', ReturnD1: 0.85, ClosePriceDate: '2026-08-04T00:00:00.000'
+}) });
+let ut = await PBData.fetchUnitTrustQuote('F000002CRJ');
+ok('unit trust quote carries sessionDay from its NAV date', ut && ut.sessionDay === '2026-08-04', ut && ut.sessionDay);
+ok('unit trust tick is the NAV date, not now', ut && ut.regularMarketTime === Date.parse('2026-08-04T00:00:00.000'));
+// The whole point: a T-1 NAV must not count toward a session it never saw.
+ok("a T-1 NAV does not count toward the next day's Today",
+  PBCore.quoteTradedToday(ut, 'JSE', Date.UTC(2026, 7, 5, 9, 0)) === false);
+ok('the same NAV does count on its own session day',
+  PBCore.quoteTradedToday(ut, 'JSE', Date.UTC(2026, 7, 4, 9, 0)) === true);
+
+globalThis.fetch = async () => ({ ok: true, text: async () => utRows({
+  SecId: 'F000002CRJ', Name: 'Allan Gray Balanced', ClosePrice: 152.4, PriceCurrency: 'ZAR', ReturnD1: 0.85
+}) });
+ut = await PBData.fetchUnitTrustQuote('F000002CRJ');
+ok('missing ClosePriceDate → null tick, never a fabricated Date.now()',
+  ut && ut.regularMarketTime === null && ut.sessionDay === null);
+// An undated NAV keeps its PRICE (valuation is unaffected) but withholds the
+// move: ReturnD1 is a completed-session figure and we cannot say which session.
+// A null prevClose is what keeps it out of both "Today" sums.
+ok('undated NAV keeps its price', ut && ut.price === 152.4);
+ok('undated NAV withholds the day move rather than guessing it',
+  ut && ut.prevClose === null && ut.changePct === null && ut.change === null);
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll data-providers tests passed');
 process.exit(failures ? 1 : 0);

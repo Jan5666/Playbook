@@ -717,6 +717,12 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .hsum-today.up { color: var(--emerald); }
 .hsum-today.down { color: var(--rose); }
 .hsum-today-arrow { font-size: 8px; line-height: 1; }
+/* Coverage note beside the market's Today figure, shown only when the sweep hasn't
+   priced every holding for the current session. Deliberately muted and un-tinted:
+   it qualifies the number, it isn't part of the up/down reading. */
+.hsum-today-partial {
+  color: var(--text-dim); font-weight: 500; font-size: 10px;
+}
 /* Holdings action cluster — sort + import + add, pinned to the right. The sort
    popover anchors to this cluster's right edge so it never opens off-screen. */
 .holdings-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }

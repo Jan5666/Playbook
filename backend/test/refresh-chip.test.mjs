@@ -37,5 +37,24 @@ ok('idle dot is live', refreshChipState({ lastUpdateMs: 0, nowMs: 1000 }).dot ==
 ok('app.js binds fmtAgo from PBCore', /const\s+fmtAgo\s*=\s*PBCore\.fmtAgo/.test(appSrc));
 ok('app.js binds refreshChipState from PBCore', /const\s+refreshChipState\s*=\s*PBCore\.refreshChipState/.test(appSrc));
 ok('app.js has no local function fmtAgo / refreshChipState', !/function\s+fmtAgo\s*\(/.test(appSrc) && !/function\s+refreshChipState\s*\(/.test(appSrc));
+
+// ── The sweep must never be able to latch the chip on "Updating…" ───────────
+// refreshChipState gives `loading` top priority, so a sweep that never finishes
+// pins the chip there forever — and because runFetch's loadingRef gates BOTH the
+// auto-poll and the manual button, the button silently stops doing anything.
+// That is what "I press refresh and nothing happens" was. usePriceFeed is React
+// and never loads under node, so this is a source guard; the behaviour it depends
+// on (every network read settling) is covered by data-proxy.test.mjs.
+const feed = appSrc.slice(appSrc.indexOf('function usePriceFeed('), appSrc.indexOf('function useAlertEngine('));
+ok('a sweep watchdog constant exists', /const\s+SWEEP_WATCHDOG_MS\s*=\s*\d+/.test(appSrc));
+ok('runFetch arms the watchdog', /setTimeout\(\s*\(\)\s*=>\s*\{[\s\S]{0,200}?release\(\);?\s*\}\s*,\s*SWEEP_WATCHDOG_MS\)/.test(feed));
+ok('the watchdog reports a failure so the chip stops claiming progress',
+  /if\s*\(seq\s*!==\s*sweepSeqRef\.current\)\s*return;\s*\n\s*setFailStreak/.test(feed));
+ok('release clears BOTH the ref and the react flag', /loadingRef\.current\s*=\s*false;\s*\n\s*setLoading\(false\);/.test(feed));
+ok('release is generation-guarded so a late sweep cannot clear a newer one',
+  /const\s+release\s*=[\s\S]{0,300}?seq\s*!==\s*sweepSeqRef\.current/.test(feed));
+ok('the watchdog is cleared on the normal path', /clearTimeout\(watchdog\);/.test(feed));
+ok('a thrown sweep drops its queued force instead of leaking it',
+  /catch\s*\(e\)\s*\{[\s\S]{0,300}?pendingForceRef\.current\s*=\s*false;/.test(feed));
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll refresh-chip tests passed');
 process.exit(failures ? 1 : 0);

@@ -72,25 +72,43 @@
   // unique &_=<ts> so manual refreshes are distinct urls and bypass de-dupe.
   const _inflight = new Map();
   const _fetchLimit = pLimit(8);
+  // ONE deadline covering the headers AND the body, run inside the limiter.
+  //
+  // The obvious shape — abort the fetch, then read the body — is wrong, and was
+  // wrong here for a long time: `fetch()` resolves as soon as the RESPONSE HEADERS
+  // land, so clearing the timer at that point leaves `res.text()`/`res.json()`
+  // reading an open socket with nothing watching it. A proxy that answers 200 and
+  // then stalls the body hangs that read FOREVER — not slowly, unboundedly — and a
+  // single stall used to wedge the whole app: the _inflight entry for that url
+  // (byte-identical on every auto-poll, which omits cacheBust), the
+  // Promise.allSettled inside fetchQuoteBatch, and through it usePriceFeed's
+  // loadingRef — which is what made the manual refresh button a silent no-op.
+  //
+  // `read` runs BEFORE the finally clears the timer, so the same AbortController
+  // covers both halves. The timer starts when the limiter ADMITS the call, not
+  // while it is queued for a slot — a request shouldn't time out waiting its turn,
+  // so wall-clock-to-failure can still exceed timeoutMs by the queue wait.
+  // Returns { ok, status, value }; `value` is whatever `read` produced.
+  function fetchWithDeadline(url, init, timeoutMs, read) {
+    return _fetchLimit(async () => {
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+      try {
+        const res = await fetch(url, ctrl ? Object.assign({}, init, { signal: ctrl.signal }) : init);
+        if (!res.ok) return { ok: false, status: res.status, value: null };
+        return { ok: true, status: res.status, value: await read(res) };
+      } finally { if (t) clearTimeout(t); }
+    });
+  }
   function fetchViaProxies(url, { timeoutMs = 8000 } = {}) {
     const existing = _inflight.get(url);
     if (existing) return existing;
     const run = (async () => {
       for (const px of orderedProxies()) {
         try {
-          // The abort timeout starts when the limiter ADMITS the fetch (inside the
-          // limited fn), not while the request is still queued for a slot — a request
-          // shouldn't time out merely waiting its turn. Under heavy concurrency this
-          // means wall-clock-to-failure can exceed timeoutMs by the queue wait.
-          const res = await _fetchLimit(async () => {
-            const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-            const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
-            try { return await fetch(px.build(url), { cache: 'no-store', signal: ctrl?.signal }); }
-            finally { if (t) clearTimeout(t); }
-          });
-          if (!res.ok) continue;
-          const text = await res.text();
-          const body = px.unwrap(text);
+          const out = await fetchWithDeadline(px.build(url), { cache: 'no-store' }, timeoutMs, r => r.text());
+          if (!out.ok) continue;
+          const body = px.unwrap(out.value);
           if (looksLikeProxyError(body)) continue;
           lastGoodProxy = px.name;
           return body;
@@ -265,19 +283,44 @@
   function morningstarRowToQuote(r) {
     const price = Number(r.ClosePrice);
     if (!isFinite(price) || price <= 0) return null;
+    // Which session does this NAV belong to? A unit trust strikes one NAV per day
+    // and Morningstar publishes it in arrears, so ClosePriceDate is routinely the
+    // PREVIOUS business day — exactly the case the "Today" gates exist to reject.
+    //
+    // Two things were wrong here and they compounded. The quote carried no
+    // sessionDay at all, so quoteTradedToday's strongest gate was skipped; and
+    // when ClosePriceDate was missing it stamped regularMarketTime with Date.now(),
+    // fabricating a tick for a NAV that might be days old. Together they made the
+    // gate return true unconditionally, and ReturnD1 — a PREVIOUS-day move — was
+    // summed straight into the Dashboard's "Today" pill every morning.
+    // A null tick is honest about not knowing; an invented one is not.
+    const navMs = r.ClosePriceDate ? Date.parse(r.ClosePriceDate) : NaN;
+    const navAt = isFinite(navMs) ? navMs : null;
     // ReturnD1 is the 1-day NAV move (%) — back out yesterday's NAV for change.
+    // With no ClosePriceDate we cannot say WHICH day's move it is, and ReturnD1 is
+    // a completed-session figure by construction, so the day move is withheld
+    // entirely rather than guessed. The price still stands (valuation is unaffected
+    // and a NAV doesn't go stale the way a live tick does); only the move is
+    // suppressed, which drops the holding out of both "Today" sums via their
+    // prevClose gate and blanks its row chip. Guessing here is what put a
+    // previous-day NAV move into today's pill.
     const ret = Number(r.ReturnD1);
-    const prevClose = (isFinite(ret) && ret > -100) ? price / (1 + ret / 100) : price;
-    const change = price - prevClose;
+    const dated = navAt != null;
+    const prevClose = !dated ? null
+      : ((isFinite(ret) && ret > -100) ? price / (1 + ret / 100) : price);
+    const change = dated ? price - prevClose : null;
     return {
       price, prevClose, change,
-      changePct: prevClose > 0 ? (change / prevClose) * 100 : 0,
+      changePct: dated ? (prevClose > 0 ? (change / prevClose) * 100 : 0) : null,
       yearHigh: null, yearLow: null, dayHigh: null, dayLow: null, volume: null,
       extPrice: null, extChange: null, extChangePct: null, extKind: null, extLive: null, extAsOf: null,
       currency: 'ZAR',
       marketState: 'CLOSED',     // a unit trust strikes one NAV per day, not live
       shortName: r.Name, longName: r.Name,
-      regularMarketTime: r.ClosePriceDate ? Date.parse(r.ClosePriceDate) : Date.now(),
+      regularMarketTime: navAt,
+      // Unit trusts are JSE/TFSA instruments, so the NAV's session is judged on
+      // the Johannesburg calendar like every other quote on those tabs.
+      sessionDay: navAt != null ? marketDayKey(navAt, 'JSE') : null,
       fetchedAt: Date.now(),
       source: 'morningstar'
     };
@@ -1053,9 +1096,20 @@
   // Every FX request goes through the same pLimit(8) gate as the quote providers,
   // so a portfolio import's historical lookups can't stack on top of a price sweep
   // and trip the shared proxies' rate limits. Unlike fetchViaProxies this keeps the
-  // caller's cache mode and hands back the Response (the FX readers want .json()).
-  function fxFetch(url, cacheMode) {
-    return _fetchLimit(() => fetch(url, { cache: cacheMode }));
+  // caller's cache mode; it parses through fetchWithDeadline so ONE AbortController
+  // covers the headers and the JSON body alike.
+  //
+  // This path had no timeout AT ALL, which was worse than the quote ladder's: both
+  // FX readers memoise the in-flight promise (_fxRatesInflight / _fxInflight), so a
+  // single stalled response poisoned that entry for the whole session — every later
+  // refreshFx() handed back the same promise that would never settle, and the rates
+  // silently froze at whatever was last persisted.
+  // Mutable for tests only: the historical ladder is 2 endpoints x 4 proxies, so a
+  // full walk at the shipped 8s is ~64s of wall clock — far too slow to sit in a
+  // node suite, and shortening the ladder instead would stop testing the real one.
+  let FX_TIMEOUT_MS = 8000;
+  function fxFetch(url, cacheMode, read) {
+    return fetchWithDeadline(url, { cache: cacheMode }, FX_TIMEOUT_MS, read);
   }
   const HISTORICAL_FX_CACHE = {};
   // Collapse concurrent identical lookups. The completed-value cache below already
@@ -1082,9 +1136,9 @@
     for (const url of endpoints) {
       for (const build of FX_PROXIES) {
         try {
-          const res = await fxFetch(build(url), 'force-cache');
-          if (!res.ok) continue;
-          const d = await res.json();
+          const out = await fxFetch(build(url), 'force-cache', r => r.json());
+          if (!out.ok) continue;
+          const d = out.value;
           const rate = d?.rates?.[code];
           if (typeof rate === 'number' && isFinite(rate) && rate > 0) {
             HISTORICAL_FX_CACHE[cacheKey] = rate;
@@ -1112,9 +1166,9 @@
     const url = 'https://open.er-api.com/v6/latest/USD';
     for (const build of FX_PROXIES) {
       try {
-        const res = await fxFetch(build(url), 'no-store');
-        if (!res.ok) continue;
-        const d = await res.json();
+        const out = await fxFetch(build(url), 'no-store', r => r.json());
+        if (!out.ok) continue;
+        const d = out.value;
         if (d && (d.result === 'success' || d.rates)) {
           const pick = {};
           DISPLAY_CURRENCIES.forEach(c => {
@@ -1149,6 +1203,9 @@
       _fxInflight.clear();
       _fxRatesInflight = null;
     },
+    // Test seam: shrink the per-attempt FX deadline so a suite can walk the real
+    // ladder end-to-end in milliseconds. Never called from app code.
+    _setFxTimeoutMs(ms) { FX_TIMEOUT_MS = ms > 0 ? ms : 8000; },
     get _lastGoodProxy() { return lastGoodProxy; }
   };
 

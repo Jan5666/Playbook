@@ -58,17 +58,47 @@ if (typeof parseYahooQuote === 'function') {
 
   // ── deriveIntradayExt: classify now against pre/post, measure vs regular ─────
   const ctp = { regular: { start: 1000, end: 2000 }, pre: { start: 500, end: 1000 }, post: { start: 2000, end: 3000 } };
+  // The regular-window bar at 1900 IS the baseline these two cases assert against.
+  // It used to be absent, and the assertions passed only because the resolver fell
+  // back to meta.regularMarketPrice — which inside a live post session is the POST
+  // price, not a regular one, so the fixture was pinning a number the resolver got
+  // right by luck. A real includePrePost=1d response always carries the regular
+  // session's bars, so this shape is both more faithful and actually load-bearing.
   const extRes = {
-    meta: { regularMarketPrice: 100, currency: 'USD', currentTradingPeriod: ctp },
-    timestamp: [2100, 2200, 2300], indicators: { quote: [{ close: [101, 102, 103] }] }
+    meta: { regularMarketPrice: 103, currency: 'USD', currentTradingPeriod: ctp },
+    timestamp: [1900, 2100, 2200, 2300], indicators: { quote: [{ close: [100, 101, 102, 103] }] }
   };
   let ext = deriveIntradayExt(extRes, 'US', 2250 * 1000); // now in post window
   ok('deriveIntradayExt post: latest in-session close', ext && near(ext.extPrice, 103) && ext.extKind === 'post' && ext.marketState === 'POST');
   ok('deriveIntradayExt post: change vs regular close', ext && near(ext.extChange, 3) && near(ext.extChangePct, 3));
   ok('deriveIntradayExt during regular session → null', deriveIntradayExt(extRes, 'US', 1500 * 1000) === null);
   // No meaningful move (ext == regular) → null.
-  const flat = { meta: { regularMarketPrice: 103, currency: 'USD', currentTradingPeriod: ctp }, timestamp: [2300], indicators: { quote: [{ close: [103] }] } };
+  const flat = { meta: { regularMarketPrice: 103, currency: 'USD', currentTradingPeriod: ctp }, timestamp: [1900, 2300], indicators: { quote: [{ close: [103, 103] }] } };
   ok('deriveIntradayExt no move → null', deriveIntradayExt(flat, 'US', 2250 * 1000) === null);
+
+  // ── The ext baseline must never be meta.regularMarketPrice ──────────────────
+  // In a LIVE ext session that field is the ext price itself, so using it measured
+  // the session against itself and printed ~0.00%. PRE is where this bit hardest:
+  // today's regular window is empty by definition, so regBar is always null, and
+  // opts.regularClose is missing exactly when the daily fetch failed — which is
+  // when the pre-market chip was reported missing.
+  const preBars = { timestamp: [600, 700, 800], indicators: { quote: [{ close: [105, 106, 107] }] } };
+  const preNoBaseline = { meta: { regularMarketPrice: 107, currency: 'USD', currentTradingPeriod: ctp }, ...preBars };
+  ok('deriveIntradayExt pre: no baseline at all → null (never self-referential)',
+    deriveIntradayExt(preNoBaseline, 'US', 750 * 1000) === null);
+  const preWithPrevClose = { meta: { regularMarketPrice: 107, chartPreviousClose: 100, currency: 'USD', currentTradingPeriod: ctp }, ...preBars };
+  let preExt = deriveIntradayExt(preWithPrevClose, 'US', 750 * 1000);
+  ok('deriveIntradayExt pre: falls back to chartPreviousClose, not the ext price',
+    preExt && near(preExt.extPrice, 107) && near(preExt.extChangePct, 7) && preExt.extKind === 'pre');
+  // The caller's own daily-quote price still outranks chartPreviousClose.
+  preExt = deriveIntradayExt(preWithPrevClose, 'US', 750 * 1000, { regularClose: 100 });
+  ok('deriveIntradayExt pre: opts.regularClose still wins', preExt && near(preExt.extChangePct, 7));
+  // POST has no honest substitute for TODAY's close — yesterday's would overstate
+  // the after-hours move by the whole regular session — so it yields nothing.
+  const postNoRegBar = { meta: { regularMarketPrice: 103, chartPreviousClose: 90, currency: 'USD', currentTradingPeriod: ctp },
+    timestamp: [2100, 2300], indicators: { quote: [{ close: [101, 103] }] } };
+  ok('deriveIntradayExt post: chartPreviousClose is NOT accepted as the baseline',
+    deriveIntradayExt(postNoRegBar, 'US', 2250 * 1000) === null);
   ok('deriveIntradayExt missing meta → null', deriveIntradayExt({}, 'US', 2250 * 1000) === null);
 
   // ── parseYahooQuote: normalized quote shape ─────────────────────────────────

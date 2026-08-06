@@ -89,9 +89,84 @@ globalThis.fetch = async () => { active++; peak = Math.max(peak, active); await 
 await Promise.all(Array.from({ length: 20 }, (_, i) => PBData.fetchViaProxies('https://query1.finance.yahoo.com/cap' + i)));
 ok('limiter: peak concurrent fetch ≤ 8', peak <= 8 && peak > 0);
 
+// ── STALLED BODY: the deadline must cover res.text(), not just the headers ───
+// The failure this pins is not "slow" — it is UNBOUNDED. A proxy that returns
+// headers and then never finishes the body used to hang forever, because the
+// abort timer was cleared the moment fetch() resolved and the body was read
+// outside any deadline. One stall then wedged three things at once, all of them
+// permanent for the life of the page:
+//   • the _inflight entry for that url (the auto-poll url is byte-identical
+//     every poll — no cacheBust — so that symbol could never be fetched again);
+//   • fetchQuoteBatch's Promise.allSettled, hence usePriceFeed's runFetch;
+//   • loadingRef, which makes the manual refresh button a silent no-op.
+// A faithful mock must honour the abort signal, because that is exactly what a
+// real Response.text() does — it rejects with AbortError when the controller
+// fires. With the timer alive across the body read, the ladder simply moves on.
+function stallingBody(signal) {
+  return new Promise((_resolve, reject) => {
+    if (!signal) return;                       // no signal → hangs, as it used to
+    if (signal.aborted) return reject(new Error('AbortError'));
+    signal.addEventListener('abort', () => reject(new Error('AbortError')));
+  });
+}
+const CLEAN = '{"good":true,"padding":"aaaaaaaaaaaaaaaaaaaa"}';
+
+PBData._setLastGoodProxy(null);
+let stalls = 0;
+globalThis.fetch = async (_u, opts) => {
+  stalls++;
+  return { ok: true, text: () => stallingBody(opts && opts.signal) };
+};
+let t0 = Date.now();
+let stalled = await Promise.race([
+  PBData.fetchViaProxies('https://query1.finance.yahoo.com/stall', { timeoutMs: 150 }),
+  new Promise(r => setTimeout(() => r('HUNG'), 4000))
+]);
+ok('stalled body: settles instead of hanging forever', stalled !== 'HUNG');
+ok('stalled body: all proxies tried, returns null', stalled === null && stalls === 6);
+ok('stalled body: honours the deadline (not the 4s guard)', Date.now() - t0 < 3000);
+
+// …and the in-flight entry must be freed, or that url is dead for the session.
+stalls = 0;
+globalThis.fetch = async () => ({ ok: true, text: async () => CLEAN });
+let afterStall = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/stall', { timeoutMs: 150 });
+ok('stalled body: _inflight freed, same url refetches', afterStall === CLEAN && stalls === 0);
+
+// A stall on the FIRST proxy must fall through to the next one, not abort the sweep.
+PBData._setLastGoodProxy(null);
+let idx = 0;
+globalThis.fetch = async (_u, opts) => {
+  idx++;
+  if (idx === 1) return { ok: true, text: () => stallingBody(opts && opts.signal) };
+  return { ok: true, text: async () => CLEAN };
+};
+body = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/stall2', { timeoutMs: 150 });
+ok('stalled body: ladder falls through to the next proxy', body === CLEAN && idx === 2);
+
+// The concurrency slot must be released too — a stalled body must not permanently
+// consume one of the 8 shared slots (that would starve every other provider).
+PBData._setLastGoodProxy(null);
+globalThis.fetch = async (u, opts) => (u.includes('slot-stall')
+  ? { ok: true, text: () => stallingBody(opts && opts.signal) }
+  : { ok: true, text: async () => CLEAN });
+const stallers = Array.from({ length: 8 }, (_, i) =>
+  PBData.fetchViaProxies('https://query1.finance.yahoo.com/slot-stall' + i, { timeoutMs: 150 }));
+const passenger = await Promise.race([
+  PBData.fetchViaProxies('https://query1.finance.yahoo.com/passenger', { timeoutMs: 150 }),
+  new Promise(r => setTimeout(() => r('STARVED'), 4000))
+]);
+ok('stalled body: releases its limiter slot', passenger === CLEAN);
+await Promise.all(stallers);
+
 // Anti-drift guard
 ok('app.js binds fetchViaProxies from PBData', /const\s+fetchViaProxies\s*=\s*PBData\.fetchViaProxies/.test(appSrc));
 ok('app.js has no local function fetchViaProxies', !/function\s+fetchViaProxies\s*\(/.test(appSrc));
+// The body read must sit INSIDE the deadline. Pinning the source shape as well as
+// the behaviour, because a future refactor that hoists res.text() back out would
+// still pass every behavioural test above on a mock that resolves quickly.
+const dataSrcProxy = readFileSync(join(here, '..', '..', 'pb-data.js'), 'utf8');
+ok('pb-data reads the body through the deadline helper',
+  /fetchWithDeadline/.test(dataSrcProxy) && !/const\s+text\s*=\s*await\s+res\.text\(\)/.test(dataSrcProxy));
 
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll data-proxy tests passed');
 process.exit(failures ? 1 : 0);

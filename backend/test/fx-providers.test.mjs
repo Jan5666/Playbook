@@ -210,6 +210,59 @@ ok(`FX fetches respect the shared pLimit(8) cap (max in flight = ${gate.stats().
 await gate.releaseAll();
 await Promise.all(many);
 
+// ─── A stalled body must not poison the in-flight memo for the session ──────
+// Both FX readers memoise the in-flight promise, and this path had no timeout at
+// all: fetch() resolves on headers, and `await res.json()` then read an open
+// socket with nothing watching it. One proxy that answered 200 and stalled the
+// body left _fxRatesInflight holding a promise that could never settle, so every
+// later refreshFx() — including the 6-hourly timer — handed back that same dead
+// promise and the rates froze at whatever was last persisted. The mock honours
+// the abort signal because that is what a real Response.json() does.
+function stallingJson(signal) {
+  return new Promise((_resolve, reject) => {
+    if (!signal) return;                       // no signal → hangs, as it used to
+    if (signal.aborted) return reject(new Error('AbortError'));
+    signal.addEventListener('abort', () => reject(new Error('AbortError')));
+  });
+}
+
+// The real ladders are walked in full (4 proxies live, 2 endpoints x 4 historical);
+// only the per-attempt deadline is shortened, so the shapes under test are the
+// shipped ones. The HUNG guard is an order of magnitude above the whole walk.
+PBData._setFxTimeoutMs(50);
+PBData._resetFxCache();
+let fxStallCalls = 0;
+globalThis.fetch = async (_u, opts) => {
+  fxStallCalls++;
+  return { ok: true, json: () => stallingJson(opts && opts.signal) };
+};
+const fxStalled = await Promise.race([
+  PBData.fetchFxRates(),
+  new Promise(r => setTimeout(() => r('HUNG'), 5000))
+]);
+ok('fetchFxRates: stalled body settles instead of hanging forever', fxStalled !== 'HUNG');
+ok('fetchFxRates: stalled body walks the whole ladder → null',
+  fxStalled === null && fxStallCalls === 4);
+
+// …and the very next call must reach the network again, not reuse a dead promise.
+installFetch([{ result: 'success', rates: { ZAR: 19.1, GBP: 0.8 } }]);
+const fxAfterStall = await PBData.fetchFxRates();
+ok('fetchFxRates: in-flight memo cleared after a stall',
+  !!fxAfterStall && fxAfterStall.rates && fxAfterStall.rates.ZAR === 19.1);
+
+// Same for the historical reader, whose memo is keyed per date+currency.
+PBData._resetFxCache();
+globalThis.fetch = async (_u, opts) => ({ ok: true, json: () => stallingJson(opts && opts.signal) });
+const histStalled = await Promise.race([
+  PBData.fetchHistoricalFx('2026-08-05', 'ZAR'),
+  new Promise(r => setTimeout(() => r('HUNG'), 5000))
+]);
+ok('fetchHistoricalFx: stalled body settles', histStalled !== 'HUNG' && histStalled === null);
+installFetch([{ rates: { ZAR: 18.77 } }]);
+ok('fetchHistoricalFx: in-flight memo cleared after a stall',
+  await PBData.fetchHistoricalFx('2026-08-05', 'ZAR') === 18.77);
+PBData._setFxTimeoutMs(8000);   // restore the shipped deadline for later cases
+
 // ─── Anti-drift guards ──────────────────────────────────────────────────────
 for (const fn of ['fetchFxRates', 'fetchHistoricalFx']) {
   ok(`app.js has no local function ${fn}`, !new RegExp(`function\\s+${fn}\\s*\\(`).test(appSrc));

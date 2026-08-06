@@ -1639,6 +1639,12 @@ const PRICES_LS_KEY = 'pb.prices.v1';
 const PRICES_MAX_AGE_MS = 3 * 24 * 3600 * 1000; // drop quotes older than 3 days
 const PRICES_PERSIST_MS = 1200;       // trailing quiet period before a price write
 const PRICES_PERSIST_MAX_MS = 10000;  // hard checkpoint ceiling for a merge stream
+// How long one price sweep may hold the UI in "Updating…" before the feed admits
+// defeat. Not a cancellation — the sweep runs on and its batches keep painting —
+// just the point past which the chip must stop claiming progress and the refresh
+// button must become pressable again. Comfortably longer than a healthy full
+// sweep on mobile data, comfortably shorter than a user's patience.
+const SWEEP_WATCHDOG_MS = 60000;
 // ─── Market hours ────────────────────────────────────────────────────────────
 // Sessions table + marketOpen/anyMarketOpen now live in pb-core.js (loaded before
 // this script), shared with backend/worker.js so the poll cadence and the push
@@ -1743,9 +1749,37 @@ function usePriceFeed(order, fetchKey) {
   // once more (with cache-bust) the moment it finishes — the press always ends
   // in genuinely fresh data instead of being silently dropped by the guard.
   const pendingForceRef = useRef(false);
+  // Which sweep owns the shared loading flags. A sweep that outlives its watchdog
+  // and finishes AFTER a newer one started must not clear the newer one's spinner
+  // or its "Updating…" chip, so every release is checked against this.
+  const sweepSeqRef = useRef(0);
   const runFetch = useCallback(async (cacheBust) => {
+    const seq = ++sweepSeqRef.current;
     loadingRef.current = true;
     setLoading(true);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (seq !== sweepSeqRef.current) return;   // a newer sweep owns the flags now
+      loadingRef.current = false;
+      setLoading(false);
+    };
+    // A sweep must never be able to latch the UI on "Updating…". Every individual
+    // network read is deadlined in pb-data (fetchWithDeadline), but a sweep is
+    // dozens of them plus batch sequencing, so a bad enough network can still run
+    // far longer than anyone will wait — and while loadingRef stays true both the
+    // auto-poll and the manual button early-return, which is exactly how "I press
+    // refresh and nothing happens" used to feel.
+    //
+    // The watchdog does NOT cancel the sweep: its onBatch merges keep painting as
+    // they land. It releases the UI so the chip can tell the truth and the next
+    // press starts a genuinely fresh, cache-busted run.
+    const watchdog = setTimeout(() => {
+      if (seq !== sweepSeqRef.current) return;
+      setFailStreak(prev => prev + 1);
+      release();
+    }, SWEEP_WATCHDOG_MS);
     try {
       do {
         const force = cacheBust || pendingForceRef.current;
@@ -1764,10 +1798,13 @@ function usePriceFeed(order, fetchKey) {
       } while (pendingForceRef.current);
     } catch (e) {
       console.error('Refresh failed:', e);
+      // Drop the queued force too: the sweep it was meant to ride is over, and
+      // leaving it set would make the NEXT press loop an extra time for nothing.
+      pendingForceRef.current = false;
       setFailStreak(prev => prev + 1);
     }
-    loadingRef.current = false;
-    setLoading(false);
+    clearTimeout(watchdog);
+    release();
   }, [persistPrices, guardBatch]);
   // Auto-poll: skip if a fetch is already running (no point double-polling).
   const refresh = useCallback(() => {
