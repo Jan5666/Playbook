@@ -17,6 +17,10 @@ const quoteTradedToday = PBCore.quoteTradedToday;
 const marketDayKey = PBCore.marketDayKey;
 // Session phase for the day chip's "At close" note (see DayChipNote).
 const marketSession = PBCore.marketSession;
+// Which session a quote's day move belongs to ('live' | 'atClose' | 'stale' |
+// 'none'). Every surface that renders a day % must go through this -- the rows
+// used to decide from the wall clock alone and printed stale moves as live ones.
+const quoteSessionState = PBCore.quoteSessionState;
 const fetchHistory = PBData.fetchHistory;
 // PBContent/PBCore module globals for the extracted Current (Holdings) view (Phase 4 inc 25).
 const MARKETS = PBContent.MARKETS;
@@ -1751,7 +1755,12 @@ function HeatmapView(_ref8b) {
         ? convertCcy(p.shares * q.price, native, displayCurrency, rates)
         : convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates);
       if (value == null || value <= 0) return null;
-      const changePct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+      // Same session gate as the holding row. A quote a session behind would
+      // otherwise colour its tile by YESTERDAY's move and drag the weighted
+      // average in `stats` with it. null is already the "no data yet" value here,
+      // so a stale tile simply goes grey alongside the ones still streaming in.
+      const changePct = q && typeof q.changePct === 'number' && isFinite(q.changePct)
+        && quoteSessionState(q, p.market) !== 'stale' ? q.changePct : null;
       let sec = DATA.findSector(p.ticker, p.market);
       if (sec.sector === 'Other') {
         const nm = p.name || resolveTickerName(p.ticker, p.market, q) || '';
@@ -2745,7 +2754,18 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
   const gain = val.gain;
   const gainUp = gain != null && gain >= 0;
   const growthPct = val.gainPct;
-  const dayPct = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+  // Which session does this quote's day move actually describe? The row used to
+  // print q.changePct unconditionally and caption itself from the WALL CLOCK,
+  // while the two "Today" aggregates gated on the quote's own sessionDay. So a
+  // quote a session behind vanished from the totals -- correctly -- yet still
+  // rendered its percentage bare on the row, indistinguishable from a live one.
+  // That is what showed yesterday's move as today's every SA morning, right after
+  // the chip said "Updated": the refresh dot tracks the SWEEP, never a quote's own
+  // session. 'stale' withholds the number entirely (Jan, 2026-08-06) -- an empty
+  // column is honest, a wrong number is not.
+  const daySession = quoteSessionState(q, market);
+  const dayPct = q && typeof q.changePct === 'number' && isFinite(q.changePct)
+    && daySession !== 'stale' ? q.changePct : null;
   // Pre-market mode (the Holdings toggle): the middle column reports the
   // extended-hours move instead of the day's. extKind is the gate -- it is only
   // set when Yahoo's intraday bars carried a real pre/post session (see
@@ -2759,8 +2779,9 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
   // is the LAST COMPLETED session's move (what Yahoo shows too), so it gets a quiet
   // "At close" caption -- unlabelled, it reads as a live figure. The ext chip needs
   // no caption: "Pre-market"/"After-hours" already says which session it is.
-  const dayAtClose = !showExt && chipPct != null && market !== 'CRYPTO'
-    && marketSession(market).phase !== 'open';
+  // Driven by the QUOTE's session, not by marketSession() alone: the clock knows
+  // whether the market is open, but only the quote knows whether it was there.
+  const dayAtClose = !showExt && chipPct != null && daySession === 'atClose';
   return React.createElement("button", {
     key: p.id, className: "row holding-row", onClick: () => onOpenDetail(p.ticker, market)
   },
@@ -2927,19 +2948,23 @@ function CurrentView(_ref7) {
   const computeMarketSummary = (rows, market) => {
     const native = marketCurrency(market);
     let value = 0, cost = 0, dayChange = 0, anyPrice = false, anyDay = false;
+    // dayBase is the previous-close value of ONLY the holdings that made it into
+    // dayChange, and priced/counted track how much of the market that is.
+    let dayBase = 0, priced = 0, counted = 0;
     const nowMs = Date.now();
     rows.forEach(p => {
       const q = prices[priceKey(market, p.ticker)];
       const c = convertCcy(p.shares * p.costBasis, positionCostCcy(p), native, rates);
       cost += (c != null ? c : p.shares * p.costBasis);
       if (q && isFinite(q.price)) {
-        value += p.shares * q.price; anyPrice = true;
+        value += p.shares * q.price; anyPrice = true; priced++;
         // Same two gates as the Dashboard hero: the market's regular session must
         // have opened today, and prevClose must be anchored to that session.
         if (typeof q.prevClose === 'number' && q.prevClose > 0 && quoteTradedToday(q, market)
             && (q.sessionDay == null || q.sessionDay === marketDayKey(nowMs, market))) {
           dayChange += p.shares * (q.price - q.prevClose);
-          anyDay = true;
+          dayBase += p.shares * q.prevClose;
+          anyDay = true; counted++;
         }
       }
     });
@@ -2948,10 +2973,26 @@ function CurrentView(_ref7) {
       gain: anyPrice ? value - cost : null,
       gainPct: (anyPrice && cost > 0) ? (value - cost) / cost * 100 : null,
       dayChange: anyDay ? dayChange : null,
-      // Percentage of this market's whole value, matching the Dashboard hero's
-      // denominator rule. The old anchor mixed non-traded holdings in at their
-      // CURRENT price, so the two "Today" figures could never agree.
-      dayPct: (anyDay && value > 0) ? dayChange / value * 100 : null
+      // The move of the holdings that actually contributed it, measured against
+      // their OWN previous closes.
+      //
+      // This used to divide by `value` -- every priced holding in the market,
+      // whether or not it made it into dayChange. The two gates above drop any
+      // holding a session behind (a sweep that missed it, a Stooq end-of-day
+      // fallback, a unit trust's T-1 NAV), so the numerator covered a subset while
+      // the denominator covered everything: a market that moved +1.24% with 8 of
+      // 10 quotes current reported roughly +1.0%, and the figure drifted upward as
+      // the rest of the sweep landed. It was never a stable number to read.
+      //
+      // The Dashboard hero keeps dividing by the WHOLE book on purpose -- markets
+      // legitimately open at different times, so each market's move has to land in
+      // one common denominator or the pill can't be read as "the portfolio today".
+      // A single market's tab is answering a narrower question, so it gets the
+      // narrower, arithmetically honest anchor. `coverage` says how much of the
+      // market the figure speaks for; the caller shows it when it isn't all of it.
+      dayPct: (anyDay && dayBase > 0) ? dayChange / dayBase * 100 : null,
+      dayCounted: counted,
+      dayPriced: priced
     };
   };
 
@@ -2988,7 +3029,13 @@ function CurrentView(_ref7) {
           React.createElement("span", { className: "hsum-today-arrow" }, dayUp ? '▲' : '▼'),
           React.createElement("span", { className: "mono" }, "Today ",
             React.createElement("span", { className: valueHidden ? "hsum-blur-inline" : "" }, fmtCcySigned(s.dayChange, ccy)),
-            " · ", (dayUp ? '+' : '') + s.dayPct.toFixed(2) + '%')) : null));
+            " · ", (dayUp ? '+' : '') + s.dayPct.toFixed(2) + '%'),
+          // Say so when the figure only speaks for part of the market. This is the
+          // visible half of the denominator fix: previously a partial sweep just
+          // made the percentage smaller, so an incomplete reading was
+          // indistinguishable from a weak day.
+          s.dayCounted < s.dayPriced ? React.createElement("span", { className: "hsum-today-partial" },
+            s.dayCounted + " of " + s.dayPriced) : null) : null));
   };
 
   // Sort + Import + Add cluster. Lives directly beneath the market summary (or
@@ -3769,7 +3816,10 @@ function WatchlistView(_ref8) {
              React.createElement("span", { className: "ath-badge-val" }, atAth ? 'ATH' : pct.toFixed(1) + '%'));
         }
         const ac = alerts.filter(a => a.ticker === w.ticker && a.market === w.market).length;
-        const hasDay = q && typeof q.changePct === 'number' && isFinite(q.changePct);
+        // Same session gate as the holding row: a quote from an earlier session
+        // must not render as this one's move just because the market is open now.
+        const hasDay = q && typeof q.changePct === 'number' && isFinite(q.changePct)
+          && quoteSessionState(q, w.market) !== 'stale';
         const dayUp = hasDay && q.changePct >= 0;
         // Extended-hours chip lives in the card body (bottom-middle), lifted out
         // of the header price block so the price stays pinned to the right edge.

@@ -18,7 +18,7 @@ npx serve .                       # or: python -m http.server
 
 # Unit tests — zero-framework Node scripts, run individually (cwd doesn't matter):
 node backend/test/money-math.test.mjs
-for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (41)
+for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (42)
 
 # MONEY GATE — must be green on ANY change touching money/import code:
 #   money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers
@@ -26,6 +26,21 @@ for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (41
 # Browser smoke (spawns local Chrome + HTTP server, mocks Yahoo). THE mount gate:
 node backend/test/verify-refresh-behavior.mjs
 # Reliable smokes: verify-refresh-behavior, verify-watchlist, verify-settings.
+#
+# IN A CLOUD CONTAINER the gate CAN be run — the last few increments said it could
+# not and fell back to node stubs, which is weaker than it needed to be. Three
+# things block it, all fixable from outside the repo (2026-08-06):
+#   1. CHROME is hardcoded to Jan's Windows path but already honours $CHROME_PATH;
+#      Chromium is pre-installed at /opt/pw-browsers/chromium.
+#   2. It needs --no-sandbox when the container runs as root.
+#   3. The harness loads React from unpkg.com, which egress blocks — but the npm
+#      REGISTRY is reachable, so `npm pack react@18.3.1 react-dom@18.3.1`, unpack
+#      umd/*.production.min.js, serve them from a /__vendor/ route and rewrite the
+#      two <script> tags. Copy the harness to a scratch dir and patch it there;
+#      don't edit the 17 committed harnesses for this.
+# Done that way, verify-refresh-behavior + verify-watchlist both pass here.
+# verify-settings fails at "app mounted" in this container, identically on pristine
+# HEAD — pre-existing and environmental, NOT a regression signal.
 # The CDP "Execution context destroyed" race is FIXED (GAPS.md #12, 2026-07-26): it
 # was structural, not luck — Chrome destroys the about:blank context when the harness
 # URL commits and harnesses attach in exactly that window — and the retry that
@@ -68,7 +83,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v101`), or installed PWAs serve stale assets offline.
+`playbook-shell-v103`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -187,6 +202,44 @@ Adding a **new runtime file** additionally requires ALL of:
   so without this its previous-session row fell through to the market clock and got
   counted as *today's* move the instant the JSE opened. `parseStooqCsv` now reads
   column 0 (the row's own date) for exactly this reason.
+- **Gating the AGGREGATES is only half a session fix — the ROWS render too.** Every
+  session-anchoring fix through 2026-08-05 landed in the quote layer or the two "Today"
+  sums, and they were all correct: a quote a session behind carries the right
+  `sessionDay` and is correctly dropped from the totals. But `HoldingRow` read
+  `q.changePct` with **no gate at all** and decided its "At close" caption from the
+  **wall clock** (`marketSession(market).phase !== 'open'`), so at 09:30 SAST a
+  session-behind JSE quote printed **+2.94% bare** — yesterday's move, wearing no
+  caption, right after the chip said "Updated". (The refresh dot tracks the SWEEP,
+  never an individual quote's session; a proxy-cached pre-open response refreshes
+  "successfully" forever.) `PBCore.quoteSessionState(q, market)` is now the one
+  kernel — `'live' | 'atClose' | 'stale' | 'none'` — and the row, the watchlist card
+  and the portfolio heatmap all route through it; `'stale'` **withholds** the number
+  (Jan's call). `traded-today.test.mjs` proves it never contradicts
+  `quoteTradedToday`, and `day-display.test.mjs` renders the REAL `HoldingRow` in a
+  `vm` to pin all three states. Node suites never load view code — that is exactly
+  why this survived so long.
+- **A `fetch()` promise resolves on HEADERS, so an abort timer cleared at that point
+  leaves the BODY read unguarded.** `fetchViaProxies` did precisely that
+  (`clearTimeout` in the fetch's `finally`, then a bare `await res.text()`), and a
+  proxy that answered 200 then stalled the body hung **forever** — not slowly,
+  unboundedly. One stall wedged the `_inflight` entry for that URL (byte-identical
+  on every auto-poll, which omits `cacheBust`, so that symbol died for the session),
+  then `Promise.allSettled` in `fetchQuoteBatch`, then `loadingRef` in
+  `usePriceFeed` — which is what made the refresh button a **silent no-op**. Both
+  halves now run inside one `AbortController` via `fetchWithDeadline`, `fxFetch`
+  gained a deadline it never had, and `runFetch` has a `SWEEP_WATCHDOG_MS` release
+  so the chip can never latch on "Updating…". Pinned in `data-proxy.test.mjs` with a
+  mock that honours the abort signal (a real `Response.text()` does).
+- **`meta.regularMarketPrice` is never a valid baseline for an extended-hours move** —
+  inside a live pre/post session it IS the ext price, so measuring against it compares
+  the session to itself and prints **0.00%**. It was `deriveIntradayExt`'s last-resort
+  fallback, and it was reached routinely, not rarely: in PRE the regular window has no
+  bar yet, and `opts.regularClose` is absent whenever the daily fetch failed. That is
+  the "pre-market rates aren't loading" report — they were loading and reading zero.
+  The baseline is now resolved AFTER the session is classified, because which close is
+  correct depends on which session it is: POST needs **today's** regular close (the
+  bars have it), PRE needs the **previous** close (`meta.chartPreviousClose`, from the
+  same response, in the bars' own raw units). No baseline → return `null`, never guess.
 - **Never put `includePrePost` on an `interval=1d` quote fetch.** It lets the
   current day's *daily* bar absorb pre/post trades, so the bar the day move treats
   as "the regular close" quietly stops being one. The intraday (`1m`) fetch keeps

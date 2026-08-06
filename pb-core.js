@@ -162,6 +162,55 @@
     return marketSession(market, nowMs).phase === 'open';
   }
 
+  // WHICH SESSION does this quote's day move describe? One kernel, because the
+  // aggregates and the rows had drifted apart and that drift was the bug:
+  // `quoteTradedToday` + `sessionDay` gated the two "Today" sums, while every
+  // holding row decided its caption from the WALL CLOCK alone
+  // (`marketSession(...).phase !== 'open'`). A quote that is a session behind
+  // while its market is open therefore vanished from the totals — correctly — but
+  // still printed its stale percentage on the row as a bare, uncaptioned figure.
+  // In the SA morning that reads as "today is +2.94%" when +2.94% was yesterday.
+  //
+  //   'live'    market is in its regular session AND the quote came from it
+  //   'atClose' the quote is the most recent COMPLETED session's, which is the
+  //             honest thing to show pre-open, after the close and at weekends
+  //             (Yahoo shows the same) — it just needs saying out loud
+  //   'stale'   the market's regular session HAS run today but this quote is from
+  //             an earlier one: the number is real, but it is not today's
+  //   'none'    no quote
+  //
+  // CRYPTO is always 'live': it never closes, so it has no "at close" to report.
+  function quoteSessionState(quote, market, nowMs = Date.now()) {
+    if (!quote) return 'none';
+    if (market === 'CRYPTO') return 'live';
+    // Before the bell (and at weekends) every quote is necessarily the last
+    // completed session's — including a perfectly fresh one — so this is 'atClose'
+    // rather than 'stale'. Distinguishing the two is the whole point: only 'stale'
+    // means the app is showing something it should have replaced by now.
+    if (!regularSessionStartedToday(market, nowMs)) return 'atClose';
+    // Today's session has run. A quote that belongs to it is 'live' while the tape
+    // is still moving and 'atClose' once it stops.
+    const settled = marketSession(market, nowMs).phase === 'open' ? 'live' : 'atClose';
+    // From here the gates are quoteTradedToday's, in its order, so the two can
+    // never disagree about which quotes are stale — a number in the totals but
+    // hidden on its own row (or the reverse) would be worse than either bug.
+    // The ONE deliberate difference is the ending: quoteTradedToday finishes with
+    // "is the market open right now?" for tick-less sources, which after the close
+    // would brand today's own closing quote as not-today. Here that tail becomes
+    // `settled`, which is the same question asked for presentation instead.
+    if (quote.sessionDay != null && quote.sessionDay !== marketDayKey(nowMs, market)) return 'stale';
+    // A tick on an earlier local day is positive evidence of staleness — and it
+    // overrides a sessionDay claiming today, because a quote whose two signals
+    // contradict each other has not earned the right to render as live.
+    if (typeof quote.regularMarketTime === 'number' && isFinite(quote.regularMarketTime)) {
+      return tradedToday(quote.regularMarketTime, nowMs) ? settled : 'stale';
+    }
+    // No tick at all (Stooq's CSV, an old cached quote). Absence is evidence of
+    // nothing, so it reads as the last completed session and gets captioned
+    // rather than withheld.
+    return settled;
+  }
+
   // Relative "time since" for the freshness chip; coarsens as it ages so the
   // user always sees movement within a few seconds of a refresh.
   function fmtAgo(fromMs, nowMs = Date.now()) {
@@ -829,13 +878,37 @@
     // multiply back.
     const suppliedRaw = (opts.regularClose > 0 && isFinite(opts.regularClose))
       ? opts.regularClose * divisor : null;
-    const regRaw = regBar ? regBar.close : (suppliedRaw != null ? suppliedRaw : meta.regularMarketPrice);
     const nowSec = now / 1000;
     let kind = null, sess = null, live = false;
     if (post && nowSec >= post.start && nowSec < post.end) { kind = 'post'; sess = post; live = true; }
     else if (pre && nowSec >= pre.start && nowSec < pre.end) { kind = 'pre'; sess = pre; live = true; }
     else if (post && nowSec >= post.end) { kind = 'post'; sess = post; live = false; }
     else return null;
+    // ─── The baseline, resolved AFTER the session is known ──────────────────
+    // Which regular close an ext move is measured from depends on WHICH ext
+    // session it is, so this cannot be decided before the classification above:
+    //   POST → TODAY's regular close (the bars hold it: regBar).
+    //   PRE  → the PREVIOUS session's close; today's regular window is still
+    //          empty, so the chart's own bars cannot supply it.
+    //
+    // meta.regularMarketPrice used to be the last-resort fallback and it is never
+    // a valid answer for either: it is the last TRADED price, so inside a live ext
+    // session it IS the ext price. That measured the session against itself and
+    // collapsed the chip to ~0.00% — the same family as the Oracle +11.18% trap.
+    // It was not a rare path either: in PRE regBar is always null, and
+    // opts.regularClose is absent whenever the daily fetch failed, which is
+    // exactly when the pre-market readout was missing.
+    //
+    // chartPreviousClose replaces it for PRE only, where "the previous close" is
+    // precisely the right number and comes from this same response in the bars'
+    // own raw units. For POST there is no honest substitute for today's close, so
+    // a response without it yields no reading at all.
+    const prevCloseRaw = (typeof meta.chartPreviousClose === 'number' && meta.chartPreviousClose > 0)
+      ? meta.chartPreviousClose : null;
+    const regRaw = regBar ? regBar.close
+      : (suppliedRaw != null ? suppliedRaw
+      : (kind === 'pre' ? prevCloseRaw : null));
+    if (!(regRaw > 0) || !isFinite(regRaw)) return null;
     // Latest non-null close inside the active extended session = the live ext
     // price. Yahoo's chart API leaves `volume` null on pre/post minute bars
     // (only the closing-auction bar carries volume), so "did it really trade
@@ -1871,6 +1944,7 @@ function rotationSummary(classified) {
     marketSession,
     tradedToday,
     quoteTradedToday,
+    quoteSessionState,
     regularSessionStartedToday,
     fmtAgo,
     refreshChipState,

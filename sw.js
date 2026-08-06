@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v102';
+const CACHE_NAME   = 'playbook-shell-v103';
 const CDN_CACHE    = 'playbook-cdn-v1';
 // Instrument logos: immutable per filename, so cache-first. Filenames are STABLE
 // across rebuilds, so without a bump an installed PWA keeps serving the old art
