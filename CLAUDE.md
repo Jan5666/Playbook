@@ -89,10 +89,19 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v104`), or installed PWAs serve stale assets offline.
+`playbook-shell-v105`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
+
+**Re-check this number when merging `main` into a branch that has been open a
+while.** Two branches that each bump v103 -> v104 are making the *identical*
+change, so git merges them with **no conflict at all** — and the survivor ships
+under a cache name that has already been served to installed PWAs, which
+therefore never re-fetch the new assets. It compiles, every test passes, and
+nothing goes red. It happened on PR #63/#64 (2026-08-10, both v104, resolved to
+v105). After any merge from main: `grep -n "playbook-shell-v" sw.js CLAUDE.md`
+and make sure it is **ahead of** whatever main is on, not equal to it.
 
 Rebuilding the **logo pack** (`node tools/build-logos.mjs`) also needs `LOGO_CACHE`
 bumped in sw.js: `logos/*.png` are served cache-first under stable filenames, so
@@ -250,6 +259,22 @@ Adding a **new runtime file** additionally requires ALL of:
   current day's *daily* bar absorb pre/post trades, so the bar the day move treats
   as "the regular close" quietly stops being one. The intraday (`1m`) fetch keeps
   the flag — that is where extended hours legitimately comes from.
+- **The `width: 1px` visually-hidden recipe does NOT hide a `<table>`'s box.** A table
+  can't shrink below its min-content width, so `width: 1px` is a *floor* there, and
+  `overflow: hidden` clips its rows while the box itself — 403px measured — still counts
+  toward `documentElement.scrollWidth`. `.rot-sr` sat on the Rotation tab's screen-reader
+  table exactly like that and drove scrollWidth to **429 at every viewport below it**;
+  on an installed iOS PWA (where html/body's `overflow-x: hidden` leaks) that let Jan drag
+  the **entire app** sideways, black gutter and all, on that one tab. The class must stay
+  on a **div wrapper**. Two corollaries worth keeping: a horizontal-overflow hunt must
+  measure `documentElement.scrollWidth`, not "elements past the right edge" (everything
+  inside `.nav` / `.heatmap-toggle` always is, and scrolls internally — those are not
+  offenders); and `overflow-x: clip` on an ancestor does **not** contain an absolutely
+  positioned descendant whose containing block is outside it, which is why `.rot-view`
+  now carries `position: relative` alongside the clip. `verify-rotation.mjs` Part C pins
+  all of it at 320/375/402/430 — it goes red on pristine HEAD naming `TABLE.rot-sr @429`.
+  Chrome clips this properly, so `scrollLeft` reads 0 in the harness either way; the
+  symptom is iOS-only but the cause is measurable anywhere.
 - **A sheet's bottom edge had THREE declarations claiming to own it, and the shortest
   silently won.** `.modal { inset: 0 }`, `align-items: flex-end` and the panel's
   `calc(100dvh - 48px)` all meant "the bottom"; when they disagreed on iOS standalone

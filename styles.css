@@ -4393,7 +4393,14 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   --rot-1: #2563eb; --rot-2: #7c3aed; --rot-3: #b45309;
   --rot-4: #0891b2; --rot-5: #be185d; --rot-6: #15803d;
 }
-.rot-view { display: flex; flex-direction: column; gap: 14px; }
+/* overflow-x: clip is a hard stop, not decoration: nothing in this tab may widen
+   the document, because on an installed iOS PWA html/body's overflow-x: hidden
+   leaks and the user can then drag the ENTIRE app sideways (black gutter and
+   all). `clip` rather than `hidden` so no inner scroll container appears.
+   position: relative is load-bearing — an absolutely positioned descendant whose
+   containing block sits outside the clipper escapes the clip entirely, which is
+   exactly how .rot-sr (containing block = the ICB) got past every guard. */
+.rot-view { display: flex; flex-direction: column; gap: 14px; position: relative; overflow-x: clip; }
 .rot-view .up { color: var(--emerald); }
 .rot-view .down { color: var(--rose); }
 .rot-view .flat { color: var(--text-muted); }
@@ -4628,10 +4635,18 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .rot-tkr-rank { font-size: 7px; opacity: 0.65; line-height: 1; }
 
 /* Screen-reader mirror of the sector table: the SVGs above carry a single
-   aria-label and are otherwise opaque. */
+   aria-label and are otherwise opaque.
+   THIS CLASS MUST STAY ON A DIV. It used to sit on the <table> itself, where
+   `width: 1px` is only a floor — a table box can't shrink below its min-content
+   width — so the box measured 403px, `overflow: hidden` clipped only its rows,
+   and the invisible remainder set documentElement.scrollWidth to 429 on a 402px
+   phone. That is the entire "the Rotation tab drags sideways" bug: 27px of
+   scrollable width no one could see. A block container obeys both declarations.
+   clip-path is the modern half of the recipe; `clip` stays for older WebKit. */
 .rot-sr {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%);
+  white-space: nowrap; border: 0;
 }
 
 .rot-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-top: 2px; }

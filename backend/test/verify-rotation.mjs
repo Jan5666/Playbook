@@ -77,12 +77,45 @@ const bars = {
   'US:JPM': mkBars(100, 100.1, 100.7, 101.2, 101.0),
 };
 const series = PBCore.downsampleRotationSeries(PBCore.combineSectorSeries(plan, bars), 48);
+// ── Second seed: the widest thing this tab can render (Part C) ──────────────
+// A full 11-sector JSE Top 40 day — the longest GICS names, an index label long
+// enough to matter in the sr-table's <caption>, R-denominated billions, and both
+// sides deep enough to fold into "Others (N)". Part C measures against this
+// because the overflow it pins scaled with exactly those strings.
+const JSE_ROWS = [
+  { ticker: 'NPN', sector: 'Consumer Cyclical', m: 1240, changePct: -2.94 },
+  { ticker: 'PRX', sector: 'Consumer Cyclical', m: 980, changePct: -1.85 },
+  { ticker: 'FSR', sector: 'Financial Services', m: 420, changePct: -1.20 },
+  { ticker: 'SBK', sector: 'Financial Services', m: 380, changePct: -0.75 },
+  { ticker: 'CPI', sector: 'Financial Services', m: 210, changePct: -0.44 },
+  { ticker: 'SOL', sector: 'Energy', m: 160, changePct: -1.55 },
+  { ticker: 'BVT', sector: 'Industrials', m: 190, changePct: -0.92 },
+  { ticker: 'BID', sector: 'Industrials', m: 175, changePct: -0.31 },
+  { ticker: 'APN', sector: 'Healthcare', m: 105, changePct: -0.68 },
+  { ticker: 'NTC', sector: 'Healthcare', m: 95, changePct: -0.22 },
+  { ticker: 'AGL', sector: 'Basic Materials', m: 890, changePct: 3.40 },
+  { ticker: 'BHG', sector: 'Basic Materials', m: 760, changePct: 2.10 },
+  { ticker: 'GFI', sector: 'Basic Materials', m: 540, changePct: 1.75 },
+  { ticker: 'MTN', sector: 'Communication Services', m: 610, changePct: 2.85 },
+  { ticker: 'VOD', sector: 'Communication Services', m: 430, changePct: 1.40 },
+  { ticker: 'GRT', sector: 'Real Estate', m: 120, changePct: 0.95 },
+  { ticker: 'RDF', sector: 'Real Estate', m: 88, changePct: 0.51 },
+  { ticker: 'SHP', sector: 'Consumer Defensive', m: 310, changePct: 1.15 },
+  { ticker: 'BTI', sector: 'Consumer Defensive', m: 295, changePct: 0.63 },
+  { ticker: 'TKG', sector: 'Utilities', m: 70, changePct: 0.44 },
+  { ticker: 'KIO', sector: 'Technology', m: 240, changePct: 0.88 },
+];
+const jseSnapshot = PBCore.aggregateSectorSnapshot(JSE_ROWS);
+const jseClassified = PBCore.classifyRotation(jseSnapshot);
+const jseFlows = PBCore.pairFlows(jseSnapshot.sectors);
+
 // Three market days back, so the "Previous session" treatment must engage.
 const FETCHED_AT = Date.now() - 3 * 86400000;
 const SEED = {
   'pb.rotation.exchange.v1': 'sp500',
   'pb.rotation.lastgood.v1': {
     sp500: { snapshot, classified, flows, series, activity: series.activity, fetchedAt: FETCHED_AT },
+    jse40: { snapshot: jseSnapshot, classified: jseClassified, flows: jseFlows, series: null, activity: null, fetchedAt: FETCHED_AT },
   },
 };
 
@@ -323,6 +356,64 @@ try {
     return document.querySelectorAll('.rot-row.faded').length;`);
   check('tapping a sector row isolates it', isolated >= 1);
   await shot(ws, 'interactions');
+
+  // ── Part C: layout — this tab must never widen the document ───────────────
+  // On an installed iOS PWA, ANY horizontal scrollable width lets the user drag
+  // the whole app sideways (header, nav and all, with a black gutter behind it):
+  // html/body's overflow-x: hidden does not hold there. Chrome clips it properly,
+  // so scrollLeft always reads 0 in this harness -- scrollWidth is the honest
+  // signal and the one worth pinning.
+  //
+  // The bug this pins: .rot-sr sat on the <table> itself. A table box cannot
+  // shrink below its min-content width, so `width: 1px` was a floor, its
+  // `overflow: hidden` clipped only the rows, and the invisible 403px box drove
+  // documentElement.scrollWidth to 429 at every viewport below that.
+  const switched = await evals(ws, `
+    const b=[...document.querySelectorAll('.heatmap-toggle-btn')].find(x=>/JSE Top 40/.test(x.textContent));
+    if(!b) return 'no-chip'; b.click(); await new Promise(r=>setTimeout(r,900));
+    return document.querySelector('.rot-verdict-card') ? 'ok' : 'no-card';`);
+  check('switched to the wide JSE seed', switched === 'ok');
+
+  // Anti-drift: the visually-hidden class must stay on a wrapper, not the table.
+  check('screen-reader table is wrapped in a div, not classed itself',
+    await evals(ws, `return !!document.querySelector('div.rot-sr > table') && !document.querySelector('table.rot-sr');`));
+  check('screen-reader mirror still carries every sector',
+    (await evals(ws, `return document.querySelectorAll('.rot-sr tbody tr').length;`)) === 11);
+
+  for (const width of [320, 375, 402, 430]) {
+    await cdp(ws, 'Emulation.setDeviceMetricsOverride', { width, height: 1400, deviceScaleFactor: 2, mobile: true });
+    await sleep(600);
+    const m = JSON.parse(await evals(ws, `
+      window.scrollTo(0, 0); await new Promise(r=>setTimeout(r,60));
+      const de=document.documentElement, vw=de.clientWidth, sw=de.scrollWidth;
+      const off=[];
+      // Only worth enumerating when it actually overflowed, and only for elements
+      // NOTHING clips: the .nav and .heatmap-toggle chips always sit past the edge
+      // inside their own overflow-x: auto strip and scroll internally, so listing
+      // them buries the one element that really widened the page.
+      // Stop below <body>: html/body DO carry overflow-x: hidden, and that rule
+      // is the very one that leaks on iOS, so counting it here would filter out
+      // every offender and print an empty list next to a failing assertion.
+      const clipped = el => {
+        for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+          if (getComputedStyle(p).overflowX !== 'visible') return true;
+        }
+        return false;
+      };
+      if (sw > vw + 1) document.querySelectorAll('body *').forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (!(r.width || r.height) || r.right <= vw + 0.5 || clipped(el)) return;
+        const cls = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : (el.className || ''));
+        off.push({ label: el.tagName + '.' + cls.trim() + ' @' + Math.round(r.right), right: r.right });
+      });
+      off.sort((a, b) => b.right - a.right);
+      return JSON.stringify({ vw, sw, off: off.slice(0, 8).map(o => o.label) });`));
+    if (m.off && m.off.length) console.log('  past the right edge:', m.off.join(' | '));
+    check(`no horizontal page overflow at ${width}px (scrollWidth ${m.sw} vs viewport ${m.vw})`, m.sw <= m.vw + 1);
+  }
+  await cdp(ws, 'Emulation.setDeviceMetricsOverride', { width: 402, height: 1400, deviceScaleFactor: 2, mobile: true });
+  await sleep(500);
+  await shot(ws, 'layout-402');
 
   ws.close();
   console.log(pass ? '\nRESULT: all checks PASSED' : '\nRESULT: some checks FAILED');

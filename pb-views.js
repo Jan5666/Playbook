@@ -1221,15 +1221,22 @@ function MarketRotationView(_refMR) {
         colorMap, coverage, activity: activityMap, highlight, onHighlight: onHi, onOpenDetail, sortBy
       }),
       // Screen readers get the same table as a real table; the SVGs above are
-      // decorative to them.
-      RE('table', { className: 'rot-sr' },
-        RE('caption', null, exchange.label + ' sector rotation'),
-        RE('thead', null, RE('tr', null,
-          RE('th', null, 'Sector'), RE('th', null, 'Move'), RE('th', null, 'vs market'), RE('th', null, 'Estimated flow'))),
-        RE('tbody', null, snapshot.sectors.filter(s => s.wPct != null).map(s => RE('tr', { key: s.sector },
-          RE('td', null, s.sector), RE('td', null, rotPct(s.wPct, true)),
-          RE('td', null, rotBps((s.wPct - marketPct) * 100, true)),
-          RE('td', null, rotBps(rotContribBps(s.deltaCap, quotedWeight), true))))))
+      // decorative to them. The visually-hidden class goes on a DIV wrapper and
+      // must never move back onto the <table>: a table box cannot shrink below its
+      // min-content width, so .rot-sr's `width: 1px` is a floor there rather than a
+      // cap, and its `overflow: hidden` clips the table's children while the ~400px
+      // box itself still counts toward the document's scrollable width. That is
+      // what made the whole page draggable sideways on this tab alone. A block
+      // container honours both declarations, so the table is clipped for real.
+      RE('div', { className: 'rot-sr' },
+        RE('table', null,
+          RE('caption', null, exchange.label + ' sector rotation'),
+          RE('thead', null, RE('tr', null,
+            RE('th', null, 'Sector'), RE('th', null, 'Move'), RE('th', null, 'vs market'), RE('th', null, 'Estimated flow'))),
+          RE('tbody', null, snapshot.sectors.filter(s => s.wPct != null).map(s => RE('tr', { key: s.sector },
+            RE('td', null, s.sector), RE('td', null, rotPct(s.wPct, true)),
+            RE('td', null, rotBps((s.wPct - marketPct) * 100, true)),
+            RE('td', null, rotBps(rotContribBps(s.deltaCap, quotedWeight), true)))))))
     ) : null,
     // Footer: method note + updated + refresh
     classified ? RE('div', { className: 'rot-foot' },
