@@ -983,7 +983,26 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .modal {
   position: fixed; inset: 0; z-index: 95;
   display: flex; justify-content: center; align-items: flex-end;
+  /* A DEFINITE height, not just `inset: 0`. Two reasons, both load-bearing:
+     (1) the panel below sizes itself as a percentage of this box, and a
+     percentage only resolves against a definite height; (2) the panel is
+     bottom-aligned, so its bottom edge can never be lower than this box's —
+     leaving the edge to `inset: 0` alone is what let the sheet stop short of
+     the screen on iOS (see the standalone rule + .modal-panel note below). */
+  height: 100vh; height: 100dvh;
 }
+/* INSTALLED PWA ONLY — do not lift this out of the media query. In standalone
+   there is no dynamic browser chrome, so every viewport unit denotes the same
+   full-screen box and taking the largest can only ever recover a shortfall. In
+   a browser TAB they differ: 100lvh is the toolbar-hidden height, and applying
+   it there would push the sheet's bottom (and its content) under the toolbar.
+   The .pb-standalone twin is index.html's `navigator.standalone` hedge, for the
+   iOS versions where the display-mode query itself is unreliable — app.js makes
+   the same `matchMedia(...) || navigator.standalone` hedge in AlertsModal. */
+@media all and (display-mode: standalone) {
+  .modal { height: max(100vh, 100dvh, 100lvh); }
+}
+:root.pb-standalone .modal { height: max(100vh, 100dvh, 100lvh); }
 .modal-backdrop {
   position: absolute; inset: 0;
   background: var(--backdrop); backdrop-filter: blur(2px);
@@ -996,20 +1015,29 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   border-top-left-radius: 20px; border-top-right-radius: 20px;
   width: 100%; max-width: 600px;
   /* Every sheet opens at the same fixed height (not hugging its content) so a
-     short form and a long import rise to the same size — see stock-detail note. */
-  height: calc(100vh - 48px); height: calc(100dvh - 48px);
-  max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px);
+     short form and a long import rise to the same size — see stock-detail note.
+     Sized off the OVERLAY (`100%` of .modal), not off a viewport unit. Three
+     declarations used to claim "the bottom of the sheet" — `.modal { inset: 0 }`,
+     `align-items: flex-end`, and `calc(100dvh - 48px)` — and when they disagreed
+     the shortest silently won, which is how the iOS sheet ended up a home-indicator
+     inset short of the glass with a dead black strip under it. Now there is one
+     source of truth: .modal's height. The 100dvh line stays as the fallback for
+     anything that can't resolve the percentage. */
+  height: calc(100dvh - 48px); height: calc(100% - 48px);
+  max-height: calc(100dvh - 48px); max-height: calc(100% - 48px);
   display: flex; flex-direction: column;
   overflow: hidden;
-  /* Paint the sheet's surface over the home-indicator strip: on iOS standalone
-     the visual viewport can leave a black safe-area gap below the panel's
-     bottom edge; a solid offset shadow fills it without moving any layout
-     (box-shadow ignores the element's own overflow clip). */
+  /* Insurance only, no longer the fix: a solid offset shadow paints the sheet's
+     own surface just below its bottom edge, so a residual sub-pixel seam on iOS
+     can't show as a dark line (box-shadow ignores the element's overflow clip).
+     It paints COLOUR, never content — when this was carrying the whole fix, the
+     strip it filled was the "blacked out" band with nothing in it. */
   box-shadow: 0 60px 0 0 var(--bg);
   animation: slide-up 0.46s cubic-bezier(0.22, 1, 0.36, 1);
   /* The safe-area inset is reserved INSIDE the scrolling body (see .modal-body),
      not here, so the last content always scrolls clear of the home indicator
-     instead of ending against a dead gap that can clip it. */
+     instead of ending against a dead gap that can clip it. (The stock-detail
+     card opts out of that reservation — see its rule below.) */
   -webkit-overflow-scrolling: touch;
   will-change: transform;
   touch-action: pan-y;
@@ -1030,11 +1058,19 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
    at the same ceiling, so rich cards fill the sheet and the body scrolls. */
 .modal-panel.stock-detail-panel {
   height: auto;
-  max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px);
+  max-height: calc(100dvh - 48px); max-height: calc(100% - 48px);
 }
 /* min-height:0 lets the scrolling body shrink under the max-height cap so a tall
    card scrolls internally instead of pushing the panel past its ceiling. */
 .modal-panel.stock-detail-panel > .modal-body { min-height: 0; }
+/* The stock card is the ONE sheet that spends its home-indicator inset on content
+   (Jan's call, 2026-08-10): it is read-only — price block, position, chart,
+   fundamentals, news — with no pinned action row, so the chart and headlines run
+   to the physical bottom edge of the screen instead of stopping half a centimetre
+   short. Every other sheet keeps `calc(18px + var(--safe-bottom))` because its
+   buttons have to stay clear of the indicator. Specificity (0,3,1) beats both the
+   base .modal-body rule and the <=430px one, so source order doesn't matter. */
+.modal-panel.stock-detail-panel > .modal-body { padding-bottom: 14px; }
 .modal-panel.swiping { animation: none; transition: none; }
 .modal-panel.swipe-close { animation: slide-down 0.26s cubic-bezier(0.4, 0, 1, 1) forwards; }
 @keyframes slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -1061,8 +1097,16 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 
 @media (min-width: 640px) {
   .modal { align-items: flex-end; justify-content: flex-end; }
-  .modal-panel { height: 100%; max-height: 100vh; border-radius: 0; border-left: 1px solid var(--border); max-width: 520px; animation: slide-right 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-  .modal-panel.stock-detail-panel { height: 100%; }
+  /* align-self:stretch rather than height:100% — it fills whatever .modal actually
+     resolved to (including the standalone max() growth on an installed iPad), where
+     a percentage would silently keep sizing off the pre-growth box. Needs height:auto
+     to take effect, hence the explicit reset of the mobile calc(). */
+  .modal-panel { height: auto; align-self: stretch; max-height: 100vh; border-radius: 0; border-left: 1px solid var(--border); max-width: 520px; animation: slide-right 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+  /* Restates the cap because .modal-panel.stock-detail-panel (0,2,0) outranks the
+     .modal-panel (0,1,0) rule above — without this the mobile calc(100% - 48px)
+     ceiling would follow the card onto the desktop side panel and hold it 48px
+     short of full height. */
+  .modal-panel.stock-detail-panel { height: auto; max-height: 100vh; }
   @keyframes slide-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
   .modal-handle { display: none; }
 }

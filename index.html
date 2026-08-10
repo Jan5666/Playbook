@@ -109,6 +109,19 @@
     applySplashTheme(uiTheme);
     var tc = document.querySelector('meta[name="theme-color"]');
     if (tc) tc.setAttribute('content', uiTheme === 'light' ? '#F4F4F2' : '#09090b');
+
+    // Installed-PWA marker, set before first paint so the sheet geometry is right
+    // on the first frame. styles.css keys the modal overlay's full-screen height off
+    // `(display-mode: standalone)`; this class is the `navigator.standalone` hedge for
+    // the iOS versions where that media query is unreliable — the same hedge app.js
+    // already makes in AlertsModal. A class toggle only: NOT a second writer to any
+    // pb.* key, so the pb.iconTheme.v1 caveat above does not extend to it.
+    try {
+      if ((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+          || window.navigator.standalone) {
+        document.documentElement.classList.add('pb-standalone');
+      }
+    } catch (e) {}
   })();
 </script>
 
