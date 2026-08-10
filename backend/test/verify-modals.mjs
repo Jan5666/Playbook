@@ -215,7 +215,13 @@ try {
   //    body is the scroll region, it actually scrolls, and the header stays put. ──
   await evals(ws, `const b=document.querySelector('[data-tab="current"]'); if(b) b.click(); return true;`);
   await sleep(400);
-  await evals(ws, `const row=document.querySelector('.holding-row, .pos-card, [class*="holding"]'); if(row) row.click(); return true;`);
+  // `.holding-row` exactly — NOT a `[class*="holding"]` union. That union matched
+  // `.holdings-summary` (a non-clickable container) first, so this section never
+  // once opened the card: it printed "(no stock detail)" and, having no assertion
+  // behind it, read as green for as long as it has existed. Section 6 asserts, so
+  // it would have failed loudly instead.
+  const rowClicked = await evals(ws, `const row=document.querySelector('.holding-row, .pos-card'); if(!row) return false; row.click(); return true;`);
+  console.log('  holding row clicked:', rowClicked);
   await sleep(700);
   const sd = await evals(ws, `
     const p=document.querySelector('.stock-detail-panel'); if(!p) return '(no stock detail)';
@@ -227,8 +233,83 @@ try {
   console.log('  stock-detail:', sd);
   await shot(ws, 'stock-detail');
 
+  // ── 6. The sheet's BOTTOM EDGE. Jan reported the stock card stopping ~0.5cm
+  //    short of the bottom of the screen on the installed iOS PWA, with a dead
+  //    black strip under it — the sheet's bottom used to be decided by whichever
+  //    of `.modal { inset: 0 }` / `align-items: flex-end` / `calc(100dvh - 48px)`
+  //    resolved SHORTEST, and nothing noticed when they disagreed. These pin the
+  //    two halves of the fix: the sheet reaches the glass, and the stock card
+  //    (alone) spends the home-indicator inset on content rather than padding.
+  //
+  //    Headless Chrome reports env(safe-area-inset-*) as 0, so the inset is
+  //    simulated. The selector list matters: a bare `:root` override LOSES to
+  //    styles.css:1's `:root, :root[data-theme="dark"]` once app.js sets
+  //    data-theme, because that arm is (0,2,0). Hence all three arms + !important.
+  const SAFE = 34;
+  let failures = 0;
+  const ok = (name, cond, extra) => {
+    console.log(`${cond ? '  ok  ' : ' FAIL '} ${name}${extra ? '  — ' + extra : ''}`);
+    if (!cond) failures++;
+  };
+  await evals(ws, `
+    const s = document.createElement('style');
+    s.id = 'pb-safe-sim';
+    s.textContent = ':root, :root[data-theme="dark"], :root[data-theme="light"]' +
+      ' { --safe-bottom: ${SAFE}px !important; }';
+    document.head.appendChild(s);
+    return true;`);
+  await sleep(300);
+  const simmed = await evals(ws, `return getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom').trim();`);
+  ok('safe-area inset simulation took effect', simmed === `${SAFE}px`, simmed);
+
+  // The stock-detail card is still open from section 5.
+  const cardEdge = JSON.parse(await evals(ws, `
+    const p = document.querySelector('.stock-detail-panel');
+    if (!p) return JSON.stringify({ err: 'no stock detail panel' });
+    const body = p.querySelector('.modal-body');
+    body.scrollTop = body.scrollHeight;
+    await new Promise(r => setTimeout(r, 250));
+    const lastKid = body.lastElementChild;
+    return JSON.stringify({
+      panelGap: Math.round(window.innerHeight - p.getBoundingClientRect().bottom),
+      padBottom: getComputedStyle(body).paddingBottom,
+      scrollEndGap: lastKid ? Math.round(window.innerHeight - lastKid.getBoundingClientRect().bottom) : null
+    });`));
+  console.log('  stock-card bottom:', JSON.stringify(cardEdge));
+  ok('stock card reaches the bottom of the screen (no dead strip under the sheet)',
+     cardEdge.panelGap === 0, `gap=${cardEdge.panelGap}px`);
+  ok('stock card body does NOT reserve the home-indicator inset',
+     parseFloat(cardEdge.padBottom) < SAFE, `padding-bottom=${cardEdge.padBottom}`);
+  ok('scrolled to the end, the stock card leaves no half-centimetre void',
+     cardEdge.scrollEndGap != null && cardEdge.scrollEndGap <= 20, `${cardEdge.scrollEndGap}px below the last section`);
+
+  // The asymmetry is the whole design decision: FORM sheets must keep the inset,
+  // or their pinned action row lands under the home indicator.
+  await evals(ws, `const x=document.querySelector('.modal-close')||document.querySelector('.modal-backdrop'); if(x) x.click(); return true;`);
+  await sleep(350);
+  await evals(ws, `const b=document.querySelector('[data-tab="current"]'); if(b) b.click(); return true;`);
+  await sleep(400);
+  await evals(ws, `const b=[...document.querySelectorAll('button.btn')].find(b=>/^\\s*Add\\s*$/i.test(b.textContent.replace(/\\s+/g,' ').trim())); if(b) b.click(); return true;`);
+  await sleep(500);
+  const formEdge = JSON.parse(await evals(ws, `
+    const p = document.querySelector('.modal-panel');
+    if (!p || p.classList.contains('stock-detail-panel')) return JSON.stringify({ err: 'no form sheet' });
+    const body = p.querySelector('.modal-body');
+    return JSON.stringify({
+      panelGap: Math.round(window.innerHeight - p.getBoundingClientRect().bottom),
+      padBottom: getComputedStyle(body).paddingBottom
+    });`));
+  console.log('  form-sheet bottom:', JSON.stringify(formEdge));
+  ok('form sheet also reaches the bottom of the screen',
+     formEdge.panelGap === 0, `gap=${formEdge.panelGap}px`);
+  ok('form sheet STILL reserves the home-indicator inset (buttons stay tappable)',
+     parseFloat(formEdge.padBottom) >= SAFE, `padding-bottom=${formEdge.padBottom}`);
+
+  await evals(ws, `const s=document.getElementById('pb-safe-sim'); if(s) s.remove(); return true;`);
+
   ws.close();
-  console.log('done');
+  console.log(failures ? `done — ${failures} FAILED` : 'done');
+  if (failures) process.exitCode = 1;
 } catch (e) {
   console.error('ERROR', e);
 } finally {

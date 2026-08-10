@@ -38,9 +38,15 @@ node backend/test/verify-refresh-behavior.mjs
 #      umd/*.production.min.js, serve them from a /__vendor/ route and rewrite the
 #      two <script> tags. Copy the harness to a scratch dir and patch it there;
 #      don't edit the 17 committed harnesses for this.
-# Done that way, verify-refresh-behavior + verify-watchlist both pass here.
-# verify-settings fails at "app mounted" in this container, identically on pristine
-# HEAD — pre-existing and environmental, NOT a regression signal.
+# Done that way, verify-refresh-behavior, verify-watchlist, verify-modals AND
+# verify-settings all pass here (2026-08-10). The older note that verify-settings
+# "fails at app mounted in this container, pre-existing and environmental" is WRONG
+# — it was failing for the SAME unpkg reason as the rest, and the vendor patch fixes
+# it. Also drop the Google-Fonts <link> in the patched copy; it is blocked too.
+# There is a ready-made patcher recipe: rewrite ROOT to an absolute path, rewrite the
+# `from '../../x.js'` imports, add '--no-sandbox' after '--headless=new', swap the two
+# unpkg tags for /__vendor/, strip the fonts link, and hook the /__vendor/ route onto
+# the handler's first line (every harness spells it `const p = decodeURIComponent(...)`).
 # The CDP "Execution context destroyed" race is FIXED (GAPS.md #12, 2026-07-26): it
 # was structural, not luck — Chrome destroys the about:blank context when the harness
 # URL commits and harnesses attach in exactly that window — and the retry that
@@ -83,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v103`), or installed PWAs serve stale assets offline.
+`playbook-shell-v104`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -244,6 +250,32 @@ Adding a **new runtime file** additionally requires ALL of:
   current day's *daily* bar absorb pre/post trades, so the bar the day move treats
   as "the regular close" quietly stops being one. The intraday (`1m`) fetch keeps
   the flag — that is where extended hours legitimately comes from.
+- **A sheet's bottom edge had THREE declarations claiming to own it, and the shortest
+  silently won.** `.modal { inset: 0 }`, `align-items: flex-end` and the panel's
+  `calc(100dvh - 48px)` all meant "the bottom"; when they disagreed on iOS standalone
+  the sheet stopped a home-indicator inset (~34pt ≈ 0.5cm) short of the glass, and the
+  `box-shadow: 0 60px 0 0 var(--bg)` band painted that strip in the sheet's own
+  near-black — right colour, **zero content**, which is exactly what "the bottom of the
+  screen is blacked out" looked like. `.modal` now carries a definite height (grown to
+  `max(100vh, 100dvh, 100lvh)` in standalone **only** — in a browser tab `100lvh` is the
+  toolbar-hidden height and would shove the sheet under the toolbar), and the panel sizes
+  off `calc(100% - 48px)` so there is one source of truth. The box-shadow stays as paint
+  insurance, not as the fix. **This is invisible in Chrome** — `env(safe-area-inset-*)`
+  is 0 there and the gap never reproduced; simulate the inset with
+  `:root, :root[data-theme="dark"], :root[data-theme="light"] { --safe-bottom: 34px !important }`
+  (a bare `:root` override LOSES to styles.css:1's `:root, :root[data-theme="dark"]` arm
+  once app.js sets `data-theme`).
+- **The stock card is the one sheet that spends its safe-area inset on content**
+  (Jan's call, 2026-08-10). `.modal-panel.stock-detail-panel > .modal-body` drops the
+  `var(--safe-bottom)` reservation so the chart/fundamentals/news reach the physical
+  bottom edge; every other sheet keeps it because its pinned action row has to stay
+  clear of the home indicator. `verify-modals.mjs` §6 asserts **both sides** of that
+  asymmetry — dropping the inset app-wide would pass half the section and fail the other.
+- **`verify-modals.mjs`'s stock-detail section had never once opened the card.** Its row
+  selector was a `[class*="holding"]` union, which matches the `.holdings-summary`
+  container first; the section printed `(no stock detail)` and, having no assertion behind
+  it, read as green for its whole life. Fixed to `.holding-row`. A `console.log`-only
+  "check" in a browser harness is not a check.
 
 ## Current state (2026-07-26)
 
