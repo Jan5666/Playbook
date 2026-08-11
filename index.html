@@ -3,21 +3,33 @@
 <head>
 <meta charset="UTF-8">
 <title>Playbook · Jan's 30% Target</title>
-<!-- `height=device-height` is load-bearing and NOT redundant with width=device-width.
-     MEASURED on Jan's iPhone 16 Pro (Settings -> Diagnostics, 2026-08-11): the installed
-     standalone web view came up 812 CSS px tall on an 874 pt screen, anchored at y=0, so
-     the bottom 62 px of the glass sat OUTSIDE the document and no CSS could paint there.
-     62 px is exactly safe-area-inset-top: iOS sized the view as screen-minus-status-bar
-     but positioned it at the top, dumping the reserved strip at the bottom. That black
-     band is the whole "stock card is cut off" bug. This attribute tells iOS to size the
-     viewport to the device height instead. Re-check in one tap via Settings ->
-     Diagnostics: "Viewport short by" must read 0px. -->
-<meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- Do NOT re-add `height=device-height` here. It was tried for exactly the bug below
+     and MEASURED inert on iOS 26 / Safari 26.6 (Settings -> Diagnostics before and
+     after: `inner 402 x 812` both times, byte-identical). It looks like the obvious
+     fix and it is not one. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="description" content="Investment playbook — live prices, P/L, price alerts">
 <meta name="theme-color" content="#09090b">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Playbook">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- `black`, NOT `black-translucent`. MEASURED on Jan's iPhone 16 Pro (Settings ->
+     Diagnostics, 2026-08-11): under `black-translucent` the installed standalone web
+     view came up 812 CSS px tall on an 874 pt screen and was anchored at y=0, so the
+     bottom 62 px of the glass sat OUTSIDE the document and no CSS could paint there —
+     that dead strip is the whole "stock card is cut off" bug. 62 px is exactly
+     safe-area-inset-top: iOS sized the view as screen-minus-status-bar but positioned
+     it at the top, dumping the reserved strip at the bottom. `100lvh` (874) vs `100svh`
+     (812) differing by that same 62 px is the tell — iOS thinks the status bar is
+     retractable UI, which is the one thing black-translucent is supposed to deny.
+     `black` makes iOS lay the view out BELOW the status bar instead (origin y=62,
+     height 812, bottom 874), so it reaches the glass. The cost is the full-bleed top:
+     that strip is now an opaque iOS-black status bar (Jan's call, 2026-08-11).
+     Knock-on: --safe-top becomes 0, which is correct — nothing overlaps the top of the
+     view any more — and every consumer of it (body's padding-top, .settings-dialog-header,
+     .sector-modal, .heatmap-fs) degrades to "no extra top inset". --safe-bottom stays 34.
+     Confirm it applied in one tap: Settings -> Diagnostics, "safe t/b/l/r" must read 0px
+     first, not 62px. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="format-detection" content="telephone=no">
 
