@@ -869,6 +869,17 @@ function collectViewportDiagnostics() {
     const scr = window.screen || {};
     out.screen = { w: round(scr.width), h: round(scr.height), avail: round(scr.availHeight), dpr: window.devicePixelRatio };
     out.layout = { innerW: round(window.innerWidth), innerH: round(window.innerHeight), clientH: round(de.clientHeight), clientW: round(de.clientWidth) };
+    // Where the web view sits ON the screen. Load-bearing: a view that is 62px
+    // short and anchored at the top is broken, while the same 62px-short view
+    // offset 62px DOWN reaches the glass and is correct. `screen.height - innerH`
+    // cannot tell those apart — it reads 62 for both — so the offset is the only
+    // thing that distinguishes a fix from a failure.
+    const sy = (typeof window.screenY === 'number') ? window.screenY
+             : (typeof window.screenTop === 'number') ? window.screenTop : null;
+    out.viewOffset = {
+      screenY: sy == null ? null : round(sy),
+      outerW: round(window.outerWidth), outerH: round(window.outerHeight)
+    };
     const vv = window.visualViewport;
     out.visual = vv
       ? { w: round(vv.width), h: round(vv.height), offsetTop: round(vv.offsetTop), pageTop: round(vv.pageTop), scale: round(vv.scale) }
@@ -934,13 +945,24 @@ function collectViewportDiagnostics() {
       rootHasClass: de.classList.contains('pb-standalone'),
       ua: (navigator.userAgent || '').slice(0, 160)
     };
-    // Verdicts — the whole point. Any non-zero number here names the culprit.
+    // Verdicts. NOT simply "every row should be 0" — read them in this order:
+    //   glassBelowView  the one that matters: physical screen left uncovered BELOW
+    //                   the web view. Needs screenY, which iOS may report as 0, so
+    //                   it is null rather than wrong when unavailable.
+    //   viewportVsScreen  view height vs screen. Non-zero is only a BUG when the
+    //                   view is also anchored at the top; a view that is short but
+    //                   offset down by the same amount reaches the glass and is fine.
+    //   sheet/cardVsScreen  same caveat — they inherit the view's offset.
+    //   sheetVsFixed    purely internal, and must always be 0: it says the sheet
+    //                   agrees with the overlay box, which is the app's own job.
     const screenH = out.screen.h;
+    const offY = out.viewOffset.screenY;
     out.verdict = {
-      viewportShortBy: screenH != null ? round(screenH - out.layout.innerH) : null,
-      fixedOverlayShortBy: screenH != null ? round(screenH - out.fixedProbe.bottom) : null,
-      sheetShortBy: screenH != null ? round(screenH - out.sheetProbe.panelBottom) : null,
-      cardShortBy: screenH != null ? round(screenH - out.cardProbe.panelBottom) : null,
+      glassBelowView: (screenH != null && offY != null) ? round(screenH - (offY + out.layout.innerH)) : null,
+      viewportVsScreen: screenH != null ? round(screenH - out.layout.innerH) : null,
+      fixedVsScreen: screenH != null ? round(screenH - out.fixedProbe.bottom) : null,
+      sheetVsScreen: screenH != null ? round(screenH - out.sheetProbe.panelBottom) : null,
+      cardVsScreen: screenH != null ? round(screenH - out.cardProbe.panelBottom) : null,
       sheetVsFixed: round(out.fixedProbe.bottom - out.sheetProbe.panelBottom)
     };
   } catch (e) {
@@ -960,14 +982,17 @@ function diagnosticsRows(d) {
   const px = (n) => (n == null ? '-' : n + 'px');
   if (d.error) push('ERROR', d.error);
   if (d.verdict) {
-    push('Viewport short by', px(d.verdict.viewportShortBy));
-    push('Fixed overlay short by', px(d.verdict.fixedOverlayShortBy));
-    push('Sheet short by', px(d.verdict.sheetShortBy));
-    push('Stock card short by', px(d.verdict.cardShortBy));
+    push('Glass below view', d.verdict.glassBelowView == null ? '(no screenY)' : px(d.verdict.glassBelowView));
+    push('Viewport vs screen', px(d.verdict.viewportVsScreen));
+    push('Fixed vs screen', px(d.verdict.fixedVsScreen));
+    push('Sheet vs screen', px(d.verdict.sheetVsScreen));
+    push('Stock card vs screen', px(d.verdict.cardVsScreen));
     push('Sheet vs fixed', px(d.verdict.sheetVsFixed));
   }
   if (d.screen) push('screen', d.screen.w + ' x ' + d.screen.h + ' @' + d.screen.dpr + 'x (avail ' + d.screen.avail + ')');
   if (d.layout) push('inner / client', d.layout.innerW + ' x ' + d.layout.innerH + ' / ' + d.layout.clientH);
+  if (d.viewOffset) push('view offset / outer', (d.viewOffset.screenY == null ? 'screenY n/a' : 'screenY ' + d.viewOffset.screenY)
+    + ' / ' + d.viewOffset.outerW + ' x ' + d.viewOffset.outerH);
   push('visualViewport', d.visual ? (d.visual.w + ' x ' + d.visual.h + ' top ' + d.visual.offsetTop + ' scale ' + d.visual.scale) : '(none)');
   if (d.safeArea) push('safe t/b/l/r', [d.safeArea.top, d.safeArea.bottom, d.safeArea.left, d.safeArea.right].join(' / '));
   if (d.units) Object.keys(d.units).forEach(u => push(u, px(d.units[u])));
@@ -1653,7 +1678,7 @@ function SettingsModal({ fxRates, onRefreshFx,
         activeSection === 'diagnostics' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-info-box" },
             React.createElement("div", { className: "settings-info-body" },
-              "Measurements taken on this device. Nothing is stored or sent anywhere. The four 'short by' rows are the answer: every one should read 0px. Tap Copy and paste the text back so the numbers can be read exactly rather than off a screenshot."
+              "Measurements taken on this device. Nothing is stored or sent anywhere. Read 'safe t/b/l/r' first: a non-zero FIRST value means the app is drawing under the status bar. 'Glass below view' is the screen left uncovered under the web view and should be 0px; 'Sheet vs fixed' is the app's own job and must always be 0px. The other rows compare against the physical screen, so they read non-zero whenever the web view is merely offset - that is not automatically a fault. Tap Copy and paste the text back so the numbers can be read exactly rather than off a screenshot."
             )
           ),
           React.createElement("div", { className: "pos-list diag-list mt-3" },

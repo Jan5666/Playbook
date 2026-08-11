@@ -225,16 +225,25 @@ try {
       innerH: window.innerHeight });`));
   console.log('  diagnostics rows:', diag.count);
   console.log('  verdicts:', JSON.stringify({
-    viewport: diag.map['Viewport short by'], fixed: diag.map['Fixed overlay short by'],
-    sheet: diag.map['Sheet short by'], card: diag.map['Stock card short by'],
+    glassBelow: diag.map['Glass below view'],
+    viewport: diag.map['Viewport vs screen'], fixed: diag.map['Fixed vs screen'],
+    sheet: diag.map['Sheet vs screen'], card: diag.map['Stock card vs screen'],
     sheetVsFixed: diag.map['Sheet vs fixed'] }));
   ok('Diagnostics: section renders its rows', diag.count >= 14, 'rows=' + diag.count);
+  // Every verdict label must resolve — a renamed row silently becomes `undefined`
+  // and every assertion below it would then compare undefined to '0px' and just
+  // look like a failure rather than a stale test.
+  ok('Diagnostics: every verdict row is present (no stale labels)',
+     ['Glass below view', 'Viewport vs screen', 'Fixed vs screen', 'Sheet vs screen',
+      'Stock card vs screen', 'Sheet vs fixed'].every(k => typeof diag.map[k] === 'string'),
+     ['Glass below view', 'Viewport vs screen', 'Fixed vs screen', 'Sheet vs screen',
+      'Stock card vs screen', 'Sheet vs fixed'].filter(k => typeof diag.map[k] !== 'string').join(',') || 'all present');
   ok('Diagnostics: fixed overlay reaches the bottom here (0px)',
-     diag.map['Fixed overlay short by'] === '0px', String(diag.map['Fixed overlay short by']));
+     diag.map['Fixed vs screen'] === '0px', String(diag.map['Fixed vs screen']));
   ok('Diagnostics: the real-sheet probe reaches the bottom here (0px)',
-     diag.map['Sheet short by'] === '0px', String(diag.map['Sheet short by']));
+     diag.map['Sheet vs screen'] === '0px', String(diag.map['Sheet vs screen']));
   ok('Diagnostics: the stock-card probe reaches the bottom here (0px)',
-     diag.map['Stock card short by'] === '0px', String(diag.map['Stock card short by']));
+     diag.map['Stock card vs screen'] === '0px', String(diag.map['Stock card vs screen']));
   // An empty stock-detail panel hugs ~33px and would read "0px short" however
   // broken the height maths were, because it is bottom-pinned regardless. The
   // 4000px filler is what forces it against its ceiling — assert it actually got

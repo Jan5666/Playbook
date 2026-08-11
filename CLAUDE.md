@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v107`), or installed PWAs serve stale assets offline.
+`playbook-shell-v108`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -282,10 +282,16 @@ Adding a **new runtime file** additionally requires ALL of:
   y=0**, so the bottom 62 px of the glass is OUTSIDE the document and no CSS can paint
   there. 62 px is exactly `safe-area-inset-top` — iOS sized the view as
   screen-minus-status-bar but positioned it at the top, dumping the reserved strip at
-  the bottom. Fixed with `height=device-height` on the viewport meta in index.html
-  (fallback if that ever regresses: drop `apple-mobile-web-app-status-bar-style` from
-  `black-translucent` to `black`, which relocates the view below the status bar at the
-  cost of the full-bleed top).
+  the bottom. `100lvh` (874) vs `100svh` (812) differing by that same 62 px is the tell:
+  iOS treats the status bar as retractable UI, which is the one thing `black-translucent`
+  is supposed to deny. Fixed by dropping `apple-mobile-web-app-status-bar-style` from
+  `black-translucent` to **`black`**, which makes iOS lay the view out BELOW the status
+  bar (origin y=62, height 812, bottom 874) instead of sizing it short — at the cost of
+  the full-bleed top, which is now an opaque iOS-black strip (Jan's call). Knock-on:
+  `--safe-top` becomes 0, correctly, and every consumer of it degrades to "no extra top
+  inset". **`height=device-height` on the viewport meta was tried first and MEASURED
+  INERT** on iOS 26 (`inner 402 x 812` before and after, byte-identical) — it is the
+  obvious-looking fix and it is not one, so don't re-add it.
   The second half matters just as much: **`100vh` and `100lvh` reported 874 (the full
   SCREEN) while the ICB was 812**; `100dvh`/`100svh` were honest at 812. Two increments
   chased this in the sheet CSS and the second one shipped
@@ -296,8 +302,14 @@ Adding a **new runtime file** additionally requires ALL of:
   this correct all along by letting `100dvh` win. `verify-modals.mjs` §7 is a source
   guard on the `.modal` rule, because **Chrome cannot reproduce the discrepancy** — every
   unit agrees there, which is exactly why two rounds of reasoning-from-Chrome got it
-  wrong. Re-check any of this in one tap: Settings -> Diagnostics, "Viewport short by"
-  must read 0px.
+  wrong. Re-check any of this in one tap: **Settings -> Diagnostics**. Read it in this
+  order — `safe t/b/l/r` first (a non-zero FIRST value means the app is drawing under
+  the status bar, i.e. black-translucent is back), then `Glass below view` (screen left
+  uncovered beneath the web view; should be 0), then `Sheet vs fixed` (the app's own
+  job; must always be 0). Do NOT read "vs screen" rows as failures on their own: a web
+  view that is 62 px short but offset 62 px DOWN reaches the glass and is correct, and
+  those rows cannot tell that apart from a broken one — that is why `screenY` is
+  reported alongside them.
 - **A sheet's top gap is safe to derive from a viewport unit; its BOTTOM edge is not.**
   `.modal-panel` uses `align-self: stretch` + `margin-top: 48px` (no unit, no
   percentage) and `.stock-detail-panel` uses `align-self: flex-end` +
