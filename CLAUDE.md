@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v106`), or installed PWAs serve stale assets offline.
+`playbook-shell-v107`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -275,39 +275,37 @@ Adding a **new runtime file** additionally requires ALL of:
   all of it at 320/375/402/430 — it goes red on pristine HEAD naming `TABLE.rot-sr @429`.
   Chrome clips this properly, so `scrollLeft` reads 0 in the harness either way; the
   symptom is iOS-only but the cause is measurable anywhere.
-- **The stock card's bottom-edge bug is STILL OPEN, and the fix below was a no-op on
-  the device.** PR #64 shipped (main `1aba422`, Pages deploy green 2026-08-10) and Jan
-  reports the black band is *the same size as before*. That is the informative part:
-  #64 swapped the sheet's bottom edge from `.modal { inset: 0 }` to an explicit
-  `height: max(100vh, 100dvh, 100lvh)` — two structurally different ways of deciding
-  where the overlay ends, which measurably move the box in Chrome — and the phone could
-  not tell the difference. So the loss is NOT in the `.modal`/`.modal-panel` height
-  cascade, and a third variant of that fix is not worth trying. His screenshot also
-  rules out a top letterbox (the sheet's rounded top sits at ~48pt, just under the
-  status bar; an inset web view would start it at ~107pt) and shows content **sliced
-  mid-row** with more below, i.e. a scroll-container clip boundary at every scroll
-  position, not end-of-scroll padding. **Settings -> Diagnostics** (added for exactly
-  this) prints the device's real numbers — screen vs viewport, all four viewport units,
-  a bare `position: fixed; inset: 0` probe, and throwaway clones of a real
-  `.modal-panel` and a real `.stock-detail-panel` pressed against its ceiling.
-  `verify-settings.mjs` asserts every "short by" row reads **0px** in Chrome, which is
-  what makes a non-zero row on the phone mean something. Get those numbers before
-  touching this CSS again.
-- **A sheet's bottom edge had THREE declarations claiming to own it, and the shortest
-  silently won.** `.modal { inset: 0 }`, `align-items: flex-end` and the panel's
-  `calc(100dvh - 48px)` all meant "the bottom"; when they disagreed on iOS standalone
-  the sheet stopped a home-indicator inset (~34pt ≈ 0.5cm) short of the glass, and the
-  `box-shadow: 0 60px 0 0 var(--bg)` band painted that strip in the sheet's own
-  near-black — right colour, **zero content**, which is exactly what "the bottom of the
-  screen is blacked out" looked like. `.modal` now carries a definite height (grown to
-  `max(100vh, 100dvh, 100lvh)` in standalone **only** — in a browser tab `100lvh` is the
-  toolbar-hidden height and would shove the sheet under the toolbar), and the panel sizes
-  off `calc(100% - 48px)` so there is one source of truth. The box-shadow stays as paint
-  insurance, not as the fix. **This is invisible in Chrome** — `env(safe-area-inset-*)`
-  is 0 there and the gap never reproduced; simulate the inset with
-  `:root, :root[data-theme="dark"], :root[data-theme="light"] { --safe-bottom: 34px !important }`
-  (a bare `:root` override LOSES to styles.css:1's `:root, :root[data-theme="dark"]` arm
-  once app.js sets `data-theme`).
+- **The stock card's black band was the WEB VIEW, not the sheet — and vh/lvh lie on
+  iOS.** MEASURED on Jan's iPhone 16 Pro via **Settings -> Diagnostics** (2026-08-11,
+  Safari 26.6, installed standalone): `screen 402x874`, but `inner/client 402x812` and
+  `fixed inset:0 -> top 0 bottom 812`. The web view is **62 px short and anchored at
+  y=0**, so the bottom 62 px of the glass is OUTSIDE the document and no CSS can paint
+  there. 62 px is exactly `safe-area-inset-top` — iOS sized the view as
+  screen-minus-status-bar but positioned it at the top, dumping the reserved strip at
+  the bottom. Fixed with `height=device-height` on the viewport meta in index.html
+  (fallback if that ever regresses: drop `apple-mobile-web-app-status-bar-style` from
+  `black-translucent` to `black`, which relocates the view below the status bar at the
+  cost of the full-bleed top).
+  The second half matters just as much: **`100vh` and `100lvh` reported 874 (the full
+  SCREEN) while the ICB was 812**; `100dvh`/`100svh` were honest at 812. Two increments
+  chased this in the sheet CSS and the second one shipped
+  `.modal { height: max(100vh, 100dvh, 100lvh) }`, which resolved to 874 and pushed the
+  card's bottom 62 px BELOW the visible area — the band looked unchanged while 62 px of
+  content quietly went missing. **Never size a full-viewport overlay with vh or lvh**;
+  `inset: 0` is the browser's own answer and is the one that is right. `.heatmap-fs` had
+  this correct all along by letting `100dvh` win. `verify-modals.mjs` §7 is a source
+  guard on the `.modal` rule, because **Chrome cannot reproduce the discrepancy** — every
+  unit agrees there, which is exactly why two rounds of reasoning-from-Chrome got it
+  wrong. Re-check any of this in one tap: Settings -> Diagnostics, "Viewport short by"
+  must read 0px.
+- **A sheet's top gap is safe to derive from a viewport unit; its BOTTOM edge is not.**
+  `.modal-panel` uses `align-self: stretch` + `margin-top: 48px` (no unit, no
+  percentage) and `.stock-detail-panel` uses `align-self: flex-end` +
+  `max-height: calc(100dvh - 48px)`. The asymmetry is deliberate: an under-reporting
+  unit in a *max-height* only grows the gap at the top, which is cosmetic, whereas the
+  same unit in a *height* on the overlay opens one at the bottom, which is the bug
+  above. A percentage is also out — it would require `.modal` to carry a definite
+  height, which is the mistake being reverted.
 - **The stock card is the one sheet that spends its safe-area inset on content**
   (Jan's call, 2026-08-10). `.modal-panel.stock-detail-panel > .modal-body` drops the
   `var(--safe-bottom)` reservation so the chart/fundamentals/news reach the physical

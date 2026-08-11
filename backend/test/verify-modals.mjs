@@ -307,6 +307,23 @@ try {
 
   await evals(ws, `const s=document.getElementById('pb-safe-sim'); if(s) s.remove(); return true;`);
 
+  // ── 7. Anti-drift source guard: the overlay must never be sized in vh/lvh. ──
+  // MEASURED on Jan's iPhone 16 Pro via Settings -> Diagnostics (2026-08-11):
+  // `100vh` and `100lvh` both report the full 874pt SCREEN while the initial
+  // containing block is only 812, so an overlay sized from either runs 62px past
+  // the visible area and hides that much content below the fold. An increment
+  // did exactly that and shipped it. Chrome cannot reproduce the discrepancy —
+  // every unit agrees there — so only a source guard can hold this line.
+  // `dvh`/`svh` are honest (812) and stay allowed.
+  const modalRule = (() => {
+    const css = readFileSync(join(ROOT, 'styles.css'), 'utf8');
+    const i = css.indexOf('\n.modal {');
+    return i === -1 ? '' : css.slice(i, css.indexOf('\n}', i));
+  })();
+  const badUnit = /height\s*:\s*[^;]*\b\d+(?:vh|lvh)\b/.test(modalRule.replace(/\/\*[\s\S]*?\*\//g, ''));
+  ok('.modal is not sized with vh/lvh (they over-report on iOS)', modalRule !== '' && !badUnit,
+     modalRule === '' ? 'could not find the .modal rule' : (badUnit ? 'found a vh/lvh height' : 'clean'));
+
   ws.close();
   console.log(failures ? `done — ${failures} FAILED` : 'done');
   if (failures) process.exitCode = 1;

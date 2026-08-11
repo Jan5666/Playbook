@@ -3,7 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <title>Playbook · Jan's 30% Target</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- `height=device-height` is load-bearing and NOT redundant with width=device-width.
+     MEASURED on Jan's iPhone 16 Pro (Settings -> Diagnostics, 2026-08-11): the installed
+     standalone web view came up 812 CSS px tall on an 874 pt screen, anchored at y=0, so
+     the bottom 62 px of the glass sat OUTSIDE the document and no CSS could paint there.
+     62 px is exactly safe-area-inset-top: iOS sized the view as screen-minus-status-bar
+     but positioned it at the top, dumping the reserved strip at the bottom. That black
+     band is the whole "stock card is cut off" bug. This attribute tells iOS to size the
+     viewport to the device height instead. Re-check in one tap via Settings ->
+     Diagnostics: "Viewport short by" must read 0px. -->
+<meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="description" content="Investment playbook — live prices, P/L, price alerts">
 <meta name="theme-color" content="#09090b">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -109,19 +118,6 @@
     applySplashTheme(uiTheme);
     var tc = document.querySelector('meta[name="theme-color"]');
     if (tc) tc.setAttribute('content', uiTheme === 'light' ? '#F4F4F2' : '#09090b');
-
-    // Installed-PWA marker, set before first paint so the sheet geometry is right
-    // on the first frame. styles.css keys the modal overlay's full-screen height off
-    // `(display-mode: standalone)`; this class is the `navigator.standalone` hedge for
-    // the iOS versions where that media query is unreliable — the same hedge app.js
-    // already makes in AlertsModal. A class toggle only: NOT a second writer to any
-    // pb.* key, so the pb.iconTheme.v1 caveat above does not extend to it.
-    try {
-      if ((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
-          || window.navigator.standalone) {
-        document.documentElement.classList.add('pb-standalone');
-      }
-    } catch (e) {}
   })();
 </script>
 
