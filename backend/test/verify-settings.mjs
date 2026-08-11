@@ -207,6 +207,61 @@ try {
   ok('Connections: push server card', connCards.some(t => /push server/i.test(t)));
   await shot(ws, 'settings-connections');
 
+  // ── Diagnostics: the viewport/safe-area readout ──
+  // This card exists to measure a bug that does NOT reproduce in this browser.
+  // Its whole value depends on the probes being trustworthy, so the job here is
+  // to prove they read ZERO in an environment known to be correct — that is what
+  // makes a NON-zero number on Jan's phone mean something instead of being noise.
+  const modalsBefore = await evals(ws, `return document.querySelectorAll('.modal').length;`);
+  await evals(ws, `[...document.querySelectorAll('.settings-nav-item')].find(b=>b.textContent.includes('Diagnostics')).click(); return true;`);
+  await sleep(500);
+  const diag = JSON.parse(await evals(ws, `
+    const rows = [...document.querySelectorAll('.diag-list .pos-line')];
+    const map = {};
+    rows.forEach(r => { map[r.getAttribute('data-k')] = r.querySelector('.pos-line-val').textContent.trim(); });
+    return JSON.stringify({ count: rows.length, map,
+      modalsNow: document.querySelectorAll('.modal').length,
+      strayPanels: document.querySelectorAll('body > .modal-panel').length,
+      innerH: window.innerHeight });`));
+  console.log('  diagnostics rows:', diag.count);
+  console.log('  verdicts:', JSON.stringify({
+    viewport: diag.map['Viewport short by'], fixed: diag.map['Fixed overlay short by'],
+    sheet: diag.map['Sheet short by'], card: diag.map['Stock card short by'],
+    sheetVsFixed: diag.map['Sheet vs fixed'] }));
+  ok('Diagnostics: section renders its rows', diag.count >= 14, 'rows=' + diag.count);
+  ok('Diagnostics: fixed overlay reaches the bottom here (0px)',
+     diag.map['Fixed overlay short by'] === '0px', String(diag.map['Fixed overlay short by']));
+  ok('Diagnostics: the real-sheet probe reaches the bottom here (0px)',
+     diag.map['Sheet short by'] === '0px', String(diag.map['Sheet short by']));
+  ok('Diagnostics: the stock-card probe reaches the bottom here (0px)',
+     diag.map['Stock card short by'] === '0px', String(diag.map['Stock card short by']));
+  // An empty stock-detail panel hugs ~33px and would read "0px short" however
+  // broken the height maths were, because it is bottom-pinned regardless. The
+  // 4000px filler is what forces it against its ceiling — assert it actually got
+  // there, or this probe is measuring nothing.
+  ok('Diagnostics: the stock-card probe is pressed against its ceiling',
+     /h (\d+)/.test(diag.map['.stock-detail-panel'] || '') &&
+       Number(RegExp.$1) >= diag.innerH - 60, String(diag.map['.stock-detail-panel']));
+  ok('Diagnostics: sheet and fixed overlay agree (0px)',
+     diag.map['Sheet vs fixed'] === '0px', String(diag.map['Sheet vs fixed']));
+  ok('Diagnostics: every viewport unit resolves to the viewport height',
+     ['100vh', '100dvh', '100svh', '100lvh'].every(u => diag.map[u] === diag.innerH + 'px'),
+     ['100vh', '100dvh', '100svh', '100lvh'].map(u => u + '=' + diag.map[u]).join(' '));
+  // The probes append real .modal / probe nodes to body. If any survives, the
+  // card has quietly left an invisible full-screen overlay over the app.
+  ok('Diagnostics: probes leave no DOM residue',
+     diag.modalsNow === modalsBefore && diag.strayPanels === 0,
+     `modals ${modalsBefore} -> ${diag.modalsNow}, stray panels ${diag.strayPanels}`);
+  // This card renders the longest strings in the app (a full UA string). PR #63
+  // was exactly this failure — an un-shrinkable box driving documentElement
+  // scrollWidth past the viewport, which on an installed iOS PWA lets the whole
+  // app be dragged sideways. Measure scrollWidth, not "elements past the edge".
+  const overflow = JSON.parse(await evals(ws, `
+    return JSON.stringify({ sw: document.documentElement.scrollWidth, vw: window.innerWidth });`));
+  ok('Diagnostics: no horizontal page overflow', overflow.sw <= overflow.vw,
+     `scrollWidth ${overflow.sw} vs viewport ${overflow.vw}`);
+  await shot(ws, 'settings-diagnostics');
+
   // Close settings, open Alerts.
   await evals(ws, `document.querySelector('.settings-overlay .modal-close').click(); return true;`);
   await sleep(300);

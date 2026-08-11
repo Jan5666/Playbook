@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v105`), or installed PWAs serve stale assets offline.
+`playbook-shell-v106`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -275,6 +275,24 @@ Adding a **new runtime file** additionally requires ALL of:
   all of it at 320/375/402/430 — it goes red on pristine HEAD naming `TABLE.rot-sr @429`.
   Chrome clips this properly, so `scrollLeft` reads 0 in the harness either way; the
   symptom is iOS-only but the cause is measurable anywhere.
+- **The stock card's bottom-edge bug is STILL OPEN, and the fix below was a no-op on
+  the device.** PR #64 shipped (main `1aba422`, Pages deploy green 2026-08-10) and Jan
+  reports the black band is *the same size as before*. That is the informative part:
+  #64 swapped the sheet's bottom edge from `.modal { inset: 0 }` to an explicit
+  `height: max(100vh, 100dvh, 100lvh)` — two structurally different ways of deciding
+  where the overlay ends, which measurably move the box in Chrome — and the phone could
+  not tell the difference. So the loss is NOT in the `.modal`/`.modal-panel` height
+  cascade, and a third variant of that fix is not worth trying. His screenshot also
+  rules out a top letterbox (the sheet's rounded top sits at ~48pt, just under the
+  status bar; an inset web view would start it at ~107pt) and shows content **sliced
+  mid-row** with more below, i.e. a scroll-container clip boundary at every scroll
+  position, not end-of-scroll padding. **Settings -> Diagnostics** (added for exactly
+  this) prints the device's real numbers — screen vs viewport, all four viewport units,
+  a bare `position: fixed; inset: 0` probe, and throwaway clones of a real
+  `.modal-panel` and a real `.stock-detail-panel` pressed against its ceiling.
+  `verify-settings.mjs` asserts every "short by" row reads **0px** in Chrome, which is
+  what makes a non-zero row on the phone mean something. Get those numbers before
+  touching this CSS again.
 - **A sheet's bottom edge had THREE declarations claiming to own it, and the shortest
   silently won.** `.modal { inset: 0 }`, `align-items: flex-end` and the panel's
   `calc(100dvh - 48px)` all meant "the bottom"; when they disagreed on iOS standalone
