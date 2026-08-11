@@ -945,6 +945,21 @@ function collectViewportDiagnostics() {
       rootHasClass: de.classList.contains('pb-standalone'),
       ua: (navigator.userAgent || '').slice(0, 160)
     };
+    // BUILD STAMP — what this page is ACTUALLY running, read live from the DOM.
+    // Without it, "the meta did not take effect" and "the app is still booting an
+    // old index.html" look identical from the outside, and they need completely
+    // different fixes. iOS also captures the status-bar style when the icon is
+    // added to the home screen and does not re-read it on launch, so the shipped
+    // value and the applied value can legitimately disagree.
+    const metaOf = (name) => {
+      const el = document.querySelector('meta[name="' + name + '"]');
+      return el ? (el.getAttribute('content') || '(empty)') : '(absent)';
+    };
+    out.build = {
+      statusBar: metaOf('apple-mobile-web-app-status-bar-style'),
+      viewport: metaOf('viewport'),
+      swController: (navigator.serviceWorker && navigator.serviceWorker.controller) ? 'active' : 'none'
+    };
     // Verdicts. NOT simply "every row should be 0" — read them in this order:
     //   glassBelowView  the one that matters: physical screen left uncovered BELOW
     //                   the web view. Needs screenY, which iOS may report as 0, so
@@ -975,12 +990,19 @@ function collectViewportDiagnostics() {
 // Flattens the object into the label/value rows the card renders and the text
 // the Copy button puts on the clipboard — one shape, so what Jan pastes is
 // exactly what he sees.
-function diagnosticsRows(d) {
+function diagnosticsRows(d, cacheName) {
   if (!d) return [];
   const rows = [];
   const push = (label, value) => rows.push({ label, value: String(value) });
   const px = (n) => (n == null ? '-' : n + 'px');
   if (d.error) push('ERROR', d.error);
+  // Build stamp first: if this does not match what was shipped, every geometry
+  // number below describes an old build and should not be reasoned about.
+  if (d.build) {
+    push('status-bar meta', d.build.statusBar);
+    push('viewport meta', d.build.viewport);
+    push('sw / cache', d.build.swController + ' / ' + (cacheName || '(reading)'));
+  }
   if (d.verdict) {
     push('Glass below view', d.verdict.glassBelowView == null ? '(no screenY)' : px(d.verdict.glassBelowView));
     push('Viewport vs screen', px(d.verdict.viewportVsScreen));
@@ -1044,6 +1066,7 @@ function SettingsModal({ fxRates, onRefreshFx,
   const [codeCopied, setCodeCopied] = useState(false);
   const [codeReveal, setCodeReveal] = useState(false);
   const [diag, setDiag] = useState(null);
+  const [diagCache, setDiagCache] = useState(null);
   const [diagCopied, setDiagCopied] = useState(false);
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
@@ -1058,8 +1081,24 @@ function SettingsModal({ fxRates, onRefreshFx,
     if (activeSection !== 'diagnostics') return;
     setDiagCopied(false);
     setDiag(collectViewportDiagnostics());
+    // The cache name is the only async part of the build stamp, so it is read
+    // separately rather than making the measurement itself async (the probes must
+    // be appended, measured and removed inside one frame). `caches` is absent on
+    // insecure origins and in some harness contexts — degrade, never throw.
+    let alive = true;
+    (async () => {
+      let name = '(unavailable)';
+      try {
+        if (window.caches && caches.keys) {
+          const keys = await caches.keys();
+          name = keys.filter(k => k.startsWith('playbook-shell-')).join(', ') || '(none)';
+        }
+      } catch (_e) { name = '(error)'; }
+      if (alive) setDiagCache(name);
+    })();
+    return () => { alive = false; };
   }, [activeSection]);
-  const diagRows = useMemo(() => diagnosticsRows(diag), [diag]);
+  const diagRows = useMemo(() => diagnosticsRows(diag, diagCache), [diag, diagCache]);
   const diagText = useMemo(
     () => diagRows.map(r => r.label + ': ' + r.value).join('\n'),
     [diagRows]

@@ -44,8 +44,16 @@ const SEED = {
 };
 
 const seedJson = JSON.stringify(SEED).replace(/</g, '\\u003c');
+// The Diagnostics build stamp echoes this meta straight out of the DOM, and this
+// harness serves its own shell rather than index.html — so the value is READ from
+// index.html instead of hardcoded here. A hardcoded copy would silently drift and
+// the stamp assertion would then be testing the harness against itself.
+const SHIPPED_STATUS_BAR = (readFileSync(join(ROOT, 'index.html'), 'utf8')
+  .match(/<meta\s+name="apple-mobile-web-app-status-bar-style"\s+content="([^"]*)"/) || [])[1] || '';
+
 const VERIFY_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-status-bar-style" content="${SHIPPED_STATUS_BAR}">
 <link rel="stylesheet" href="/styles.css">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head><body>
@@ -238,6 +246,16 @@ try {
       'Stock card vs screen', 'Sheet vs fixed'].every(k => typeof diag.map[k] === 'string'),
      ['Glass below view', 'Viewport vs screen', 'Fixed vs screen', 'Sheet vs screen',
       'Stock card vs screen', 'Sheet vs fixed'].filter(k => typeof diag.map[k] !== 'string').join(',') || 'all present');
+  // The build stamp is the whole point of the card now: it separates "iOS ignored
+  // the meta" from "the app is booting an old index.html", which look identical
+  // from the outside. Assert the runtime echo matches the SHIPPED source, so the
+  // stamp itself can never be the thing that is wrong.
+  ok('Diagnostics: build stamp echoes the shipped status-bar meta',
+     !!SHIPPED_STATUS_BAR && diag.map['status-bar meta'] === SHIPPED_STATUS_BAR,
+     `runtime="${diag.map['status-bar meta']}" source="${SHIPPED_STATUS_BAR}"`);
+  ok('Diagnostics: build stamp reports a cache name (not left "reading")',
+     typeof diag.map['sw / cache'] === 'string' && !/\(reading\)/.test(diag.map['sw / cache']),
+     String(diag.map['sw / cache']));
   ok('Diagnostics: fixed overlay reaches the bottom here (0px)',
      diag.map['Fixed vs screen'] === '0px', String(diag.map['Fixed vs screen']));
   ok('Diagnostics: the real-sheet probe reaches the bottom here (0px)',

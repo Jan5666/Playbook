@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v108`), or installed PWAs serve stale assets offline.
+`playbook-shell-v109`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -285,9 +285,18 @@ Adding a **new runtime file** additionally requires ALL of:
   the bottom. `100lvh` (874) vs `100svh` (812) differing by that same 62 px is the tell:
   iOS treats the status bar as retractable UI, which is the one thing `black-translucent`
   is supposed to deny. Fixed by dropping `apple-mobile-web-app-status-bar-style` from
-  `black-translucent` to **`black`**, which makes iOS lay the view out BELOW the status
-  bar (origin y=62, height 812, bottom 874) instead of sizing it short — at the cost of
-  the full-bleed top, which is now an opaque iOS-black strip (Jan's call). Knock-on:
+  `black-translucent` to **`black`** — but note that on an ALREADY-INSTALLED icon this
+  did **not** take effect: the app kept drawing under the status bar after the deploy,
+  because iOS captures the status-bar style when the icon is added to the home screen
+  and does not re-read it on launch. Changing it needs the icon deleted and re-added
+  (back up first: Settings -> Data -> Save backup file, and note the Recovery code —
+  deleting a home-screen web app clears its storage). Settings -> Diagnostics now
+  carries a **build stamp** (the live status-bar + viewport meta contents and the active
+  `playbook-shell-*` cache name) precisely so "iOS ignored the meta" and "the app is
+  still booting an old index.html" can be told apart — they look identical from the
+  outside and need completely different fixes. Intended effect of `black`: iOS lays the
+  view out BELOW the status bar (origin y=62, height 812, bottom 874) instead of sizing
+  it short, at the cost of the full-bleed top. Knock-on:
   `--safe-top` becomes 0, correctly, and every consumer of it degrades to "no extra top
   inset". **`height=device-height` on the viewport meta was tried first and MEASURED
   INERT** on iOS 26 (`inner 402 x 812` before and after, byte-identical) — it is the
