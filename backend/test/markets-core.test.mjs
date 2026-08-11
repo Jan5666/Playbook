@@ -64,7 +64,30 @@ const SYM = [
   [['^VIX', 'US'], '%5EVIX'],
   [['^GSPC', 'US'], '%5EGSPC'],
   [['AAPL', 'US'], 'AAPL'],
-  [['BRK.B', 'US'], 'BRK.B']
+  [['BRK.B', 'US'], 'BRK.B'],
+  // A stored ticker can ALREADY carry its exchange suffix. Only CRYPTO guarded
+  // against doubling; the suffixed markets concatenated blindly, so a JSE holding
+  // saved as "SOL.JO" asked Yahoo for "SOL.JO.JO" (and Stooq for "sol.jo.jo"),
+  // both of which resolve to nothing. The symbol then never updates again while
+  // still rendering its last stored quote — priced, so it stays in the coverage
+  // note's denominator, but a session behind, so it never reaches the numerator.
+  // That shape is reachable: the Add-Holding modal saves the raw typed text when
+  // live verification fails and the user force-adds.
+  [['SOL.JO', 'JSE'], 'SOL.JO'],
+  [['STX40.JO', 'TFSA'], 'STX40.JO'],
+  [['sol.jo', 'JSE'], 'sol.jo'],          // case-insensitive, and left as typed
+  [['SHEL.L', 'LSE'], 'SHEL.L'],
+  [['BHP.AX', 'ASX'], 'BHP.AX'],
+  [['SAP.F', 'FRA'], 'SAP.F'],
+  [['MC.PA', 'PAR'], 'MC.PA'],
+  [['ASML.AS', 'AMS'], 'ASML.AS'],
+  // ...but a suffix-shaped fragment is NOT a suffix, so nothing is over-stripped.
+  [['ASML', 'AMS'], 'ASML.AS'],
+  [['JO', 'JSE'], 'JO.JO'],
+  // The suffixed branches now encode like the US/CRYPTO ones, so a stray
+  // character in a stored ticker can never build a malformed url.
+  [['A B', 'JSE'], 'A%20B.JO'],
+  [['^X', 'JSE'], '%5EX.JO']
 ];
 const show = a => a.map(v => v === null ? 'null' : `'${v}'`).join(',');
 

@@ -35,6 +35,35 @@ ok('html body is error', PBData.looksLikeProxyError('<!DOCTYPE html><html>...</h
 ok('rate-limit phrase is error', PBData.looksLikeProxyError('xxxxxxxxxxxxxxxxxxxxxx Too Many Requests xxxxx') === true);
 ok('clean json body is ok', PBData.looksLikeProxyError('{"chart":{"result":[{"meta":{"x":1}}]}}') === false);
 
+// ── An upstream envelope is an ANSWER, not a proxy fault ────────────────────
+// Yahoo reports a symbol it does not have as {"chart":{"result":null,"error":{…}}}.
+// The generic `"error":` clause matched that, so a dead ticker was indistinguishable
+// from a flaky edge and burned ALL SIX proxies — twice per sweep, because
+// fetchQuoteBatch retries the misses. ~12 wasted round-trips per poll for one bad
+// symbol, spent on the same shared free proxies the rest of the sweep needs, which
+// is how one unresolvable holding starts costing the others their quotes.
+const YAHOO_404 = '{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found, symbol may be delisted"}}}';
+ok('yahoo not-found envelope is NOT a proxy error', PBData.looksLikeProxyError(YAHOO_404) === false);
+ok('yahoo envelope with leading whitespace is still recognised',
+  PBData.looksLikeProxyError('  \n' + YAHOO_404) === false);
+ok('quoteSummary envelope is NOT a proxy error',
+  PBData.looksLikeProxyError('{"quoteSummary":{"result":null,"error":{"code":"Not Found"}}}') === false);
+// …and the generic clause still catches a proxy's OWN error json, which is the
+// case it was written for. Non-vacuous: both bodies contain `"error":`.
+ok('a proxy\'s own error json is still an error',
+  PBData.looksLikeProxyError('{"error":"rate limited, try again later"}') === true);
+ok('the two bodies really are distinguished only by the envelope',
+  /"error"\s*:/.test(YAHOO_404) && /"error"\s*:/.test('{"error":"rate limited, try again later"}'));
+
+// End to end: a not-found body stops the ladder at the FIRST proxy instead of
+// walking all six, and hands the envelope back for the parser to reject.
+PBData._setLastGoodProxy(null);
+let ladder = 0;
+globalThis.fetch = async () => { ladder++; return { ok: true, text: async () => YAHOO_404 }; };
+const nf = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/v8/finance/chart/NOPE.JO');
+ok('not-found: body returned to the caller, not swallowed', nf === YAHOO_404);
+ok('not-found: only one proxy tried, not the whole ladder', ladder === 1, `tried ${ladder}`);
+
 // fetchViaProxies returns the first clean body and floats lastGoodProxy
 PBData._setLastGoodProxy(null);
 let calls = installFetch([{ match: 'finance.yahoo.com', body: '{"ok":true,"padding":"aaaaaaaaaaaaaaaaaaaa"}' }]);

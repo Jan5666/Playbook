@@ -2816,7 +2816,15 @@ const HoldingRow = React.memo(function HoldingRow(_refHR) {
           className: `holding-day mono ${chipUp ? 'text-up' : 'text-down'}` + (showExt ? ' is-ext' : '')
         }, (chipUp ? '+' : '') + chipPct.toFixed(2) + '%'),
         dayAtClose ? React.createElement("div", { className: "day-chip-note" }, "At close") : null)
-        : (showExt ? React.createElement("div", { className: "holding-day-empty mono" }, "—") : null)),
+        // Nothing trustworthy to put in this column: no quote at all, or one
+        // quoteSessionState called 'stale', whose percentage is withheld. Outside
+        // pre-market mode this used to render LITERALLY NOTHING, and an empty cell
+        // reads as a broken feed rather than as a known gap -- it is what "the
+        // prices won't load" was actually pointing at, sitting under a summary that
+        // said "17 of 18" with no way to ask which one. The dash says the same
+        // thing the aggregate already says. No caption (Jan, 2026-08-11): the row
+        // states the absence, Settings -> Diagnostics -> Price feed states why.
+        : React.createElement("div", { className: "holding-day-empty mono" }, "—")),
     // RIGHT — current value, with the total gain/loss smaller underneath it:
     // amount on top, % below. Deliberately below the value's weight (see
     // .holding-gl-amt) so the row has one primary figure, not two competing ones —
@@ -2964,15 +2972,29 @@ function CurrentView(_ref7) {
       const c = convertCcy(p.shares * p.costBasis, positionCostCcy(p), native, rates);
       cost += (c != null ? c : p.shares * p.costBasis);
       if (q && isFinite(q.price)) {
-        value += p.shares * q.price; anyPrice = true; priced++;
+        value += p.shares * q.price; anyPrice = true;
         // Same two gates as the Dashboard hero: the market's regular session must
         // have opened today, and prevClose must be anchored to that session.
-        if (typeof q.prevClose === 'number' && q.prevClose > 0 && quoteTradedToday(q, market)
-            && (q.sessionDay == null || q.sessionDay === marketDayKey(nowMs, market))) {
+        const countsToday = typeof q.prevClose === 'number' && q.prevClose > 0 && quoteTradedToday(q, market)
+            && (q.sessionDay == null || q.sessionDay === marketDayKey(nowMs, market));
+        if (countsToday) {
           dayChange += p.shares * (q.price - q.prevClose);
           dayBase += p.shares * q.prevClose;
           anyDay = true; counted++;
         }
+        // priced is the DENOMINATOR of the coverage note, so it may only count
+        // holdings that could plausibly have reached the numerator. A unit trust
+        // strikes one NAV per day and Morningstar publishes it in arrears, so
+        // through a live session its sessionDay is necessarily an earlier one and
+        // it cannot be counted however well the sweep went -- including it pinned
+        // the note permanently short and dressed a structural fact up as a failed
+        // sweep, which is the one thing the note exists to report. It leaves the
+        // denominator only on the days it genuinely cannot be in the numerator, so
+        // counted <= priced still holds, and its VALUE still counts above either way.
+        // Deliberately narrow: NOT "any quote without a usable prevClose", which
+        // would also swallow a holding that has quietly stopped updating -- the
+        // case the note is there to catch.
+        if (countsToday || !isUnitTrustId(p.ticker)) priced++;
       }
     });
     return {
