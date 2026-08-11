@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v109`), or installed PWAs serve stale assets offline.
+`playbook-shell-v110`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -333,6 +333,41 @@ Adding a **new runtime file** additionally requires ALL of:
   bottom edge; every other sheet keeps it because its pinned action row has to stay
   clear of the home indicator. `verify-modals.mjs` §6 asserts **both sides** of that
   asymmetry — dropping the inset app-wide would pass half the section and fail the other.
+- **"N of M" on the Holdings summary is NOT a fetch counter, and a blank Today cell was not a
+  render bug.** `computeMarketSummary`'s denominator (`dayPriced`) counts holdings with a finite
+  price; the numerator (`dayCounted`) additionally demands `prevClose > 0` + `quoteTradedToday` +
+  `sessionDay === today`. So "17 of 18" means **all 18 are priced** and one cannot be anchored to
+  today's session — a completely different bug from "the price won't load", which is what it looks
+  like, because `HoldingRow` used to render that cell as literally `null` (it now renders the
+  `.holding-day-empty` dash in both modes, not just pre-market). Three unrelated faults produce
+  that one screen and **nothing distinguished them**: `fetchQuoteBatch` keeps failures out of
+  `results` and a `fetchQuote` resolving `null` logs nothing; `mergePrices` is a shallow merge, so
+  a missed symbol keeps rendering its last stored quote at a believable price; `failStreak` resets
+  to 0 whenever *any* symbol lands, so the "feed unreachable" toast can never fire on a partial
+  sweep; and `guardBatch` read only `.quote`, discarding `guardQuote`'s `rejected` verdict, so a
+  symbol the plausibility gate had frozen was invisible too. **Settings -> Diagnostics -> Price
+  feed** now answers it in one tap (`PBModals.priceFeedRows`, pure, pinned by
+  `price-feed-rows.test.mjs`): read `src` first (`stooq`/`morningstar` means end-of-day *by
+  construction*, not broken), then `day` (the quote's own session vs the market's today), then the
+  `MISSED SWEEP` / `HELD` flags. The Yahoo symbol is printed **encoded** on purpose — a doubled
+  suffix or a stray character is the thing you are looking for. It stays quiet before the bell,
+  where the today-gate is vacuously false for every holding and a row would carry no information.
+- **`looksLikeProxyError`'s generic `"error":` test matched Yahoo's OWN not-found envelope.**
+  `{"chart":{"result":null,"error":{...}}}` is an *answer*, not a proxy fault, but it read as one —
+  so a ticker Yahoo simply does not have burned **all six proxies, twice per sweep** (main pass +
+  `fetchQuoteBatch`'s retry). ~12 wasted round-trips per poll for one dead symbol, against the same
+  shared free proxies everything else needs: that is how ONE unresolvable holding starts costing
+  the others their quotes. The `{"chart"|"quoteSummary"|"finance":` guard now returns the body and
+  lets the parsers reject it. Related: the retry pass now **always** cache-busts (it inherited the
+  auto-poll's no-bust and re-requested a byte-identical url, so a proxy-cached failure was served
+  right back — a retry that cannot see past the cache is not a retry).
+- **`yahooSymbol` doubled an exchange suffix that was already there.** Only CRYPTO had an
+  idempotency guard; JSE/TFSA/LSE/ASX/FRA/PAR/AMS concatenated blindly, so a position stored as
+  `SOL.JO` asked Yahoo for `SOL.JO.JO` and Stooq for `sol.jo.jo` — both nothing. The symbol then
+  never updates again while still rendering its last stored quote, i.e. priced (in the denominator)
+  but a session behind (never in the numerator), forever. Reachable in one tap: the Add-Holding
+  modal saves the **raw typed text** when live verification fails and the user force-adds. Those
+  branches now also `encodeURIComponent` like the US/CRYPTO ones.
 - **`verify-modals.mjs`'s stock-detail section had never once opened the card.** Its row
   selector was a `[class*="holding"]` union, which matches the `.holdings-summary`
   container first; the section printed `(no stock detail)` and, having no assertion behind

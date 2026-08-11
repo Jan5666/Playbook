@@ -16,6 +16,12 @@
   const fetchViaProxies = PBData.fetchViaProxies; // PBData global (CORS proxy fetch — used by fetchSectorTrend)
   const MARKET_CURRENCY = PBCore.MARKET_CURRENCY; // PBCore global
   const sameUnderlyingExchange = PBCore.sameUnderlyingExchange; // PBCore global (JSE === TFSA venue)
+  const quoteSessionState = PBCore.quoteSessionState; // PBCore global (price-feed diagnostics)
+  const quoteTradedToday = PBCore.quoteTradedToday; // PBCore global (price-feed diagnostics)
+  const regularSessionStartedToday = PBCore.regularSessionStartedToday; // PBCore global (price-feed diagnostics)
+  const marketDayKey = PBCore.marketDayKey; // PBCore global (price-feed diagnostics)
+  const yahooSymbol = PBCore.yahooSymbol; // PBCore global (price-feed diagnostics)
+  const fmtAgo = PBCore.fmtAgo; // PBCore global (price-feed diagnostics)
   const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES; // PBContent global
   const MARKETS = PBContent.MARKETS; // PBContent global
   const RIBBON_CATALOG = PBContent.RIBBON_CATALOG; // PBContent global
@@ -990,6 +996,67 @@ function collectViewportDiagnostics() {
 // Flattens the object into the label/value rows the card renders and the text
 // the Copy button puts on the clipboard — one shape, so what Jan pastes is
 // exactly what he sees.
+// Which holdings are NOT contributing a "Today" figure, and why.
+//
+// This exists because every cause of "one stock's price will not load" renders
+// identically, and none of them says anything. fetchQuoteBatch keeps failures out
+// of its results and a fetchQuote that resolves null logs nothing; mergePrices is
+// a shallow merge, so a missed symbol keeps rendering its last stored quote at a
+// believable price; the row withholds the stale percentage; and the summary reads
+// "N-1 of N" with nothing to tap. A symbol Yahoo cannot resolve, a Stooq
+// end-of-day fallback carrying the previous session, and a quote the plausibility
+// gate is holding back are three different bugs wearing the same face — these
+// rows are what tell them apart. Read them in this order: src first (stooq or
+// morningstar means the day figure is end-of-day by construction, not broken),
+// then day (the quote's own session against the market's today), then the
+// MISSED / HELD flags, which name a fetch failure and a guard rejection.
+//
+// Pure, and takes its clock, so it is unit-testable without a DOM.
+function priceFeedRows(positions, prices, feedHealth, nowMs) {
+  const health = feedHealth || {};
+  const missed = new Set((health.missing || []).map(it => priceKey(it.market, it.ticker)));
+  const held = health.held || {};
+  const px = prices || {};
+  const rows = [];
+  const seen = new Set();
+  const add = (market, ticker) => {
+    const key = priceKey(market, ticker);
+    if (seen.has(key)) return;                 // two lots of the same holding
+    const q = px[key];
+    // The same predicate the coverage note counts with (pb-views computeMarketSummary).
+    const counted = !!q && isFinite(q.price)
+      && typeof q.prevClose === 'number' && q.prevClose > 0
+      && quoteTradedToday(q, market, nowMs)
+      && (q.sessionDay == null || q.sessionDay === marketDayKey(nowMs, market));
+    if (counted && !missed.has(key) && !held[key]) return;   // healthy, nothing to report
+    // A market that has not traded today fails the today-gate for EVERY holding in
+    // it, by construction — so before the bell a row here would carry no
+    // information, and listing the whole book every morning is how a diagnostic
+    // stops being read. computeMarketSummary suppresses its Today block for the
+    // same reason. A quote that is missing outright, or one an explicit flag names,
+    // is still a fault at any hour and stays.
+    if (!regularSessionStartedToday(market, nowMs) && q && isFinite(q.price)
+        && !missed.has(key) && !held[key]) return;
+    seen.add(key);
+    const bits = [];
+    // Shown ENCODED, exactly as the url carries it: a doubled suffix or a stray
+    // character is the whole point of printing it.
+    bits.push('as ' + yahooSymbol(ticker, market));
+    bits.push('src ' + ((q && q.source) || (q ? 'yahoo' : 'none')));
+    bits.push('age ' + (q && q.fetchedAt ? fmtAgo(q.fetchedAt, nowMs) : 'never'));
+    bits.push('day ' + ((q && q.sessionDay) || 'n/a') + ' vs ' + (marketDayKey(nowMs, market) || '?'));
+    bits.push(quoteSessionState(q, market, nowMs));
+    if (missed.has(key)) bits.push('MISSED SWEEP');
+    if (held[key]) bits.push('HELD at ' + held[key].price);
+    rows.push({ label: key, value: bits.join(' | ') });
+  };
+  (positions || []).forEach(p => add(p.market, p.ticker));
+  // Anything the sweep missed that is not a holding (watchlist, alert, ribbon)
+  // still belongs here — it is the same feed, and a proxy that is rate-limiting
+  // one list is rate-limiting all of them.
+  (health.missing || []).forEach(it => add(it.market, it.ticker));
+  return rows;
+}
 function diagnosticsRows(d, cacheName) {
   if (!d) return [];
   const rows = [];
@@ -1036,7 +1103,7 @@ function diagnosticsRows(d, cacheName) {
   return rows;
 }
 
-function SettingsModal({ fxRates, onRefreshFx,
+function SettingsModal({ fxRates, onRefreshFx, feedHealth,
                         positions, contributions, onExport, onImport, cloudBackup, onDeleteHoldings,
                         tabOrder, hiddenTabs,
                         pushStatus, onConnectPush, onTestPush, onDisconnectPush, onClose }) {
@@ -1099,9 +1166,19 @@ function SettingsModal({ fxRates, onRefreshFx,
     return () => { alive = false; };
   }, [activeSection]);
   const diagRows = useMemo(() => diagnosticsRows(diag, diagCache), [diag, diagCache]);
+  // Only while the section is open: `diag` is null until the measuring effect
+  // above runs, and it changes again on Re-measure, so the scan refreshes with
+  // the rest of the readout instead of running behind a screen nobody is on.
+  const feedRows = useMemo(
+    () => (activeSection === 'diagnostics' ? priceFeedRows(positions, prices, feedHealth, Date.now()) : []),
+    [activeSection, diag, positions, prices, feedHealth]
+  );
   const diagText = useMemo(
-    () => diagRows.map(r => r.label + ': ' + r.value).join('\n'),
-    [diagRows]
+    () => diagRows.map(r => r.label + ': ' + r.value)
+      .concat(feedRows.length ? ['', 'PRICE FEED'] : ['', 'PRICE FEED: all holdings current'])
+      .concat(feedRows.map(r => r.label + ': ' + r.value))
+      .join('\n'),
+    [diagRows, feedRows]
   );
   const copyDiag = async () => {
     try {
@@ -1727,6 +1804,17 @@ function SettingsModal({ fxRates, onRefreshFx,
               React.createElement("span", { className: "pos-line-label" }, r.label),
               React.createElement("span", { className: "pos-line-val mono" }, r.value)))
           ),
+          React.createElement("div", { className: "settings-section-title mt-3" }, "Price feed"),
+          React.createElement("div", { className: "settings-row-desc mb-3" },
+            "Holdings that are not contributing a Today figure, and why. This is the same set the Holdings summary counts when it says N of M -- an empty list means every holding is anchored to today's session."),
+          feedRows.length
+            ? React.createElement("div", { className: "pos-list diag-list" },
+                feedRows.map((r, i) => React.createElement("div", {
+                  key: r.label + i, className: "pos-line", "data-k": r.label
+                },
+                  React.createElement("span", { className: "pos-line-label" }, r.label),
+                  React.createElement("span", { className: "pos-line-val mono" }, r.value))))
+            : React.createElement("div", { className: "settings-empty" }, "Every holding is anchored to today's session."),
           React.createElement("div", { className: "pk-actions mt-3" },
             React.createElement("button", {
               className: "btn btn-secondary btn-sm", type: "button", onClick: copyDiag

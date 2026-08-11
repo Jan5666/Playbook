@@ -1730,13 +1730,44 @@ function usePriceFeed(order, fetchKey) {
   // holding value, while a real split/repricing is accepted once it persists
   // (PBCore.guardQuote owns the rules). Rejected symbols keep their last good
   // quote; untouched symbols are not cloned, preserving the memo contract.
+  // Feed health: the symbols the plausibility gate is holding back, and the ones
+  // the last sweep could not price at all. Diagnosis only — neither changes what a
+  // row renders. They exist because every way a single holding can stop updating
+  // produces the SAME screen: mergePrices is a shallow merge, so the last good
+  // quote keeps rendering with its old sessionDay, the row withholds its stale
+  // percentage, and the summary reads "N-1 of N" with no way to ask which one.
+  // Held in refs because they are written from inside the fetch machinery, and
+  // mirrored into state only when the signature changes, so an ordinary 45s poll
+  // with nothing wrong costs no re-render.
+  const heldRef = useRef({});
+  const [feedHeld, setFeedHeld] = useState({});
+  const [feedMissing, setFeedMissing] = useState([]);
+  const syncHeld = useCallback(() => {
+    const sig = (m) => Object.keys(m).sort().map(k => k + '@' + (m[k] && m[k].at)).join('|');
+    const next = heldRef.current;
+    setFeedHeld(prev => (sig(prev) === sig(next) ? prev : Object.assign({}, next)));
+  }, []);
   const guardBatch = useCallback((obj) => {
     const cur = PBStore.getPrices();
     const now = Date.now();
     const out = {};
-    for (const k in obj) out[k] = obj[k] ? PBCore.guardQuote(cur[k], obj[k], now).quote : obj[k];
+    for (const k in obj) {
+      if (!obj[k]) { out[k] = obj[k]; continue; }
+      const g = PBCore.guardQuote(cur[k], obj[k], now);
+      out[k] = g.quote;
+      // guardQuote's verdict used to be dropped on the floor right here (only
+      // `.quote` was read). A rejected symbol keeps its LAST GOOD quote — a
+      // believable price wearing an old session — which looks exactly like a symbol
+      // whose fetch is failing, and both look like "the price won't load". The
+      // ZAc/ZAR divisor flip makes this a JSE-shaped hazard specifically: it is a
+      // 100x jump, so it trips the gate, and if the divisor oscillates the suspect
+      // clock keeps restarting and the symbol never re-earns its place.
+      if (g.rejected) heldRef.current[k] = g.quote.suspect || { price: obj[k].price, at: now };
+      else if (heldRef.current[k]) delete heldRef.current[k];
+    }
+    syncHeld();
     return out;
-  }, []);
+  }, [syncHeld]);
   // Merge externally-fetched quotes (e.g. a just-added holding) so the
   // dashboard charts update the instant a position is created, without waiting
   // for the next 90s poll to cycle through every ticker.
@@ -1787,7 +1818,16 @@ function usePriceFeed(order, fetchKey) {
         const newPrices = await fetchQuoteBatch(orderRef.current, {
           cacheBust: force,
           // Merge each batch as it lands so holdings paint progressively.
-          onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(); }
+          onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(); },
+          // The sweep's own miss list. failStreak cannot stand in for it: it resets
+          // to 0 whenever ANY symbol lands, so a sweep that priced 59 of 60 is
+          // indistinguishable from a clean one and the "feed unreachable" toast can
+          // never fire on a partial failure. Compared by signature so the common
+          // empty-list case does not re-render App every poll.
+          onMissing: (miss) => {
+            const sig = (l) => (l || []).map(it => priceKey(it.market, it.ticker)).sort().join(',');
+            setFeedMissing(prev => (sig(prev) === sig(miss) ? prev : miss));
+          }
         });
         if (Object.keys(newPrices).length > 0) {
           setLastUpdate(new Date());
@@ -1836,7 +1876,10 @@ function usePriceFeed(order, fetchKey) {
   // cadence, so returning to the app never shows a stale day move while waiting
   // out the next interval tick.
   usePolledRefresh(refresh, pollMs, OPEN_POLL_MS, fetchKey);
-  return { loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices };
+  const feedHealth = useMemo(
+    () => ({ missing: feedMissing, held: feedHeld, sweepSize: order.length }),
+    [feedMissing, feedHeld, order.length]);
+  return { loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices, feedHealth };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every
 // price/alert change. fireNotification is injected because its closure (toast,
@@ -3125,7 +3168,7 @@ function App() {
     warmed: warmedLists,
     activeView: view,
   }), [positions, watchlist, alerts, ribbonItems, warmedLists, view]);
-  const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices } = usePriceFeed(fetchOrder, fetchKey);
+  const { loading, lastUpdate, failStreak, refreshNow: refreshPricesNow, mergePrices, feedHealth } = usePriceFeed(fetchOrder, fetchKey);
   useEffect(() => {
     if (failStreak === 2) { const m = describeOutcome({ code: 'feed-unreachable' }); if (m) toast(m); }
   }, [failStreak]);
@@ -3589,6 +3632,7 @@ function App() {
   }), showSettings && React.createElement(SettingsModal, {
     fxRates: fxRates,
     onRefreshFx: refreshFx,
+    feedHealth: feedHealth,
     positions: positions,
     contributions: contributions,
     onExport: exportData,

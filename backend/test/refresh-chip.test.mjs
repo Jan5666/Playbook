@@ -56,5 +56,32 @@ ok('release is generation-guarded so a late sweep cannot clear a newer one',
 ok('the watchdog is cleared on the normal path', /clearTimeout\(watchdog\);/.test(feed));
 ok('a thrown sweep drops its queued force instead of leaking it',
   /catch\s*\(e\)\s*\{[\s\S]{0,300}?pendingForceRef\.current\s*=\s*false;/.test(feed));
+
+// ── Per-symbol feed health ──────────────────────────────────────────────────
+// The chip is a SWEEP-level signal and cannot be anything else: refreshChipState
+// takes failStreak, and failStreak resets to 0 the moment ANY symbol lands, so a
+// sweep that priced 59 of 60 is indistinguishable from a clean one. That is not a
+// defect in the chip — it is why the feed has to report the misses separately.
+// Without it, a holding that quietly stops updating shows the "Updated ✓" chip, a
+// believable price, and a blank Today cell, with nothing anywhere naming it.
+ok('the feed reports per-symbol health, not just the sweep verdict',
+  /return \{ loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices, feedHealth \};/.test(feed));
+ok('feedHealth carries both the misses and the guard-held symbols',
+  /feedHealth\s*=\s*useMemo\([\s\S]{0,200}?missing:\s*feedMissing[\s\S]{0,80}?held:\s*feedHeld/.test(feed));
+ok('runFetch collects fetchQuoteBatch\'s miss list', /onMissing:\s*\(miss\)\s*=>/.test(feed));
+ok('the miss list is compared by signature, so a clean poll causes no re-render',
+  /setFeedMissing\(prev\s*=>\s*\(sig\(prev\)\s*===\s*sig\(miss\)\s*\?\s*prev\s*:\s*miss\)\)/.test(feed));
+// guardBatch used to read only `.quote`, dropping the verdict entirely — a symbol
+// the plausibility gate is holding back kept rendering its last good quote and was
+// invisible. The `.rejected` read is the whole fix; guard against it regressing to
+// the old one-liner.
+ok('guardBatch keeps guardQuote\'s rejected verdict', /if\s*\(g\.rejected\)\s*heldRef\.current\[k\]\s*=/.test(feed));
+ok('guardBatch clears a symbol once it recovers', /else if\s*\(heldRef\.current\[k\]\)\s*delete heldRef\.current\[k\];/.test(feed));
+ok('no bare .quote-only guard call survives',
+  !/PBCore\.guardQuote\([^)]*\)\.quote/.test(feed));
+// The bridge to the readout: App must actually hand it to SettingsModal, or the
+// whole chain is dead code.
+ok('App destructures feedHealth from the feed', /mergePrices,\s*feedHealth\s*\}\s*=\s*usePriceFeed\(/.test(appSrc));
+ok('SettingsModal receives feedHealth', /feedHealth:\s*feedHealth,/.test(appSrc));
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll refresh-chip tests passed');
 process.exit(failures ? 1 : 0);

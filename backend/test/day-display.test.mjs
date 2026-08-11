@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 import PBCore from '../../pb-core.js';
+import PBData from '../../pb-data.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const viewSrc = readFileSync(join(here, '..', '..', 'pb-views.js'), 'utf8');
@@ -64,7 +65,7 @@ ok('pb-views still declares computeMarketSummary', !!SUMMARY);
 // for same-currency pairs — which is all these fixtures use.
 // A vm context gets its OWN intrinsics, so the outer Date.now() patch does not
 // reach computeMarketSummary's own `const nowMs = Date.now()`. Inject the clock.
-function summaryCtx(prices, nowMs) {
+function summaryCtx(prices, nowMs, isUnitTrustId = () => false) {
   const ctx = {
     Date: Object.assign(Object.create(Date), { now: () => nowMs }),
     prices,
@@ -75,6 +76,8 @@ function summaryCtx(prices, nowMs) {
     priceKey: PBCore.priceKey,
     quoteTradedToday: PBCore.quoteTradedToday,
     marketDayKey: PBCore.marketDayKey,
+    // Real shape, from pb-data: a Morningstar SecId (F + 9 alphanumerics).
+    isUnitTrustId,
     console
   };
   ctx.globalThis = ctx;
@@ -133,6 +136,65 @@ Date.now = () => sast(5, 7, 53);
 const sPre = summaryCtx(prices10, sast(5, 7, 53))(rows10, 'JSE');
 Date.now = realNow;
 ok('pre-open: no Today figure for a market that has not opened', sPre.dayPct === null && sPre.dayChange === null);
+
+// ─── The denominator only counts holdings that COULD reach the numerator ────
+// A unit trust strikes one NAV per day and Morningstar publishes it in arrears,
+// so mid-session its sessionDay is necessarily an earlier one — it can never be
+// counted, however well the sweep went. Counting it in the denominator pinned the
+// coverage note permanently short ("17 of 18" every single day) and dressed a
+// structural fact up as a failed sweep, which is the one thing the note is for.
+const utId = 'F000002CRJ';                       // real Morningstar SecId shape
+const isUT = PBData.isUnitTrustId;
+ok('the fixture id really is a unit trust id', isUT(utId) && !isUT('NPN'));
+
+const nineFresh = Array.from({ length: 9 }, (_, i) => ({ id: 'e' + i, ticker: 'E' + i, shares: 1, costBasis: 90 }));
+const withUT = [...nineFresh, { id: 'ut', ticker: utId, shares: 1, costBasis: 90 }];
+const pricesUT = {};
+nineFresh.forEach(p => { pricesUT[PBCore.priceKey('JSE', p.ticker)] = fresh(); });
+// A T-1 NAV, in the shape morningstarRowToQuote really builds: regularMarketTime
+// IS the NAV date (never Date.now(), see data-providers.test.mjs) and sessionDay
+// is that date on the Johannesburg calendar.
+pricesUT[PBCore.priceKey('JSE', utId)] = { price: 250, prevClose: 248, sessionDay: TUE, regularMarketTime: sast(4, 17, 0) };
+
+Date.now = () => nowOpen;
+const sUT = summaryCtx(pricesUT, nowOpen, isUT)(withUT, 'JSE');
+Date.now = realNow;
+ok('unit trust: a T-1 NAV leaves the coverage denominator',
+  sUT.dayCounted === 9 && sUT.dayPriced === 9, `${sUT.dayCounted} of ${sUT.dayPriced}`);
+ok('unit trust: nothing to flag, so the note disappears', sUT.dayCounted === sUT.dayPriced);
+ok('unit trust: its VALUE still counts toward the market', near(sUT.value, 9 * 101.24 + 250));
+ok('unit trust: it contributes nothing to the Today figure',
+  near(Math.round(sUT.dayPct * 1e6) / 1e6, 1.24), sUT.dayPct);
+
+// ANTI-OVER-REACH. The exclusion is `isUnitTrustId`, NOT "any quote that failed
+// the today gate" — a plain JSE share that has quietly stopped updating is
+// exactly what the note exists to surface, and generalising the rule would
+// silently swallow it. This is the case Jan was actually looking at.
+const withDead = [...nineFresh, { id: 'dead', ticker: 'XYZ', shares: 1, costBasis: 90 }];
+const pricesDead = { ...pricesUT };
+delete pricesDead[PBCore.priceKey('JSE', utId)];
+pricesDead[PBCore.priceKey('JSE', 'XYZ')] = { price: 250, prevClose: 248, sessionDay: TUE, regularMarketTime: sast(4, 17, 0) };
+Date.now = () => nowOpen;
+const sDead = summaryCtx(pricesDead, nowOpen, isUT)(withDead, 'JSE');
+Date.now = realNow;
+ok('a stalled ORDINARY holding stays in the denominator and is still flagged',
+  sDead.dayCounted === 9 && sDead.dayPriced === 10, `${sDead.dayCounted} of ${sDead.dayPriced}`);
+
+// In the evening a unit trust's NAV date CAN be today's JSE day, and then the
+// move genuinely is today's — it must count on both sides, so counted <= priced
+// never inverts. (The tick matters: quoteTradedToday's tail for a TICK-LESS quote
+// is "is the market open right now?", which after the close would refuse today's
+// own NAV. A real Morningstar quote carries the strike time, so it never gets there.)
+const jseEvening = sast(5, 18);
+const pricesUTToday = { ...pricesUT };
+nineFresh.forEach(p => { pricesUTToday[PBCore.priceKey('JSE', p.ticker)] = fresh(); });
+pricesUTToday[PBCore.priceKey('JSE', utId)] = { price: 250, prevClose: 248, sessionDay: WED, regularMarketTime: sast(5, 17, 0) };
+Date.now = () => jseEvening;
+const sUTToday = summaryCtx(pricesUTToday, jseEvening, isUT)(withUT, 'JSE');
+Date.now = realNow;
+ok('unit trust: a same-day NAV counts on BOTH sides (counted never exceeds priced)',
+  sUTToday.dayCounted === 10 && sUTToday.dayPriced === 10,
+  `${sUTToday.dayCounted} of ${sUTToday.dayPriced}`);
 
 // ─── HoldingRow: the three session states ───────────────────────────────────
 const ROW = slice('const HoldingRow = React.memo(function HoldingRow(_refHR) {', '\n});\n');
@@ -200,6 +262,18 @@ ok('row AT CLOSE: captioned "At close"', /At close/.test(out));
 out = chipText(renderRow({ quote: tueQuote, now: sast(5, 11) }));
 ok('row STALE: yesterday\'s percentage is NOT shown', !/2\.94%/.test(out), JSON.stringify(out));
 ok('row STALE: not captioned "At close" either (it is not this market\'s close)', !/At close/.test(out));
+// …but withholding the number is not the same as rendering NOTHING. Outside
+// pre-market mode the cell used to come back literally null, so the one holding
+// the sweep could not anchor to today looked identical to a rendering fault —
+// which is what "the prices won't load" was reporting, under a summary that said
+// "17 of 18" and offered no way to ask which one. A dash is the honest minimum.
+const dayCell = (tree) => findByClass(tree, 'holding-day-empty').map(text).join('');
+ok('row STALE: the day cell renders a dash, not an empty cell',
+  dayCell(renderRow({ quote: tueQuote, now: sast(5, 11) })) === '—');
+ok('row NO QUOTE: the day cell renders a dash too',
+  dayCell(renderRow({ quote: null, now: sast(5, 11) })) === '—');
+ok('row LIVE: no dash when there IS a figure',
+  dayCell(renderRow({ quote: wedQuote, now: sast(5, 11) })) === '');
 
 // 4. After the close, today's own quote reads "At close" — the caption now comes
 // from the quote's session rather than the clock, and lands on the same answer.

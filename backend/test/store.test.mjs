@@ -70,8 +70,14 @@ test('anti-drift: usePriceFeed no longer owns prices in React state', () => {
 });
 
 test('anti-drift: usePriceFeed does not return a prices field', () => {
-  const m = appSrc.match(/return \{ loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices \};/);
-  assert.ok(m, 'usePriceFeed return bundle should omit prices');
+  // Matched on the CONTENTS of the bundle, not on the exact literal: the point of
+  // this guard is that the prices map is never handed back through React (it lives
+  // in PBStore, which is what makes mergePrices' reference-preserving shallow merge
+  // work for React.memo). Pinning the whole line instead made the guard fail the
+  // first time an unrelated member was added, which says nothing about prices.
+  const m = appSrc.match(/return \{ loading, lastUpdate, failStreak, refresh, refreshNow,[^}]*\};/);
+  assert.ok(m, 'usePriceFeed should still return its loading/lastUpdate/refresh bundle');
+  assert.ok(!/\bprices\b/.test(m[0]), 'usePriceFeed return bundle should omit prices');
 });
 
 test('anti-drift: useAlertEngine no longer takes a prices param', () => {

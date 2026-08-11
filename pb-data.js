@@ -63,6 +63,17 @@
     if (!body || body.length < 20) return true;
     const head = body.slice(0, 200);
     if (head.startsWith('<!DOCTYPE') || head.startsWith('<html') || head.startsWith('<HTML')) return true;
+    // An upstream envelope is an ANSWER, not a proxy fault — including a negative
+    // one. Yahoo reports an unknown symbol as {"chart":{"result":null,"error":{…}}},
+    // which the generic `"error":` test below matched, so a ticker Yahoo simply
+    // does not have was indistinguishable from a flaky edge: all six proxies got
+    // tried, twice per sweep (main pass + fetchQuoteBatch's retry pass). That is
+    // ~12 wasted round-trips per poll for one bad symbol, spent on the same shared
+    // free proxies the rest of the sweep needs — which is how ONE unresolvable
+    // holding starts costing the others their quotes. Every parser downstream
+    // already copes with a null result (fetchQuote's `data?.chart?.result?.[0]`
+    // guard falls through to Stooq), so hand the body back and let them decide.
+    if (/^\s*\{\s*"(chart|quoteSummary|finance)"\s*:/.test(head)) return false;
     if (/Too Many Requests|Rate limit exceeded|Server-side requests are not allowed|Free usage is limited|domain_not_registered|"error"\s*:/i.test(head)) return true;
     return false;
   }
@@ -708,8 +719,12 @@
       cacheName(market, ticker, quote.shortName || quote.longName);
       return quote;
     }
-    // Stooq fallback only covers US and JSE; other markets just fail here.
-    if (market !== 'US' && market !== 'JSE') {
+    // Stooq fallback only covers US, JSE and TFSA; other markets just fail here.
+    // TFSA belongs here for the same reason it does in stooqSymbol and
+    // parseStooqCsv (both of which already name it): a TFSA is a tax wrapper around
+    // the SAME .JO listing, so excluding it left a TFSA ETF with no fallback at all
+    // where the byte-identical JSE row recovered.
+    if (market !== 'US' && market !== 'JSE' && market !== 'TFSA') {
       console.warn(`Price fetch failed for ${ticker} (${market})`);
       return null;
     }
@@ -728,13 +743,13 @@
   // next batch. Per-symbol failures are kept out of `results` so callers can
   // treat absence as "no data"; the rejection reason is logged for diagnostics.
   async function fetchQuoteBatch(items, opts = {}) {
-    const { onBatch, cacheBust } = opts;
+    const { onBatch, onMissing, cacheBust } = opts;
     const results = {};
     const batchSize = 8;
-    const runPass = async (list) => {
+    const runPass = async (list, bust) => {
       for (let i = 0; i < list.length; i += batchSize) {
         const batch = list.slice(i, i + batchSize);
-        const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market, { cacheBust })));
+        const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market, { cacheBust: bust })));
         // Collect just this batch's fresh quotes so the caller can paint them
         // immediately — the portfolio's "today" move then updates as the first
         // holdings land instead of waiting for the whole sweep (watchlist, ribbon,
@@ -753,14 +768,27 @@
         if (onBatch && Object.keys(fresh).length) onBatch(fresh);
       }
     };
-    await runPass(items);
+    await runPass(items, cacheBust);
     // Second pass for any symbols that came back empty. Non-US markets (JSE/LSE/
     // ASX/EU) are queried after the US names and trade outside US hours, so they
     // disproportionately hit shared-proxy rate limits on the first sweep and come
     // back null — a single retry recovers most of them so the watchlist isn't
     // left showing prices for US tickers only.
+    //
+    // The retry ALWAYS cache-busts, even on the auto-poll (which deliberately
+    // omits it on the first pass to keep benefiting from proxy caching). Without
+    // that the retry re-requested a byte-identical url and any proxy-cached error
+    // — the very thing that made pass 1 fail — was served straight back, so the
+    // "retry" could not recover a symbol whose failure lived in a proxy's cache.
     const missing = items.filter(it => !results[priceKey(it.market, it.ticker)]);
-    if (missing.length) await runPass(missing);
+    if (missing.length) await runPass(missing, true);
+    // Per-symbol misses are the ONLY place the sweep knows which holdings it
+    // failed to price: `results` carries successes, a fetchQuote that returns null
+    // (the common failure — fetchViaProxies resolves null rather than throwing)
+    // logs nothing, and mergePrices is a shallow merge, so a missed symbol just
+    // keeps rendering its last stored quote. Reported unconditionally — an empty
+    // call is what lets a caller clear a symbol that has since recovered.
+    if (onMissing) onMissing(items.filter(it => !results[priceKey(it.market, it.ticker)]));
     return results;
   }
   async function fetchQuoteLight(ticker, market) {

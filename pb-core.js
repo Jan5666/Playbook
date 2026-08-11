@@ -364,13 +364,26 @@
     const norm = m => (m === 'TFSA' ? 'JSE' : m);
     return norm(a) === norm(b);
   }
+  // The exchange suffix Yahoo appends to a bare local ticker.
+  const MARKET_SUFFIX = { JSE: '.JO', TFSA: '.JO', LSE: '.L', ASX: '.AX', FRA: '.F', PAR: '.PA', AMS: '.AS' };
   function yahooSymbol(ticker, market) {
-    if (market === 'JSE' || market === 'TFSA') return ticker + '.JO';
-    if (market === 'LSE') return ticker + '.L';
-    if (market === 'ASX') return ticker + '.AX';
-    if (market === 'FRA') return ticker + '.F';
-    if (market === 'PAR') return ticker + '.PA';
-    if (market === 'AMS') return ticker + '.AS';
+    // A stored ticker can ALREADY carry its suffix, so every branch has to be
+    // idempotent the way CRYPTO's pair guard always was — these ones were not.
+    // The Add-Holding modal saves the raw typed text when live verification fails
+    // and the user force-adds, so "SOL.JO" on market JSE is a shape that really
+    // reaches here; it asked Yahoo for "SOL.JO.JO", which resolves to nothing, and
+    // then fell through to Stooq's "sol.jo.jo", which resolves to nothing either.
+    // The symbol simply stops updating and keeps rendering its last stored quote —
+    // priced, so it still counts in the "N of M" denominator, but a session behind
+    // forever, so it never counts in the numerator. Silent by construction.
+    // encodeURIComponent matches the US/CRYPTO branches (a '.' is unreserved, so
+    // an already-clean symbol is unchanged) and stops a stray '^'/'&'/'#' in a
+    // stored ticker from building a malformed url.
+    const suffix = MARKET_SUFFIX[market];
+    if (suffix) {
+      const t = String(ticker == null ? '' : ticker);
+      return encodeURIComponent(t.toUpperCase().endsWith(suffix) ? t : t + suffix);
+    }
     // Crypto is held as a bare symbol (BTC, ETH); Yahoo prices it as a USD pair.
     // Guard against a symbol that already carries the pair so we never double it.
     if (market === 'CRYPTO') return /-USD$/i.test(ticker) ? encodeURIComponent(ticker) : encodeURIComponent(ticker + '-USD');
