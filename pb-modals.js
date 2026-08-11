@@ -838,6 +838,157 @@ function TabReorderList({ tabOrder, hiddenTabs, onToggleHidden }) {
   );
 }
 
+// ─── Viewport diagnostics ────────────────────────────────────────────────────
+// Reads what the DEVICE actually thinks the viewport is, because Chrome cannot
+// tell us. The stock card stops ~0.5cm short of the bottom of the glass on Jan's
+// installed iOS PWA; two structurally different CSS approaches to the sheet's
+// bottom edge (PR #64: `.modal { inset: 0 }` vs an explicit
+// `height: max(100vh, 100dvh, 100lvh)`) both move the box measurably in a real
+// browser and produced the SAME result on the phone. Headless Chrome reports
+// every env(safe-area-inset-*) as 0, so the gap has never once reproduced here.
+// Rather than guess a third time, measure.
+//
+// Everything below is read-only and stateless: no pb.* key, no LS access, no
+// network. Probes are appended, measured in the same frame and removed.
+function collectViewportDiagnostics() {
+  const out = { at: new Date().toISOString() };
+  const round = (n) => (typeof n === 'number' && isFinite(n) ? Math.round(n * 100) / 100 : null);
+  const probes = [];
+  const mk = (css) => {
+    const el = document.createElement('div');
+    // visibility:hidden, NOT display:none — a display-none box has no geometry
+    // at all, so it would measure 0 and tell us nothing.
+    el.style.cssText = 'visibility:hidden;pointer-events:none;position:absolute;top:0;left:0;width:1px;' + css;
+    document.body.appendChild(el);
+    probes.push(el);
+    return el;
+  };
+  try {
+    const de = document.documentElement;
+    const cs = getComputedStyle(de);
+    const scr = window.screen || {};
+    out.screen = { w: round(scr.width), h: round(scr.height), avail: round(scr.availHeight), dpr: window.devicePixelRatio };
+    out.layout = { innerW: round(window.innerWidth), innerH: round(window.innerHeight), clientH: round(de.clientHeight), clientW: round(de.clientWidth) };
+    const vv = window.visualViewport;
+    out.visual = vv
+      ? { w: round(vv.width), h: round(vv.height), offsetTop: round(vv.offsetTop), pageTop: round(vv.pageTop), scale: round(vv.scale) }
+      : null;
+    out.safeArea = {
+      top: cs.getPropertyValue('--safe-top').trim() || '(unset)',
+      bottom: cs.getPropertyValue('--safe-bottom').trim() || '(unset)',
+      left: cs.getPropertyValue('--safe-left').trim() || '(unset)',
+      right: cs.getPropertyValue('--safe-right').trim() || '(unset)'
+    };
+    // What does the device resolve each viewport unit to? This is the reading no
+    // amount of reasoning from a desktop browser can substitute for.
+    out.units = {};
+    ['100vh', '100dvh', '100svh', '100lvh'].forEach(u => {
+      const el = mk('height:' + u + ';');
+      out.units[u] = round(el.getBoundingClientRect().height);
+    });
+    // A bare fixed overlay: does `position: fixed; inset: 0` reach the bottom?
+    const fx = mk('position:fixed;inset:0;width:auto;height:auto;');
+    const fr = fx.getBoundingClientRect();
+    out.fixedProbe = { top: round(fr.top), bottom: round(fr.bottom), height: round(fr.height) };
+    // The decisive ones: REAL sheets, run through the REAL cascade — the
+    // standalone media query, the .pb-standalone class, .modal-panel's height,
+    // all of it — measured where they actually land. Animation is disabled or we
+    // would catch them mid slide-up transform.
+    //
+    // TWO probes, because they exercise different declarations. The plain panel
+    // takes `height: calc(100% - 48px)`; the stock card takes `height: auto` +
+    // `max-height`, and with an EMPTY body it just hugs 33px and would sit at the
+    // bottom no matter how badly the height maths were broken. The tall filler is
+    // what forces it against its ceiling, which is the state Jan is looking at.
+    const mkSheet = (cls, fillerPx) => {
+      const shell = document.createElement('div');
+      shell.className = 'modal';
+      shell.setAttribute('aria-hidden', 'true');
+      shell.style.cssText = 'visibility:hidden;pointer-events:none;animation:none;';
+      const panel = document.createElement('div');
+      panel.className = cls;
+      panel.style.animation = 'none';
+      const body = document.createElement('div');
+      body.className = 'modal-body';
+      if (fillerPx) {
+        const filler = document.createElement('div');
+        filler.style.height = fillerPx + 'px';
+        body.appendChild(filler);
+      }
+      panel.appendChild(body);
+      shell.appendChild(panel);
+      document.body.appendChild(shell);
+      probes.push(shell);
+      const mr = shell.getBoundingClientRect(), pr = panel.getBoundingClientRect();
+      return {
+        modalTop: round(mr.top), modalBottom: round(mr.bottom), modalHeight: round(mr.height),
+        panelTop: round(pr.top), panelBottom: round(pr.bottom), panelHeight: round(pr.height),
+        bodyPadBottom: getComputedStyle(body).paddingBottom
+      };
+    };
+    out.sheetProbe = mkSheet('modal-panel', 0);
+    out.cardProbe = mkSheet('modal-panel stock-detail-panel', 4000);
+    out.mode = {
+      standaloneQuery: !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches),
+      navigatorStandalone: !!window.navigator.standalone,
+      rootHasClass: de.classList.contains('pb-standalone'),
+      ua: (navigator.userAgent || '').slice(0, 160)
+    };
+    // Verdicts — the whole point. Any non-zero number here names the culprit.
+    const screenH = out.screen.h;
+    out.verdict = {
+      viewportShortBy: screenH != null ? round(screenH - out.layout.innerH) : null,
+      fixedOverlayShortBy: screenH != null ? round(screenH - out.fixedProbe.bottom) : null,
+      sheetShortBy: screenH != null ? round(screenH - out.sheetProbe.panelBottom) : null,
+      cardShortBy: screenH != null ? round(screenH - out.cardProbe.panelBottom) : null,
+      sheetVsFixed: round(out.fixedProbe.bottom - out.sheetProbe.panelBottom)
+    };
+  } catch (e) {
+    out.error = String(e && e.message || e);
+  } finally {
+    probes.forEach(el => { try { el.remove(); } catch (_e) {} });
+  }
+  return out;
+}
+// Flattens the object into the label/value rows the card renders and the text
+// the Copy button puts on the clipboard — one shape, so what Jan pastes is
+// exactly what he sees.
+function diagnosticsRows(d) {
+  if (!d) return [];
+  const rows = [];
+  const push = (label, value) => rows.push({ label, value: String(value) });
+  const px = (n) => (n == null ? '-' : n + 'px');
+  if (d.error) push('ERROR', d.error);
+  if (d.verdict) {
+    push('Viewport short by', px(d.verdict.viewportShortBy));
+    push('Fixed overlay short by', px(d.verdict.fixedOverlayShortBy));
+    push('Sheet short by', px(d.verdict.sheetShortBy));
+    push('Stock card short by', px(d.verdict.cardShortBy));
+    push('Sheet vs fixed', px(d.verdict.sheetVsFixed));
+  }
+  if (d.screen) push('screen', d.screen.w + ' x ' + d.screen.h + ' @' + d.screen.dpr + 'x (avail ' + d.screen.avail + ')');
+  if (d.layout) push('inner / client', d.layout.innerW + ' x ' + d.layout.innerH + ' / ' + d.layout.clientH);
+  push('visualViewport', d.visual ? (d.visual.w + ' x ' + d.visual.h + ' top ' + d.visual.offsetTop + ' scale ' + d.visual.scale) : '(none)');
+  if (d.safeArea) push('safe t/b/l/r', [d.safeArea.top, d.safeArea.bottom, d.safeArea.left, d.safeArea.right].join(' / '));
+  if (d.units) Object.keys(d.units).forEach(u => push(u, px(d.units[u])));
+  if (d.fixedProbe) push('fixed inset:0', 'top ' + d.fixedProbe.top + ' bottom ' + d.fixedProbe.bottom);
+  if (d.sheetProbe) {
+    push('.modal', 'top ' + d.sheetProbe.modalTop + ' bottom ' + d.sheetProbe.modalBottom + ' h ' + d.sheetProbe.modalHeight);
+    push('.modal-panel', 'top ' + d.sheetProbe.panelTop + ' bottom ' + d.sheetProbe.panelBottom + ' h ' + d.sheetProbe.panelHeight);
+    push('sheet pad-bottom', d.sheetProbe.bodyPadBottom);
+  }
+  if (d.cardProbe) {
+    push('.stock-detail-panel', 'top ' + d.cardProbe.panelTop + ' bottom ' + d.cardProbe.panelBottom + ' h ' + d.cardProbe.panelHeight);
+    push('card pad-bottom', d.cardProbe.bodyPadBottom);
+  }
+  if (d.mode) {
+    push('standalone', 'query ' + d.mode.standaloneQuery + ' / nav ' + d.mode.navigatorStandalone + ' / class ' + d.mode.rootHasClass);
+    push('UA', d.mode.ua);
+  }
+  push('measured at', d.at);
+  return rows;
+}
+
 function SettingsModal({ fxRates, onRefreshFx,
                         positions, contributions, onExport, onImport, cloudBackup, onDeleteHoldings,
                         tabOrder, hiddenTabs,
@@ -867,6 +1018,8 @@ function SettingsModal({ fxRates, onRefreshFx,
   const [restoreErr, setRestoreErr] = useState('');
   const [codeCopied, setCodeCopied] = useState(false);
   const [codeReveal, setCodeReveal] = useState(false);
+  const [diag, setDiag] = useState(null);
+  const [diagCopied, setDiagCopied] = useState(false);
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
   // Settings is a centered dialog (premium app feel), not a swipe-down sheet,
@@ -874,6 +1027,25 @@ function SettingsModal({ fxRates, onRefreshFx,
   useBodyScrollLock();
   useEffect(() => { setPkDraft(perplexityKey || ''); }, [perplexityKey]);
   useEffect(() => { setPushDraft(pushBackend || ''); }, [pushBackend]);
+  // Measured on entry to the section, not on mount: the probes touch the DOM, so
+  // they should only run when someone is actually looking at the readout.
+  useEffect(() => {
+    if (activeSection !== 'diagnostics') return;
+    setDiagCopied(false);
+    setDiag(collectViewportDiagnostics());
+  }, [activeSection]);
+  const diagRows = useMemo(() => diagnosticsRows(diag), [diag]);
+  const diagText = useMemo(
+    () => diagRows.map(r => r.label + ': ' + r.value).join('\n'),
+    [diagRows]
+  );
+  const copyDiag = async () => {
+    try {
+      await navigator.clipboard.writeText(diagText);
+      setDiagCopied(true);
+      setTimeout(() => setDiagCopied(false), 2000);
+    } catch (_e) { setDiagCopied(false); }
+  };
   const snap = useMemo(
     () => computeFxSnapshot({ positions, contributions, prices, fxRates, displayCurrency }),
     [positions, contributions, prices, fxRates, displayCurrency]
@@ -914,6 +1086,7 @@ function SettingsModal({ fxRates, onRefreshFx,
     { key: 'preview', label: 'Preview', icon: 'eye', tint: '#0ea5e9', group: 'Portfolio' },
     { key: 'connections', label: 'Connections', icon: 'link', tint: 'var(--rose)', group: 'Data & sync' },
     { key: 'data', label: 'Data', icon: 'download', tint: '#71717a', group: 'Data & sync' },
+    { key: 'diagnostics', label: 'Diagnostics', icon: 'gauge', tint: '#94a3b8', group: 'Data & sync' },
   ];
   const navGroups = [];
   sections.forEach(s => {
@@ -1467,6 +1640,37 @@ function SettingsModal({ fxRates, onRefreshFx,
             React.createElement("div", { className: "settings-info-body" },
               "Backups cover everything: holdings, watchlists & groups, alerts, contributions, transactions, sector weights, TFSA targets and all settings. Cloud copies are end-to-end encrypted — the server only stores unreadable ciphertext."
             )
+          )
+        ),
+
+        // ─── Diagnostics ───────────────────────────────────────────────────
+        // What this device reports for the viewport and the safe-area insets.
+        // Exists because the stock card's bottom-edge bug does not reproduce in
+        // any browser available here: headless Chrome reports every
+        // env(safe-area-inset-*) as 0, and two opposite CSS fixes both changed
+        // the layout in Chrome while changing nothing on the phone. Read-only,
+        // stateless, no network, no pb.* key.
+        activeSection === 'diagnostics' && React.createElement("div", { className: "settings-section" },
+          React.createElement("div", { className: "settings-info-box" },
+            React.createElement("div", { className: "settings-info-body" },
+              "Measurements taken on this device. Nothing is stored or sent anywhere. The four 'short by' rows are the answer: every one should read 0px. Tap Copy and paste the text back so the numbers can be read exactly rather than off a screenshot."
+            )
+          ),
+          React.createElement("div", { className: "pos-list diag-list mt-3" },
+            diagRows.map((r, i) => React.createElement("div", {
+              key: r.label + i, className: "pos-line", "data-k": r.label
+            },
+              React.createElement("span", { className: "pos-line-label" }, r.label),
+              React.createElement("span", { className: "pos-line-val mono" }, r.value)))
+          ),
+          React.createElement("div", { className: "pk-actions mt-3" },
+            React.createElement("button", {
+              className: "btn btn-secondary btn-sm", type: "button", onClick: copyDiag
+            }, React.createElement(Icon, { name: "share", size: 13 }), diagCopied ? " Copied" : " Copy"),
+            React.createElement("button", {
+              className: "btn btn-ghost btn-sm", type: "button",
+              onClick: () => { setDiagCopied(false); setDiag(collectViewportDiagnostics()); }
+            }, React.createElement(Icon, { name: "refresh", size: 13 }), " Re-measure")
           )
         )
         )

@@ -1702,6 +1702,16 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   letter-spacing: 0.02em;
 }
 .pos-line-val { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--text); }
+/* Settings -> Diagnostics reuses the pos-line rows, but its values are long
+   (UA strings, four viewport-unit probes). Rows must WRAP rather than force a
+   min-content width the pane can't shrink under — horizontal page overflow is a
+   live failure mode in this app, see the .rot-sr gotcha in CLAUDE.md. */
+.diag-list .pos-line { align-items: flex-start; gap: 10px; padding: 6px 0; }
+.diag-list .pos-line-label { flex: 0 0 auto; max-width: 45%; }
+.diag-list .pos-line-val {
+  font-size: 12px; font-weight: 500; text-align: right;
+  min-width: 0; overflow-wrap: anywhere;
+}
 /* Divider before the value/P/L block carries a touch more weight. */
 .pos-line-sep { border-top-color: var(--text-dim); margin-top: 2px; }
 .pos-line-strong .pos-line-label { color: var(--text); font-weight: 600; }
