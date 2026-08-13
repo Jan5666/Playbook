@@ -1742,6 +1742,10 @@ function usePriceFeed(order, fetchKey) {
   const heldRef = useRef({});
   const [feedHeld, setFeedHeld] = useState({});
   const [feedMissing, setFeedMissing] = useState([]);
+  // The miss list also has to be readable at PRESS time, not just render time --
+  // refreshNow builds its recovery list from it (see below) and runs outside the
+  // render that produced it. Same reason heldRef exists alongside feedHeld.
+  const missingRef = useRef([]);
   const syncHeld = useCallback(() => {
     const sig = (m) => Object.keys(m).sort().map(k => k + '@' + (m[k] && m[k].at)).join('|');
     const next = heldRef.current;
@@ -1784,8 +1788,23 @@ function usePriceFeed(order, fetchKey) {
   // and finishes AFTER a newer one started must not clear the newer one's spinner
   // or its "Updating…" chip, so every release is checked against this.
   const sweepSeqRef = useRef(0);
+  // The sweep's REAL lifetime, as opposed to loadingRef, which is the UI's.
+  //
+  // These used to be the same flag and that is why the feed collapsed under its own
+  // weight. A full sweep of the user's universe (100+ symbols, and every US name
+  // fetches twice while it sits in pre-market) outruns SWEEP_WATCHDOG_MS, the
+  // watchdog releases loadingRef so the chip can stop claiming progress -- correct,
+  // and it deliberately does NOT cancel the sweep -- and 45s later the auto-poll
+  // sees loadingRef false and starts a SECOND concurrent sweep on the same
+  // pLimit(8) gate. Then a third. Every one of them queues behind the others,
+  // hammers the same six shared free CORS proxies, and drives them into
+  // rate-limiting, which sends each symbol through all six edges and makes the next
+  // sweep slower still. That is the "45 minutes after the open and the prices are
+  // still wrong" report: the feed was busy fighting itself.
+  const sweepActiveRef = useRef(false);
   const runFetch = useCallback(async (cacheBust) => {
     const seq = ++sweepSeqRef.current;
+    sweepActiveRef.current = true;
     loadingRef.current = true;
     setLoading(true);
     let released = false;
@@ -1815,25 +1834,56 @@ function usePriceFeed(order, fetchKey) {
       do {
         const force = cacheBust || pendingForceRef.current;
         pendingForceRef.current = false;
-        const newPrices = await fetchQuoteBatch(orderRef.current, {
+        // Which symbols can actually have moved? A quote whose market is SHUT and
+        // which already holds that session's close cannot change before the next
+        // open, so re-fetching it spends a proxy round-trip to receive bytes we
+        // already have. In Jan's morning that is most of the book: between 02:00 and
+        // 10:00 SAST every US name is 'closed' (SESSIONS.US opens 04:00 ET), and
+        // before the JSE bell the SA/TFSA/UK ones are too.
+        //
+        // A MANUAL refresh never skips -- `force` covers the whole order. The button
+        // has to stay strictly more powerful than the poll, or "I pressed refresh and
+        // nothing happened" just moves somewhere new.
+        const nowMs = Date.now();
+        const due = force ? orderRef.current : orderRef.current.filter(it => {
+          const q = PBStore.getPrices()[priceKey(it.market, it.ticker)];
+          return !PBCore.quoteSettled(q, it.market, nowMs);
+        });
+        // Nothing due is a SUCCESSFUL no-op, not a failed sweep. Falling through to
+        // the empty-result branch below would bump failStreak on a perfectly healthy
+        // app and fire the "feed unreachable" toast at 2. lastUpdate is deliberately
+        // left alone too: no network read happened, and the chip must not claim one.
+        // `continue`, not `break`: a force queued for the next lap must still get it.
+        if (!due.length) continue;
+        const newPrices = await fetchQuoteBatch(due, {
           cacheBust: force,
-          // Merge each batch as it lands so holdings paint progressively.
+          // Merge each batch as it lands so holdings paint progressively. Ungated by
+          // `seq` on purpose: a fresher quote is welcome whoever fetched it.
           onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(); },
           // The sweep's own miss list. failStreak cannot stand in for it: it resets
           // to 0 whenever ANY symbol lands, so a sweep that priced 59 of 60 is
           // indistinguishable from a clean one and the "feed unreachable" toast can
           // never fire on a partial failure. Compared by signature so the common
           // empty-list case does not re-render App every poll.
+          // A whole-sweep verdict, so it belongs to ONE sweep. A superseded sweep
+          // that outlived its watchdog used to publish its own miss list over the
+          // newer sweep's, which is how Diagnostics could name symbols that had
+          // already recovered.
           onMissing: (miss) => {
+            if (seq !== sweepSeqRef.current) return;
             const sig = (l) => (l || []).map(it => priceKey(it.market, it.ticker)).sort().join(',');
+            missingRef.current = miss;
             setFeedMissing(prev => (sig(prev) === sig(miss) ? prev : miss));
           }
         });
-        if (Object.keys(newPrices).length > 0) {
-          setLastUpdate(new Date());
-          setFailStreak(0);
-        } else if (orderRef.current.length > 0) {
-          setFailStreak(prev => prev + 1);
+        // Same ownership rule: only the current sweep may move the shared counters.
+        if (seq === sweepSeqRef.current) {
+          if (Object.keys(newPrices).length > 0) {
+            setLastUpdate(new Date());
+            setFailStreak(0);
+          } else if (due.length > 0) {
+            setFailStreak(prev => prev + 1);
+          }
         }
       } while (pendingForceRef.current);
     } catch (e) {
@@ -1842,22 +1892,92 @@ function usePriceFeed(order, fetchKey) {
       // leaving it set would make the NEXT press loop an extra time for nothing.
       pendingForceRef.current = false;
       setFailStreak(prev => prev + 1);
+    } finally {
+      // In a finally, not trailing the try: a sweepActiveRef left stuck at true
+      // would silently kill the auto-poll for the rest of the session, which is a
+      // worse failure than the one this whole change is fixing. Only the sweep that
+      // still owns the flags may clear them -- an older one finishing late must not
+      // reopen the gate under a newer sweep's feet.
+      if (seq === sweepSeqRef.current) sweepActiveRef.current = false;
+      clearTimeout(watchdog);
+      release();
     }
-    clearTimeout(watchdog);
-    release();
   }, [persistPrices, guardBatch]);
-  // Auto-poll: skip if a fetch is already running (no point double-polling).
+  // Auto-poll: skip while a sweep is genuinely still in flight. Gated on
+  // sweepActiveRef, NOT loadingRef -- the watchdog clears loadingRef at 60s to free
+  // the UI while the sweep runs on, and polling into that window is what let sweeps
+  // stack (see sweepActiveRef).
   const refresh = useCallback(() => {
-    if (loadingRef.current) return;
+    if (sweepActiveRef.current) return;
     runFetch(false);
   }, [runFetch]);
-  // Manual refresh button: never a no-op. If idle, fetch now with cache-bust;
-  // if a poll is mid-flight, flag a forced re-run so it fires the instant the
-  // current sweep ends.
+  // The symbols a press is actually about: the ones with nothing to show, or
+  // something wrong to show. No quote at all, a quote quoteSessionState calls
+  // 'stale' (a session behind -- the row is withholding its percentage), one the
+  // plausibility gate is holding back, or one the last sweep could not price.
+  // Order is preserved, so holdings come before the watchlist and the static lists.
+  const RECOVERY_MAX = 32;
+  const collectUnhealthy = useCallback(() => {
+    const prices = PBStore.getPrices();
+    const missSet = new Set((missingRef.current || []).map(it => priceKey(it.market, it.ticker)));
+    const out = [];
+    for (const it of orderRef.current) {
+      const key = priceKey(it.market, it.ticker);
+      const q = prices[key];
+      if (!q || !isFinite(q.price)
+          || PBCore.quoteSessionState(q, it.market) === 'stale'
+          || heldRef.current[key] || missSet.has(key)) {
+        out.push(it);
+        if (out.length >= RECOVERY_MAX) break;   // a press must not become a sweep
+      }
+    }
+    return out;
+  }, []);
+  // Manual refresh button: never a no-op, and never again a press that spends its
+  // whole budget on symbols that were already fine.
+  //
+  // It used to restart the ENTIRE order from the top, so the handful of symbols that
+  // had actually failed sat behind ~100 healthy ones and were reached minutes later,
+  // if at all -- which is exactly "I force refresh and the stocks that have not
+  // fetched prices still don't update". The press now runs those symbols FIRST, on
+  // their own, always cache-busted (a proxy-cached failure is precisely what a retry
+  // has to see past), and it runs even while a sweep is in flight: the list is capped
+  // at RECOVERY_MAX, so it cannot stampede the pLimit(8) gate the way a second full
+  // sweep does. The normal full-refresh behaviour still follows it.
+  // One recovery pass at a time. It always cache-busts, so two presses would build
+  // two sets of distinct urls that fetchViaProxies cannot de-dupe -- 64 requests
+  // from an impatient double-tap, straight into the limiter the sweep needs.
+  const recoveryActiveRef = useRef(false);
+  const runRecovery = useCallback(async (items) => {
+    if (recoveryActiveRef.current) return;
+    recoveryActiveRef.current = true;
+    try {
+      const fresh = await fetchQuoteBatch(items, {
+        cacheBust: true,
+        onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(); }
+      });
+      const got = Object.keys(fresh);
+      if (!got.length) return;
+      setLastUpdate(new Date());
+      setFailStreak(0);
+      // Clear only what we recovered. The full sweep's verdict about everything else
+      // still stands -- a targeted pass has no opinion on symbols it never asked for.
+      const recovered = new Set(got);
+      const rest = (missingRef.current || []).filter(it => !recovered.has(priceKey(it.market, it.ticker)));
+      if (rest.length !== (missingRef.current || []).length) {
+        missingRef.current = rest;
+        setFeedMissing(rest);
+      }
+    } catch (e) {
+      console.error('Recovery refresh failed:', e);
+    } finally { recoveryActiveRef.current = false; }
+  }, [guardBatch, persistPrices]);
   const refreshNow = useCallback(() => {
-    if (loadingRef.current) { pendingForceRef.current = true; return; }
+    const unhealthy = collectUnhealthy();
+    if (unhealthy.length) runRecovery(unhealthy);
+    if (sweepActiveRef.current) { pendingForceRef.current = true; return; }
     runFetch(true);
-  }, [runFetch]);
+  }, [runFetch, collectUnhealthy, runRecovery]);
   // Battery-aware cadence: 45s while any tracked market is open (incl. US pre/
   // post hours — see MARKET_SESSIONS) so the "today" move stays close to live,
   // 5 min when every market is shut (prices barely move overnight). A

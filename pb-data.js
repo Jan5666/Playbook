@@ -18,7 +18,7 @@
   // ladder itself could need; the rest are forward-looking.)
   const { yahooSymbol, centDivisor, parseYahooQuote, buildDailyBars,
           deriveDayMove, deriveIntradayExt, plausiblePriceMove, marketSession,
-          marketDayKey, regularTickAfterBars,
+          marketDayKey, regularTickAfterBars, hasExtendedSession,
           MARKET_CURRENCY, priceKey, pLimit } = PBCore;
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
@@ -634,7 +634,27 @@
     const inExtHours = phase === 'pre' || phase === 'post'
       || feedState === 'PRE' || feedState === 'PREPRE'
       || feedState === 'POST' || feedState === 'POSTPOST';
-    if (looksStale || inExtHours) {
+    // ...but not when the second call provably cannot tell us anything new. On a
+    // market with NO pre/post session (JSE, TFSA, LSE, ASX, FRA, PAR, AMS — see
+    // SESSIONS), sitting inside its regular session, with a daily quote already
+    // anchored to today: deriveIntradayExt returns null outside a pre/post window
+    // and these markets have none, and inside regular hours parseYahooQuote on the
+    // 1m chart just hands back meta.regularMarketPrice — the same field, from the
+    // same meta block, that the daily response already carried. `looksStale` fires
+    // here constantly and for a benign reason: an illiquid JSE ETF whose last trade
+    // was 40 minutes ago is not stale, it is simply thin. Paying a second proxy
+    // round-trip per symbol for a byte-identical answer is exactly what makes the
+    // sweep outrun its own poll interval.
+    //
+    // CRYPTO is excluded explicitly: it has no pre/post session either, but it
+    // trades 24h and the 5d-daily endpoint really can lag it by an hour or more,
+    // which is what the intraday call is for. Same for a failed daily fetch (the
+    // intraday one is a genuine fallback) and for anything outside regular hours,
+    // where ext.regPrice from the bars is load-bearing.
+    const intradayRedundant = market !== 'CRYPTO' && !hasExtendedSession(market)
+      && phase === 'open' && !!quote
+      && quote.sessionDay != null && quote.sessionDay === marketDayKey(Date.now(), market);
+    if ((looksStale || inExtHours) && !intradayRedundant) {
       const intraUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1m&range=1d&includePrePost=true${cb}`;
       const intraText = await fetchViaProxies(intraUrl);
       if (intraText) {
@@ -831,7 +851,16 @@
             || feedState === 'POST' || feedState === 'POSTPOST')
         && regularTickAfterBars(bars, lastTick, market) == null;
       const price = outsideRegular ? lastBar.p : meta.regularMarketPrice / divisor;
-      const move = deriveDayMove(bars, price, meta.chartPreviousClose / divisor, market, { lastTick });
+      // Same meta anchor parseYahooQuote builds, for the same reason: a hole in the
+      // daily series otherwise anchors prevClose a session too far back and folds
+      // yesterday's move into today's. chartPreviousClose is excluded on purpose —
+      // on range=5d it is the close before the FIRST bar. Without this the heatmap
+      // tile and the holding row would disagree for the same symbol.
+      const metaPrevRaw = meta.regularMarketPreviousClose != null ? meta.regularMarketPreviousClose
+        : (meta.previousClose != null ? meta.previousClose : null);
+      const metaPrevClose = (typeof metaPrevRaw === 'number' && isFinite(metaPrevRaw) && metaPrevRaw > 0)
+        ? metaPrevRaw / divisor : null;
+      const move = deriveDayMove(bars, price, meta.chartPreviousClose / divisor, market, { lastTick, metaPrevClose });
       const prevClose = move.prevClose;
       const changePct = prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0;
       return { price, changePct, fetchedAt: Date.now() };

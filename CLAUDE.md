@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v110`), or installed PWAs serve stale assets offline.
+`playbook-shell-v111`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -211,6 +211,56 @@ Adding a **new runtime file** additionally requires ALL of:
   also post-dates the series and must never be trusted as a close (that is the Oracle
   +11.18% trap). Pre-open is the window where **only** this branch can fire — the
   "no bar yet" branch is gated on `regularSessionStartedToday`, false until the bell.
+- **A gap in the daily series one session BACK folds yesterday's move into today's, and
+  every gate in the app passes it.** `regularTickAfterBars` catches a hole at the TAIL of
+  the series (the newest bar is behind the tape). It cannot see a hole one row up — and
+  every branch of `deriveDayMove` picks "the most recent bar on an earlier day" and trusts
+  it to be the previous session. When Yahoo's bar for that session arrives late, or arrives
+  with a `null` close `buildDailyBars` drops, `closeBefore` reaches straight past it.
+  Measured on the real kernel (Naspers, 10:07 SAST, JSE open): a true **+1.19%** printed as
+  **+4.17%** — that figure compounded onto Tuesday's **+2.94%**. It reproduces in three
+  shapes: bar absent, close `null`, and today's bar present with yesterday's absent.
+  **Nothing downstream could catch it**, which is why it survived every session fix above:
+  `sessionDay` is still today, so `quoteSessionState` reads `'live'`, `HoldingRow` prints
+  the number bare with no caption, and it counts in the "N of M" numerator and both Today
+  sums. Every one of those gates validates which session the **price** came from; none
+  validated which session the **prevClose** came from. `PBCore.weekdaysBetween` is the
+  detector (Fri->Mon is 0 — a weekend is not a missing session) and Yahoo's own
+  `meta.regularMarketPreviousClose`, which was sitting unused in the same payload, is the
+  repair. Three things are load-bearing: meta is consulted **only** when the calendar says
+  a day is missing, so a stale meta can never hijack a healthy series; a public **holiday**
+  reads as the same gap but meta then *agrees* with the bar, so no holiday calendar is
+  needed; and the unit guard has to be **tighter than 0.01x-100x**, because a ZAc/ZAR
+  divisor flip lands meta at ~98.8x the live price, slips under 100x, and would print
+  **-98.99%**. `meta.chartPreviousClose` is deliberately NOT part of the anchor — on
+  `range=5d` it is the close before the chart's FIRST bar, five sessions back.
+  `day-move.test.mjs` pins all of it, including the four ways the repair must decline.
+- **The price sweep used to stack on itself, and that was the "prices take 45 minutes"
+  bug.** One sweep covers the user's whole universe (~100+ symbols; every US name fetches
+  *twice* while it sits in pre-market, so ~200 proxied requests) through six shared free
+  CORS proxies, 8 at a time. That outruns `SWEEP_WATCHDOG_MS`, the watchdog clears
+  `loadingRef` to free the UI — correct, and it deliberately does **not** cancel the sweep
+  — and 45 s later the auto-poll saw `loadingRef` false and started a **second concurrent
+  sweep** on the same `pLimit(8)` gate. Then a third. The proxies rate-limit, which sends
+  every symbol through all six edges, and the next sweep is slower again. `sweepActiveRef`
+  now tracks the sweep's REAL lifetime (released in a `finally` — a stuck one would kill
+  the poll for the session) and is what the auto-poll gates on; `loadingRef` stays the
+  UI's flag. Two corollaries: the auto-poll skips `PBCore.quoteSettled` quotes (market
+  shut + already that session's close = it cannot change, and its 24 h age bound is what
+  stops a symbol that quietly died being skipped all night), and a **manual refresh never
+  skips anything** — the button has to stay strictly more powerful than the poll.
+- **"Force refresh" used to spend its whole budget on symbols that were already fine.**
+  `refreshNow` restarted the ENTIRE order from the top, so the handful of symbols that had
+  actually failed sat behind ~100 healthy ones — that is exactly "the stocks that have not
+  fetched prices still don't update". A press now runs `collectUnhealthy()` FIRST (no
+  quote, `quoteSessionState` `'stale'`, held by the plausibility gate, or on the last
+  sweep's miss list), capped at `RECOVERY_MAX` so a press can never become a second full
+  sweep, always cache-busted (a proxy-cached failure is precisely what a retry must see
+  past), and it runs even while a sweep is in flight. Note `hasExtendedSession` also drops
+  the redundant second Yahoo call: on a market with no pre/post tier, inside its regular
+  session, `deriveIntradayExt` returns `null` by construction and the 1m chart's meta is
+  the daily response's meta — measured 2 requests -> 1 for JSE/TFSA, US pre-market and
+  CRYPTO untouched.
 - **A quote's `sessionDay` is a claim about which session it came from — honour it.**
   `quoteTradedToday` rejects a quote whose `sessionDay` isn't today's market day;
   `null` still passes. Stooq's CSV is end-of-day and carries no `regularMarketTime`,
