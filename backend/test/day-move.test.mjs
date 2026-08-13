@@ -224,6 +224,140 @@ const C_FRI = 470000, C_MON = 480000, C_TUE = 494112;
     parseYahooQuote(noTick, 'JSE', { now: JSE_PRE_OPEN }).price === 4800);
 }
 
+// ─── The hole ONE SESSION BACK: mid-session, market open (2026-08-13) ────────
+// The section above fixes a hole at the TAIL of the daily series — the newest bar
+// is behind the tape — and regularTickAfterBars catches it. A hole one session
+// FURTHER back was never caught by anything: every branch of deriveDayMove picks
+// "the most recent bar on an earlier day" and trusts it to be the previous session.
+// It is not, when Yahoo's bar for that session arrived late or arrived with a null
+// close that buildDailyBars drops — the same feed behaviour, one row up.
+//
+// Jan reported it from his phone at 10:06 SAST, 66 minutes after the JSE open:
+// "the today % is incorrect ... it looks like its still showing part of yesterday's
+// movement". It was. Wednesday's true +1.19% printed as +4.17%, which is that
+// figure compounded onto TUESDAY's +2.94%.
+//
+// Nothing downstream could catch it: sessionDay is still Wednesday, so
+// quoteSessionState reads 'live', HoldingRow prints the number bare with no
+// caption, and it counts in the "N of M" numerator and both Today sums. Every gate
+// in the app validates which session the PRICE came from. None validated which
+// session the PREV CLOSE came from.
+//
+// The repair is Yahoo's own regularMarketPreviousClose, which was sitting unused in
+// the very same payload, gated behind weekdaysBetween so it is consulted ONLY when
+// the calendar says a trading day is missing.
+{
+  const NOW_WED_OPEN = Date.parse('2026-08-05T08:07:00Z');   // 10:07 SAST, JSE open
+  const TICK_WED = S('2026-08-05T08:05:00Z');
+  const J_WED = S('2026-08-05T07:00:00Z');
+  const LIVE_WED = 500000;                                   // R50.00 in ZAc
+  // metaPrev is explicit per-case: it is the whole subject of this section.
+  // chartPreviousClose is deliberately set to a WRONG, far-back value (Friday) in
+  // every fixture — on range=5d that is what Yahoo actually sends, and the repair
+  // must never reach for it.
+  const wedChart = (closes, tss, metaPrev) => ({
+    meta: {
+      regularMarketPrice: LIVE_WED, currency: 'ZAc', shortName: 'Naspers',
+      regularMarketPreviousClose: metaPrev, chartPreviousClose: C_FRI,
+      regularMarketTime: TICK_WED, marketState: 'REGULAR'
+    },
+    timestamp: tss, indicators: { quote: [{ close: closes }] }
+  });
+  const healthy = parseYahooQuote(wedChart([C_FRI, C_MON, C_TUE], [J_FRI, J_MON, J_TUE], C_TUE),
+    'JSE', { now: NOW_WED_OPEN });
+  ok('mid-session healthy: prevClose is Tuesday', healthy.prevClose === 4941.12, healthy.prevClose);
+  ok('mid-session healthy: +1.19%', pct(healthy.changePct) === '1.19', pct(healthy.changePct));
+  ok('mid-session healthy: session is Wednesday', healthy.sessionDay === '2026-08-05', healthy.sessionDay);
+
+  // The three shapes the hole arrives in. All three read +4.17% before the fix.
+  const gone = parseYahooQuote(wedChart([C_FRI, C_MON], [J_FRI, J_MON], C_TUE), 'JSE', { now: NOW_WED_OPEN });
+  ok('GAP (Tuesday bar absent): prevClose repaired to Tuesday (was 4800)',
+    gone.prevClose === 4941.12, gone.prevClose);
+  ok('GAP (Tuesday bar absent): +1.19%, not yesterday folded in (was 4.17%)',
+    pct(gone.changePct) === '1.19', pct(gone.changePct));
+
+  const nulled = parseYahooQuote(wedChart([C_FRI, C_MON, null], [J_FRI, J_MON, J_TUE], C_TUE),
+    'JSE', { now: NOW_WED_OPEN });
+  ok('GAP (Tuesday close null): identical to the healthy series',
+    nulled.prevClose === healthy.prevClose && pct(nulled.changePct) === '1.19', nulled.prevClose);
+
+  // Today's bar HAS printed, but Tuesday's is missing: the first branch of
+  // deriveDayMove, which regularTickAfterBars never even looks at.
+  const todayOnChart = parseYahooQuote(wedChart([C_FRI, C_MON, LIVE_WED], [J_FRI, J_MON, J_WED], C_TUE),
+    'JSE', { now: NOW_WED_OPEN });
+  ok('GAP (today on chart, Tuesday absent): +1.19% (was 4.17%)',
+    pct(todayOnChart.changePct) === '1.19', pct(todayOnChart.changePct));
+
+  // ── and the four ways the repair must decline ──────────────────────────────
+  // A public HOLIDAY on Tuesday is the same calendar shape as a hole, and there is
+  // no holiday calendar to tell them apart — but Yahoo's own previous close then
+  // AGREES with the bar, so the disagreement test settles it with no calendar.
+  // +4.17% is the CORRECT reading here: Monday really is the previous session.
+  const holiday = parseYahooQuote(wedChart([C_FRI, C_MON], [J_FRI, J_MON], C_MON), 'JSE', { now: NOW_WED_OPEN });
+  ok('HOLIDAY (meta agrees with the bar): Monday kept, +4.17%',
+    holiday.prevClose === 4800 && pct(holiday.changePct) === '4.17', holiday.prevClose);
+
+  // A ZAc/ZAR divisor flip puts meta at ~98.8x the live price, which slips UNDER
+  // the 0.01x-100x band the bar candidate is held to and would print -98.99%.
+  // Hence the tighter plausiblePriceMove check against the bars.
+  const glitchedPrev = parseYahooQuote(wedChart([C_FRI, C_MON], [J_FRI, J_MON], C_TUE * 100),
+    'JSE', { now: NOW_WED_OPEN });
+  ok('DIVISOR FLIP in meta previousClose: rejected, bar kept',
+    glitchedPrev.prevClose === 4800, glitchedPrev.prevClose);
+
+  // No meta previous close at all: unchanged behaviour, never a repair built on the
+  // `price` the fallback chain collapses to (which would read 0.00%).
+  const noMeta = parseYahooQuote(wedChart([C_FRI, C_MON], [J_FRI, J_MON], undefined),
+    'JSE', { now: NOW_WED_OPEN });
+  ok('NO meta previousClose: bar kept, behaviour unchanged',
+    noMeta.prevClose === 4800, noMeta.prevClose);
+
+  // A long weekend is NOT a gap, so a stale meta cannot hijack a healthy series.
+  // Fri -> Mon: weekdaysBetween is 0, meta is never consulted. This is the guard
+  // that lets the repair coexist with derivePrevClose's documented distrust of meta.
+  const MON_OPEN = Date.parse('2026-08-03T08:07:00Z');
+  const monChart = {
+    meta: {
+      regularMarketPrice: 490000, currency: 'ZAc', shortName: 'Naspers',
+      regularMarketPreviousClose: 400000,       // stale/wrong on purpose
+      chartPreviousClose: C_FRI,
+      regularMarketTime: S('2026-08-03T08:05:00Z'), marketState: 'REGULAR'
+    },
+    timestamp: [S('2026-07-30T07:00:00Z'), J_FRI], indicators: { quote: [{ close: [460000, C_FRI] }] }
+  };
+  const longWeekend = parseYahooQuote(monChart, 'JSE', { now: MON_OPEN });
+  ok('LONG WEEKEND (Fri->Mon): no gap, stale meta ignored, Friday kept',
+    longWeekend.prevClose === 4700, longWeekend.prevClose);
+
+  // deriveDayMove reports which source won, so a repair cannot pass unnoticed.
+  const bars = [{ t: J_FRI * 1000, p: 47 }, { t: J_MON * 1000, p: 48 }];
+  ok('prevCloseSource: bars when the series is trusted',
+    deriveDayMove(bars, 50, 48, 'JSE', { now: NOW_WED_OPEN, lastTick: TICK_WED * 1000 }).prevCloseSource === 'bars');
+  ok('prevCloseSource: meta when the gap is repaired',
+    deriveDayMove(bars, 50, 48, 'JSE', { now: NOW_WED_OPEN, lastTick: TICK_WED * 1000, metaPrevClose: 49.4112 })
+      .prevCloseSource === 'meta');
+}
+
+// weekdaysBetween — the gap detector on its own.
+{
+  const w = PBCore.weekdaysBetween;
+  ok('exports weekdaysBetween', typeof w === 'function');
+  ok('wB: adjacent weekdays → 0', w('2026-08-04', '2026-08-05') === 0);
+  ok('wB: Fri -> Mon (a weekend is not a missing session) → 0', w('2026-07-31', '2026-08-03') === 0);
+  ok('wB: Mon -> Wed (one session missing) → 1', w('2026-08-03', '2026-08-05') === 1);
+  ok('wB: Fri -> Tue (one session missing across a weekend) → 1', w('2026-07-31', '2026-08-04') === 1);
+  ok('wB: same day → 0', w('2026-08-05', '2026-08-05') === 0);
+  ok('wB: reversed order → 0 (never negative)', w('2026-08-05', '2026-08-03') === 0);
+  ok('wB: non-string input → 0', w(null, '2026-08-05') === 0 && w('2026-08-05', undefined) === 0);
+  ok('wB: absurd span short-circuits instead of walking', w('2020-01-02', '2026-08-05') === 99);
+  // A DST boundary must not shift a date across midnight: both keys are parsed at
+  // UTC noon precisely so this stays true in every zone (hot-topics-dates.test.mjs
+  // pins the same trap for the earnings calendar). 2026-03-08 is a 23-hour day in
+  // New York.
+  ok('wB: DST day-roll (US spring forward) still reads as adjacent',
+    w('2026-03-06', '2026-03-09') === 0);
+}
+
 // regularTickAfterBars directly — the guard's whole truth table. The regular-HOURS
 // condition is what keeps the ORCL fix intact: a US pre/post print also lands on a
 // day the daily series has no bar for, and must never be believed as a close.
@@ -436,8 +570,13 @@ import { readFileSync } from 'node:fs';
 const coreSrc = readFileSync(new URL('../../pb-core.js', import.meta.url), 'utf8');
 const dataSrc = readFileSync(new URL('../../pb-data.js', import.meta.url), 'utf8');
 ok('pb-core defines deriveDayMove', /function\s+deriveDayMove\s*\(/.test(coreSrc));
+// The window is a proximity heuristic, not the assertion — what matters is that
+// parseYahooQuote still DELEGATES rather than deriving the move inline. It went
+// red at 5000 purely because the metaPrevClose comment landed in between, which is
+// a false negative: the delegation was untouched. Sized with headroom so prose
+// cannot fail it again.
 ok('parseYahooQuote routes through deriveDayMove',
-  /function\s+parseYahooQuote[\s\S]{0,5000}?deriveDayMove\(/.test(coreSrc));
+  /function\s+parseYahooQuote[\s\S]{0,6500}?deriveDayMove\(/.test(coreSrc));
 ok('deriveIntradayExt no longer baselines on meta.regularMarketPrice',
   !/regularPrice\s*=\s*meta\.regularMarketPrice/.test(coreSrc));
 ok('the daily quote URLs carry no includePrePost',

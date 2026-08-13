@@ -211,6 +211,40 @@
     return settled;
   }
 
+  // Does this market have a pre/post session at all? Markets without regOpen and
+  // regClose (JSE, TFSA, LSE, ASX, FRA, PAR, AMS) have exactly one window, so their
+  // whole [open, close] span is the regular session — see SESSIONS. An UNKNOWN
+  // market falls back to US, i.e. "assume it does", because every caller uses a
+  // false here to skip work.
+  function hasExtendedSession(market) {
+    if (market === 'CRYPTO') return false;   // never closed; has no pre/post either
+    const s = SESSIONS[market] || SESSIONS.US;
+    return typeof s.regOpen === 'number' && typeof s.regClose === 'number';
+  }
+  // Can this quote still change before the market next opens? If not, re-fetching it
+  // spends a proxy round-trip to receive bytes we already hold — and the sweep's
+  // whole problem is that it makes far too many of those (the 45s poll covers the
+  // user's entire universe through six shared free CORS proxies).
+  //
+  // "Settled" = the market is SHUT and the quote is already that last completed
+  // session's close. Deliberately narrow:
+  //   - 'stale' is NOT settled. A quote a session behind is exactly what we want to
+  //     keep retrying, closed market or not.
+  //   - the age bound matters. Before the bell quoteSessionState calls EVERY quote
+  //     'atClose', including one that last landed three days ago, so without it a
+  //     symbol that has quietly stopped updating would be skipped all night and only
+  //     get another chance at the open.
+  // Only the auto-poll consults this; a manual refresh must never skip anything.
+  const QUOTE_SETTLED_MAX_AGE_MS = 24 * 3600 * 1000;
+  function quoteSettled(quote, market, nowMs = Date.now()) {
+    if (!quote || market === 'CRYPTO') return false;
+    if (typeof quote.price !== 'number' || !isFinite(quote.price) || quote.price <= 0) return false;
+    const at = quote.fetchedAt;
+    if (typeof at !== 'number' || !isFinite(at) || (nowMs - at) > QUOTE_SETTLED_MAX_AGE_MS) return false;
+    if (marketSession(market, nowMs).phase !== 'closed') return false;
+    return quoteSessionState(quote, market, nowMs) === 'atClose';
+  }
+
   // Relative "time since" for the freshness chip; coarsens as it ages so the
   // user always sees movement within a few seconds of a refresh.
   function fmtAgo(fromMs, nowMs = Date.now()) {
@@ -599,6 +633,33 @@
       }).format(new Date(ms));
     } catch (_e) { return null; }
   }
+  // How many WEEKDAYS lie strictly between two market-local day keys (YYYY-MM-DD)?
+  // 0 means the two days are adjacent trading days as far as the clock can tell —
+  // Fri -> Mon is 0, because a weekend is not a missing session. Mon -> Wed is 1.
+  //
+  // This is how deriveDayMove notices that the bar it chose as the previous close
+  // is not the session immediately before the one being priced. There is no holiday
+  // calendar here (the same acknowledged limitation as marketOpen), so a public
+  // holiday also reads as a gap — which is fine, because the caller only uses a
+  // non-zero result to go and ASK Yahoo, and on a holiday Yahoo's answer agrees with
+  // the bar. Both keys are already market-local calendar days, so they are parsed at
+  // UTC noon: no DST shift can move a date across midnight from there.
+  function weekdaysBetween(fromDay, toDay) {
+    if (typeof fromDay !== 'string' || typeof toDay !== 'string') return 0;
+    const a = Date.parse(fromDay + 'T12:00:00Z');
+    const b = Date.parse(toDay + 'T12:00:00Z');
+    if (!isFinite(a) || !isFinite(b) || !(b > a)) return 0;
+    const DAY = 86400000;
+    // A span this wide is a degenerate input (a quote months behind), not a gap to
+    // measure. Answer "definitely not adjacent" without walking thousands of days.
+    if (b - a > 40 * DAY) return 99;
+    let n = 0;
+    for (let t = a + DAY; t < b; t += DAY) {
+      const wd = new Date(t).getUTCDay();
+      if (wd !== 0 && wd !== 6) n++;
+    }
+    return n;
+  }
   // Is the feed's own last REGULAR-hours print NEWER than the newest daily bar?
   // Yahoo's daily series can lag its own tape: the bar for a completed session
   // arrives late, or arrives with a null close (which buildDailyBars drops). The
@@ -680,7 +741,11 @@
   function deriveDayMove(bars, livePrice, fallback, market, opts = {}) {
     const now = opts.now != null ? opts.now : Date.now();
     const lastTick = opts.lastTick;
-    const out = { price: livePrice, prevClose: fallback, sessionDay: null };
+    // prevCloseSource is diagnostic only — 'bars' | 'meta' | 'fallback' — so the
+    // tests can tell a repaired anchor from an unrepaired one that happens to agree.
+    // Deliberately NOT copied onto the quote: nothing renders it, and the stored
+    // quote shape is load-bearing for the price cache.
+    const out = { price: livePrice, prevClose: fallback, sessionDay: null, prevCloseSource: 'fallback' };
     if (!Array.isArray(bars) || !bars.length || !(livePrice > 0)) return out;
     const todayKey = marketDayKey(now, market);
     const lastBar = bars[bars.length - 1];
@@ -700,23 +765,26 @@
     // an ancient close as "yesterday" would silently report a 0% day.
     const LAST_BAR_MAX_AGE_MS = 5 * 86400 * 1000;
     const lastBarRecent = lastBar.t != null && (now - lastBar.t) < LAST_BAR_MAX_AGE_MS;
-    // Most recent bar landing on a market-local day EARLIER than `day`.
+    // Most recent bar landing on a market-local day EARLIER than `day`. Returns
+    // the bar's own day alongside its close: which SESSION the previous close came
+    // from is what the adjacency check below needs, and it is not recoverable from
+    // the number afterwards.
     const closeBefore = (day, stopIdx) => {
       for (let i = stopIdx; i >= 0; i--) {
         const b = bars[i];
         if (day != null && b.t != null && marketDayKey(b.t, market) === day) continue;
-        return b.p;
+        return { p: b.p, day: b.t != null ? marketDayKey(b.t, market) : null };
       }
       return null;
     };
-    let candidate = null;
+    let picked = null;
     // Has the feed printed a regular close for a session the daily series hasn't
     // caught up with? (null in the normal case — see regularTickAfterBars.)
     const aheadDay = regularTickAfterBars(bars, lastTick, market);
     if (lastDay != null && todayKey != null && lastDay === todayKey) {
       // Today's session is on the chart — `price` belongs to it.
       out.sessionDay = todayKey;
-      candidate = closeBefore(lastDay, bars.length - 2);
+      picked = closeBefore(lastDay, bars.length - 2);
     } else if (lastBarRecent && aheadDay != null) {
       // The daily series lags its own tape, so `price` is the close of `aheadDay`
       // and the last bar IS that session's previous close. BEFORE A MARKET'S OPEN
@@ -726,7 +794,7 @@
       // left the whole SA book short yesterday's move at 07:53 SAST. No holiday
       // guard is needed here: a holiday produces no regular-hours tick at all.
       out.sessionDay = aheadDay;
-      candidate = lastBar.p;
+      picked = { p: lastBar.p, day: lastDay };
     } else if (lastBarRecent && regularSessionStartedToday(market, now) && tickedOn(lastTick, todayKey)) {
       // The regular session has opened today but Yahoo hasn't printed its daily
       // bar yet: `price` is today's live price, so the last bar IS the previous
@@ -735,12 +803,53 @@
       // says the session opened, but nothing traded, so there is no "today" to
       // measure and the last completed session's move is the honest reading.
       out.sessionDay = todayKey;
-      candidate = lastBar.p;
+      picked = { p: lastBar.p, day: lastDay };
     } else {
       // Market shut / not yet open: `price` is the last completed session's close,
       // and the move to show is that session's own — Yahoo shows the same.
       out.sessionDay = lastDay;
-      candidate = closeBefore(lastDay, bars.length - 2);
+      picked = closeBefore(lastDay, bars.length - 2);
+    }
+    let candidate = picked ? picked.p : null;
+    // ─── Is that bar the session immediately BEFORE out.sessionDay? ──────────
+    // Every branch above picks the most recent bar on an EARLIER day and trusts it
+    // to be the previous session. A hole in the series breaks that silently: Yahoo's
+    // daily feed lags its own tape, so the bar for a finished session can arrive
+    // late or arrive with a null close that buildDailyBars drops (the same defect
+    // regularTickAfterBars was added for — but that only catches a hole at the TAIL,
+    // where the newest bar is behind the tape). A hole one session BACK reaches past
+    // it and the reported day move becomes yesterday's move compounded with today's.
+    //
+    // Measured on the real kernel (Naspers, 10:07 SAST, JSE open): the true +1.19%
+    // printed as +4.17%, i.e. Tuesday's +2.94% folded into Wednesday's figure. It is
+    // invisible downstream by construction — out.sessionDay is still today, so
+    // quoteSessionState reads 'live', the row prints the number with no caption and
+    // it counts in "N of M". Every gate in the app validates which session the PRICE
+    // came from; none validated which session the PREV CLOSE came from.
+    //
+    // weekdaysBetween is the detector, and Yahoo's own previous close — sitting
+    // unused in the same payload — is the repair. Both halves are needed, and the
+    // ORDER matters: meta is consulted ONLY when the calendar says a trading day is
+    // missing, so a stale meta (the documented reason derivePrevClose distrusts it)
+    // can never hijack a healthy series. On a genuine market holiday the gap is also
+    // non-zero, but meta then EQUALS the candidate — the last real session — so
+    // nothing changes and no holiday calendar is needed.
+    const metaPrev = opts.metaPrevClose;
+    if (candidate != null && picked.day != null && out.sessionDay != null
+        && typeof metaPrev === 'number' && isFinite(metaPrev) && metaPrev > 0
+        && weekdaysBetween(picked.day, out.sessionDay) > 0
+        // Unit-mismatch guard, and it must be TIGHTER than the 0.01x-100x band the
+        // candidate is held to: a ZAc/ZAR divisor flip lands meta at ~98.8x the live
+        // price, which slips under 100x and would print a -98.99% day. The bars are
+        // in the right unit by construction (they share the divisor with `price`),
+        // so they are the reference a meta value has to agree with. plausiblePriceMove
+        // is the same 20x kernel guardQuote uses for exactly this failure.
+        && plausiblePriceMove(candidate, metaPrev) && plausiblePriceMove(livePrice, metaPrev)
+        // Agreement means the series has no hole after all — a holiday, or a bar
+        // whose day key we could not read. Leave the bars in charge.
+        && Math.abs(metaPrev - candidate) > Math.abs(candidate) * 1e-6) {
+      candidate = metaPrev;
+      out.prevCloseSource = 'meta';
     }
     // No earlier-day bar anywhere → the caller's fallback (Yahoo's own
     // chartPreviousClose) wins. Deliberately NOT the adjacent bar: on an intraday
@@ -750,7 +859,12 @@
     // Same unit-mismatch guard as derivePrevClose (cents vs dollars); real moves,
     // including flash crashes and halts, pass through untouched.
     const ratio = candidate / livePrice;
-    if (ratio > 0.01 && ratio < 100) out.prevClose = candidate;
+    if (ratio > 0.01 && ratio < 100) {
+      out.prevClose = candidate;
+      if (out.prevCloseSource !== 'meta') out.prevCloseSource = 'bars';
+    } else {
+      out.prevCloseSource = 'fallback';   // guard rejected it; `fallback` still stands
+    }
     return out;
   }
   // ─── Live-quote plausibility guard (merge path) ─────────────────────────────
@@ -1039,11 +1153,24 @@
                && !metaLeadsSeries) {
       price = lastBar.p;
     }
+    // Yahoo's OWN previous close, kept separate from the `prevClose` fallback above
+    // so deriveDayMove can use it to repair a hole in the daily series (see there).
+    // Two deliberate differences from that chain:
+    //   - chartPreviousClose is EXCLUDED. On interval=1d&range=5d it is the close
+    //     preceding the chart's FIRST bar — five sessions back — which is the wrong
+    //     anchor for "the session before this one" and would repair a gap by making
+    //     it worse.
+    //   - it stays null when meta carries nothing, whereas the chain above ends in
+    //     `price` (a 0.00% day). A repair must never be built on that.
+    const metaPrevRaw = meta.regularMarketPreviousClose != null ? meta.regularMarketPreviousClose
+      : (meta.previousClose != null ? meta.previousClose : null);
+    const metaPrevClose = (typeof metaPrevRaw === 'number' && isFinite(metaPrevRaw) && metaPrevRaw > 0)
+      ? metaPrevRaw / divisor : null;
     // `price` and `prevClose` are resolved together so they always bracket the
     // SAME regular session; sessionDay records which one, for the "Today" gates.
     let sessionDay = lastBar && lastBar.t != null ? marketDayKey(lastBar.t, market) : null;
     try {
-      const move = deriveDayMove(bars, price, prevClose, market, { now, lastTick });
+      const move = deriveDayMove(bars, price, prevClose, market, { now, lastTick, metaPrevClose });
       prevClose = move.prevClose;
       if (move.sessionDay != null) sessionDay = move.sessionDay;
     } catch (_e) {}
@@ -1958,6 +2085,8 @@ function rotationSummary(classified) {
     tradedToday,
     quoteTradedToday,
     quoteSessionState,
+    quoteSettled,
+    hasExtendedSession,
     regularSessionStartedToday,
     fmtAgo,
     refreshChipState,
@@ -1979,6 +2108,7 @@ function rotationSummary(classified) {
     mergeCostBasis,
     buildDailyBars,
     marketDayKey,
+    weekdaysBetween,
     regularTickAfterBars,
     derivePrevClose,
     deriveDayMove,
