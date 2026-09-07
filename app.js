@@ -1672,19 +1672,25 @@ function usePriceFeed(order, fetchKey) {
   // Seed the store's prices slice once from the rehydrated localStorage cache so
   // the app paints real numbers on open. The map now lives in PBStore, not React
   // state — so a batch merge re-renders only store subscribers, not all of App.
-  useState(() => {
+  // Also returns the newest fetchedAt across the restored quotes, which seeds
+  // lastUpdate below.
+  const seededAt = useState(() => {
     const saved = LS.get(PRICES_LS_KEY, null);
     const now = Date.now();
     const fresh = {};
+    let newest = 0;
     if (saved && typeof saved === 'object') {
       for (const k in saved) {
         const q = saved[k];
-        if (q && typeof q.price === 'number' && (!q.fetchedAt || now - q.fetchedAt < PRICES_MAX_AGE_MS)) fresh[k] = q;
+        if (q && typeof q.price === 'number' && (!q.fetchedAt || now - q.fetchedAt < PRICES_MAX_AGE_MS)) {
+          fresh[k] = q;
+          if (typeof q.fetchedAt === 'number' && q.fetchedAt > newest) newest = q.fetchedAt;
+        }
       }
     }
     PBStore.setPricesMap(fresh);
-    return null;
-  });
+    return newest;
+  })[0];
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
   // Latest fetch order, read by runFetch so a queued follow-up sweep (e.g. one
@@ -1692,7 +1698,19 @@ function usePriceFeed(order, fetchKey) {
   // order, not the order captured when the in-flight sweep began.
   const orderRef = useRef(order);
   orderRef.current = order;
-  const [lastUpdate, setLastUpdate] = useState(null);
+  // Seeded from the CACHE, not from a network read. The two are different claims
+  // and only one of them was being made: an app opened while every market is shut,
+  // holding quoteSettled quotes, files an empty `due` list, hits the `continue`
+  // below without a single fetch, and deliberately never calls setLastUpdate --
+  // correct, no network read happened. But lastUpdate then stayed null, so
+  // refreshChipState fell through every branch to its last one and the chip read
+  // "Loading..." with an amber dot INDEFINITELY, over prices that were perfectly
+  // current. That is indistinguishable from a dead feed, and it is the shape of
+  // "the prices are not updating at all". Seeding from the newest fetchedAt is the
+  // honest repair: it is exactly when this data WAS fetched, so the chip reads
+  // "Updated 3h ago". The empty-sweep rule is untouched -- a no-op sweep still
+  // claims nothing.
+  const [lastUpdate, setLastUpdate] = useState(() => (seededAt ? new Date(seededAt) : null));
   const [failStreak, setFailStreak] = useState(0);
   // Debounced persist so a burst of merges writes once. The scheduler lives in
   // pb-store.js (Node-testable; see backend/test/write-scheduler.test.mjs) and
@@ -1742,6 +1760,11 @@ function usePriceFeed(order, fetchKey) {
   const heldRef = useRef({});
   const [feedHeld, setFeedHeld] = useState({});
   const [feedMissing, setFeedMissing] = useState([]);
+  // How long the last completed sweep actually took, and over how many symbols.
+  // Diagnostics needs it to separate "the proxies are slow" from "the sweep never
+  // ran" -- from outside the app those look identical, which is exactly why the
+  // symptom is reported three different ways.
+  const [feedSweep, setFeedSweep] = useState(null);
   // The miss list also has to be readable at PRESS time, not just render time --
   // refreshNow builds its recovery list from it (see below) and runs outside the
   // render that produced it. Same reason heldRef exists alongside feedHeld.
@@ -1804,6 +1827,8 @@ function usePriceFeed(order, fetchKey) {
   const sweepActiveRef = useRef(false);
   const runFetch = useCallback(async (cacheBust) => {
     const seq = ++sweepSeqRef.current;
+    const sweepStartedAt = Date.now();
+    let sweptCount = 0;
     sweepActiveRef.current = true;
     loadingRef.current = true;
     setLoading(true);
@@ -1855,6 +1880,7 @@ function usePriceFeed(order, fetchKey) {
         // left alone too: no network read happened, and the chip must not claim one.
         // `continue`, not `break`: a force queued for the next lap must still get it.
         if (!due.length) continue;
+        sweptCount += due.length;
         const newPrices = await fetchQuoteBatch(due, {
           cacheBust: force,
           // Merge each batch as it lands so holdings paint progressively. Ungated by
@@ -1901,6 +1927,13 @@ function usePriceFeed(order, fetchKey) {
       if (seq === sweepSeqRef.current) sweepActiveRef.current = false;
       clearTimeout(watchdog);
       release();
+      // Telemetry last, and never before the gate is reopened: this is a readout for
+      // Diagnostics, and nothing about the feed's operation may wait on it. Same
+      // ownership rule as everything else here -- a superseded sweep must not
+      // publish its duration over the newer sweep's.
+      if (seq === sweepSeqRef.current) {
+        setFeedSweep({ ms: Date.now() - sweepStartedAt, at: Date.now(), symbols: sweptCount });
+      }
     }
   }, [persistPrices, guardBatch]);
   // Auto-poll: skip while a sweep is genuinely still in flight. Gated on
@@ -1997,8 +2030,8 @@ function usePriceFeed(order, fetchKey) {
   // out the next interval tick.
   usePolledRefresh(refresh, pollMs, OPEN_POLL_MS, fetchKey);
   const feedHealth = useMemo(
-    () => ({ missing: feedMissing, held: feedHeld, sweepSize: order.length }),
-    [feedMissing, feedHeld, order.length]);
+    () => ({ missing: feedMissing, held: feedHeld, sweepSize: order.length, sweep: feedSweep }),
+    [feedMissing, feedHeld, order.length, feedSweep]);
   return { loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices, feedHealth };
 }
 // Owns triggered history + alertSeenMap and runs the pure evaluator on every

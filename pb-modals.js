@@ -1012,6 +1012,44 @@ function collectViewportDiagnostics() {
 // MISSED / HELD flags, which name a fetch failure and a guard rejection.
 //
 // Pure, and takes its clock, so it is unit-testable without a DOM.
+// ─── Proxy health (Settings -> Diagnostics) ───────────────────────────────────
+//
+// priceFeedRows answers "which SYMBOL is not current, and why". This answers the
+// question one level down that nothing could answer before: "is the transport
+// itself healthy?" Jan reported the feed as both "not updating at all" and "taking
+// very long" and could not tell which he was seeing -- from outside the app a
+// rate-limited ladder, a sweep that never ran, and a chip that lied all look the
+// same. These rows name the ladder's real state, and the sweep line underneath says
+// how long the last sweep took and over how many symbols, so the next report is a
+// measurement instead of an impression.
+//
+// Pure, and takes its clock, so it can be pinned in a vm the way priceFeedRows is.
+function proxyHealthRows(snapshot, feedHealth, nowMs) {
+  const rows = [];
+  const list = Array.isArray(snapshot) ? snapshot : [];
+  for (const p of list) {
+    if (!p || !p.provider) continue;
+    const bits = [p.state];
+    if (p.isLastGood) bits.push('LAST GOOD');
+    if (p.fails) bits.push('fails ' + p.fails);
+    if (p.openForMs > 0) bits.push('cooldown ' + Math.ceil(p.openForMs / 1000) + 's');
+    if (p.okAgeMs != null) bits.push('ok ' + fmtAgo(nowMs - p.okAgeMs, nowMs));
+    rows.push({ label: p.provider, value: bits.join(' | ') });
+  }
+  const sweep = feedHealth && feedHealth.sweep;
+  if (sweep && typeof sweep.ms === 'number') {
+    rows.push({
+      label: 'last sweep',
+      value: (sweep.ms / 1000).toFixed(1) + 's over ' + (sweep.symbols || 0) + ' symbols'
+        + (sweep.at ? ', ' + fmtAgo(sweep.at, nowMs) : '')
+    });
+  } else {
+    // Not cosmetic: "no sweep has completed this session" is itself the answer when
+    // the complaint is that nothing updates.
+    rows.push({ label: 'last sweep', value: 'none completed this session' });
+  }
+  return rows;
+}
 function priceFeedRows(positions, prices, feedHealth, nowMs) {
   const health = feedHealth || {};
   const missed = new Set((health.missing || []).map(it => priceKey(it.market, it.ticker)));
@@ -1173,12 +1211,20 @@ function SettingsModal({ fxRates, onRefreshFx, feedHealth,
     () => (activeSection === 'diagnostics' ? priceFeedRows(positions, prices, feedHealth, Date.now()) : []),
     [activeSection, diag, positions, prices, feedHealth]
   );
+  const proxyRows = useMemo(
+    () => (activeSection === 'diagnostics'
+      ? proxyHealthRows(PBData.proxyHealthSnapshot(Date.now()), feedHealth, Date.now())
+      : []),
+    [activeSection, diag, feedHealth]
+  );
   const diagText = useMemo(
     () => diagRows.map(r => r.label + ': ' + r.value)
       .concat(feedRows.length ? ['', 'PRICE FEED'] : ['', 'PRICE FEED: all holdings current'])
       .concat(feedRows.map(r => r.label + ': ' + r.value))
+      .concat(proxyRows.length ? ['', 'PROXY HEALTH'] : [])
+      .concat(proxyRows.map(r => r.label + ': ' + r.value))
       .join('\n'),
-    [diagRows, feedRows]
+    [diagRows, feedRows, proxyRows]
   );
   const copyDiag = async () => {
     try {
@@ -1815,6 +1861,15 @@ function SettingsModal({ fxRates, onRefreshFx, feedHealth,
                   React.createElement("span", { className: "pos-line-label" }, r.label),
                   React.createElement("span", { className: "pos-line-val mono" }, r.value))))
             : React.createElement("div", { className: "settings-empty" }, "Every holding is anchored to today's session."),
+          React.createElement("div", { className: "settings-section-title mt-3" }, "Proxy health"),
+          React.createElement("div", { className: "settings-row-desc mb-3" },
+            "The CORS ladder every quote travels through. A provider in cooldown has been demoted after repeated failures and is tried last -- one or two is normal, all of them means the feed has no route out."),
+          React.createElement("div", { className: "pos-list diag-list" },
+            proxyRows.map((r, i) => React.createElement("div", {
+              key: r.label + i, className: "pos-line", "data-k": r.label
+            },
+              React.createElement("span", { className: "pos-line-label" }, r.label),
+              React.createElement("span", { className: "pos-line-val mono" }, r.value)))),
           React.createElement("div", { className: "pk-actions mt-3" },
             React.createElement("button", {
               className: "btn btn-secondary btn-sm", type: "button", onClick: copyDiag

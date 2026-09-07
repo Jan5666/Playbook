@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v111`), or installed PWAs serve stale assets offline.
+`playbook-shell-v112`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -418,6 +418,61 @@ Adding a **new runtime file** additionally requires ALL of:
   but a session behind (never in the numerator), forever. Reachable in one tap: the Add-Holding
   modal saves the **raw typed text** when live verification fails and the user force-adds. Those
   branches now also `encodeURIComponent` like the US/CRYPTO ones.
+- **The proxy ladder remembered success and never failure - but that was NOT worth
+  an order of magnitude, and the first version of this fix claimed it was.**
+  `lastGoodProxy` promotes the last winner to the front and records nothing when a
+  rung fails, so a dead edge stayed at position 0 or 1 and was re-tried for its full
+  8s deadline on every request. The obvious arithmetic - ~200 upstream urls a sweep x
+  8s / 8 concurrent = ~200s of dead time - is **wrong**, and measuring it is what
+  showed why: `fetchQuoteBatch` runs **sequential batches of 8**, so the FIRST batch
+  pays the dead rung, its winner is pinned as `lastGoodProxy`, and batches 2-25 go
+  straight there. Pristine HEAD on a 200-url sweep with a stalling lead rung measures
+  **11.1s, not 200s**. The breaker is worth a real but modest constant: 11.1s -> 8.1s
+  with one dead rung, 19.0s -> 13.0s with two, 35.1s -> 26.0s when only the last rung
+  answers, and 3.0s -> 3.0s (no regression) when everything is healthy. It also
+  covers the case `lastGoodProxy` structurally cannot: a provider that keeps failing
+  across a whole session is now *demoted* rather than merely not-promoted. Treat
+  "the proxies are slow" as a hypothesis to measure, not a diagnosis - a sweep is
+  3-35s under every failure shape reproducible here, so it cannot by itself produce
+  a 45-minute symptom.
+  Three things in the implementation are load-bearing and were each found by
+  measurement, not reasoning: (1) the rung is chosen **inside** the limiter, after
+  admission - choosing before queueing means every member of a burst commits to the
+  same rung before any of them has learned it is dead; (2) the whole-ladder budget
+  counts **attempt** time, never wall clock - measuring from the call made it a
+  function of queue depth, and a 200-url burst then blew the budget while queued and
+  resolved **0 of 200**; (3) the budget sits at 32s, above the worst honest walk
+  (6 rungs x 5s probe) - at 20s it cost 2 of 200 symbols in the "only the last rung
+  works" case, a real regression for no real saving. An unproven or penalised rung
+  gets the short `PROBE_MS` deadline, a proven one the caller's full budget, and a
+  **timeout** (unlike a bad status or body) does not count toward the trip on its
+  first occurrence - otherwise a merely-slow-but-working proxy is clipped at the
+  probe forever, never earns a full budget, and is demoted for being slow.
+  `data-proxy.test.mjs` pins all of it; the benchmark shapes are worth re-running
+  before believing any future claim about ladder latency.
+- **A chip that reads "Loading..." forever is not a fetch bug, and it is the other
+  half of "the prices are not updating".** The mount sweep is UNFORCED, so an app
+  opened while every market is shut, holding `quoteSettled` quotes, files an empty
+  `due` list, hits `if (!due.length) continue` without one network read, and
+  correctly never calls `setLastUpdate` - no read happened. But `lastUpdate` then
+  stayed `null`, and `refreshChipState` falls through **every** branch to its last
+  one on null, so the chip sat on "Loading..." with an amber dot indefinitely, over
+  prices that were perfectly current. Indistinguishable from a dead feed from the
+  outside. `lastUpdate` is now seeded from the newest `fetchedAt` in the restored
+  cache - honest, because that *is* when the data was fetched - and the empty-sweep
+  rule is untouched: a no-op sweep still claims nothing. Pinned in
+  `refresh-chip.test.mjs`.
+- **Settings -> Diagnostics -> Proxy health** answers the question one level below
+  the Price feed panel: not "which symbol is stale" but "is the transport alive". It
+  prints each PROVIDER (the two allorigins rungs share one breaker record, so an
+  outage costs one provider's trust, not two rungs'), its breaker state, failure
+  streak and cooldown, plus a `last sweep` line with the measured duration and symbol
+  count. Read it when the report is "prices are not updating": all five penalised
+  means the feed has no route out; `none completed this session` means the sweep is
+  not running at all; a fast sweep with current prices means the complaint was the
+  chip. Those three look identical from outside the app, which is why the same
+  symptom kept being reported three different ways. `proxy-health.test.mjs` pins the
+  kernel; the panel is verified live in a patched `verify-settings` copy.
 - **`verify-modals.mjs`'s stock-detail section had never once opened the card.** Its row
   selector was a `[class*="holding"]` union, which matches the `.holdings-summary`
   container first; the section printed `(no stock detail)` and, having no assertion behind

@@ -83,5 +83,32 @@ ok('no bare .quote-only guard call survives',
 // whole chain is dead code.
 ok('App destructures feedHealth from the feed', /mergePrices,\s*feedHealth\s*\}\s*=\s*usePriceFeed\(/.test(appSrc));
 ok('SettingsModal receives feedHealth', /feedHealth:\s*feedHealth,/.test(appSrc));
+// ── "Loading..." forever over perfectly current prices ──────────────────────
+const NOW = Date.UTC(2026, 8, 7, 12, 0);
+// The mount sweep is UNFORCED. Open the app while every market is shut, holding
+// quotes that quoteSettled calls settled, and `due` comes back empty: runFetch hits
+// its `continue` without a single network read and deliberately never calls
+// setLastUpdate — correct, nothing was fetched. But lastUpdate then stayed null,
+// and refreshChipState falls through EVERY branch to its last one when it is:
+ok('a null lastUpdate is what produces the endless "Loading..."',
+  refreshChipState({ loading: false, lastUpdateMs: null, failStreak: 0, pendingAck: false,
+    lastManual: false, justSucceeded: false, nowMs: NOW }).text === 'Loading…');
+// ...so the app looked dead while showing correct numbers. Seeding lastUpdate from
+// the cache's own newest fetchedAt is the honest repair — it is exactly when that
+// data was fetched — and it moves the chip to the idle branch.
+const seeded = refreshChipState({ loading: false, lastUpdateMs: NOW - 3 * 3600 * 1000,
+  failStreak: 0, pendingAck: false, lastManual: false, justSucceeded: false, nowMs: NOW });
+ok('a cache-seeded lastUpdate reads "Updated ...", not "Loading..."',
+  seeded.phase === 'idle' && /^Updated /.test(seeded.text));
+ok('...and the dot goes live rather than amber', seeded.dot === 'live');
+
+ok('usePriceFeed seeds lastUpdate from the restored cache',
+  /const \[lastUpdate, setLastUpdate\] = useState\(\(\) => \(seededAt \? new Date\(seededAt\) : null\)\);/.test(feed));
+ok('the seed is the NEWEST fetchedAt across the restored quotes',
+  /q\.fetchedAt > newest/.test(feed) && /return newest;/.test(feed));
+// The seed must not become a licence to claim a network read that never happened:
+// an empty due-list is still a silent, successful no-op.
+ok('an empty sweep still claims nothing', /if \(!due\.length\) continue;/.test(feed));
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll refresh-chip tests passed');
 process.exit(failures ? 1 : 0);
