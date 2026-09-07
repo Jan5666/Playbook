@@ -197,5 +197,103 @@ const dataSrcProxy = readFileSync(join(here, '..', '..', 'pb-data.js'), 'utf8');
 ok('pb-data reads the body through the deadline helper',
   /fetchWithDeadline/.test(dataSrcProxy) && !/const\s+text\s*=\s*await\s+res\.text\(\)/.test(dataSrcProxy));
 
+// ── CIRCUIT BREAKER: the ladder must remember FAILURE, not just success ──────
+// lastGoodProxy promotes winners and never demotes losers. That asymmetry meant a
+// dead edge sat at the front (or, once something else won, at position 1) and was
+// re-tried for its full deadline on every request for the life of the session.
+// Measured on a 200-url sweep with a stalling lead rung: 11.1s -> 8.1s, and with
+// only the last rung alive, 35.1s -> 26.0s.
+const OKBODY = '{"chart":{"result":[{"meta":{}}]}}';
+
+PBData._resetProxyHealth();
+PBData._setProxyBreakerConfig({ trip: 2, cooldownMs: 400, maxMs: 800, probeMs: 60, budgetMs: 5000 });
+
+// One failure demotes nothing yet (a single blip must not cost a good provider).
+installFetch([{ match: 'corsmirror', ok: false }, { match: 'cors.lol', body: OKBODY }]);
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/brk1');
+let snap = PBData.proxyHealthSnapshot(Date.now());
+const cm = () => PBData.proxyHealthSnapshot(Date.now()).find(p => p.provider === 'corsmirror');
+ok('breaker: one failure is recorded but does not open', cm().fails === 1 && cm().state === 'failing');
+ok('breaker: the winner is marked last-good', snap.find(p => p.provider === 'cors.lol').isLastGood === true);
+
+// A demoted rung is only re-tried when it is CHOSEN again, so a second failure
+// needs the winner to stop leading — which is exactly what happens when the proxy
+// that was carrying the feed goes away and corsmirror returns to the front.
+PBData._setLastGoodProxy(null);
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/brk2');
+ok('breaker: two failures open the penalty box', cm().state === 'penalised' && cm().openForMs > 0);
+
+// ...and an open breaker moves that provider to the BACK of the ladder.
+const order = PBData.orderedProxies(Date.now()).map(p => p.name);
+ok('breaker: a penalised provider is demoted to last', order[order.length - 1] === 'corsmirror');
+ok('breaker: the last winner leads the healthy group', order[0] === 'cors.lol');
+
+// A penalised provider is DEMOTED, never dropped: if every rung is in the box the
+// ladder must still walk them all rather than resolve null without trying.
+PBData._resetProxyHealth();
+const allBadCalls = installFetch([{ match: 'zzz-nothing-matches', body: OKBODY }]);
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/allbad1');
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/allbad2');
+const before = allBadCalls.length;
+const res = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/allbad3');
+ok('breaker: every provider penalised still walks the whole ladder', allBadCalls.length - before >= 6);
+ok('breaker: ...and resolves null, not a body', res === null);
+
+// The two allorigins rungs are ONE provider: an outage must cost one provider's
+// worth of trust, not two rungs'.
+PBData._resetProxyHealth();
+installFetch([{ match: 'allorigins', ok: false }, { match: 'codetabs', body: OKBODY }]);
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/ao1');
+const ao = PBData.proxyHealthSnapshot(Date.now()).filter(p => p.provider === 'allorigins');
+ok('breaker: allorigins-get and -raw share one breaker record', ao.length === 1);
+ok('breaker: ...and one walk counts both its rungs', ao[0].fails === 2 && ao[0].state === 'penalised');
+
+// The cooldown expires and the provider is rehabilitated.
+PBData._resetProxyHealth();
+PBData._setProxyBreakerConfig({ trip: 1, cooldownMs: 60, maxMs: 60, probeMs: 60, budgetMs: 5000 });
+installFetch([{ match: 'corsmirror', ok: false }, { match: 'cors.lol', body: OKBODY }]);
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/cool1');
+ok('breaker: tripped at the configured threshold', cm().state === 'penalised');
+await new Promise(r => setTimeout(r, 120));
+ok('breaker: cooldown expires on its own', cm().state !== 'penalised');
+
+// THE SLOW-PROXY TRAP. An unproven rung runs on the short probe deadline, so a
+// merely-slow-but-working proxy could be clipped at the probe forever, never earn a
+// full budget, and be demoted for being slow. The first TIMEOUT therefore only buys
+// that rung the caller's full timeoutMs next time; it does not count toward the trip.
+PBData._resetProxyHealth();
+PBData._setProxyBreakerConfig({ trip: 2, cooldownMs: 5000, maxMs: 5000, probeMs: 40, budgetMs: 5000 });
+let attempts = 0;
+globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
+  if (!String(url).includes('corsmirror')) return resolve({ ok: false, text: async () => '' });
+  attempts++;
+  const wait = 120;                      // slower than the 40ms probe, faster than the 400ms budget
+  const timer = setTimeout(() => resolve({ ok: true, text: async () => OKBODY }), wait);
+  if (init && init.signal) init.signal.addEventListener('abort', () => {
+    clearTimeout(timer); const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+  });
+});
+await PBData.fetchViaProxies('https://query1.finance.yahoo.com/slow1', { timeoutMs: 400 });
+ok('slow proxy: a timeout does not count toward the trip', cm().fails === 0);
+const slowBody = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/slow2', { timeoutMs: 400 });
+ok('slow proxy: its next attempt gets the FULL deadline and succeeds', slowBody === OKBODY);
+ok('slow proxy: ...so it is never demoted for being slow', cm().state === 'ok');
+
+// Restore the shipped constants so any later suite in the same process is honest.
+PBData._setProxyBreakerConfig(null);
+PBData._resetProxyHealth();
+
+// Anti-drift: the rung must be chosen AFTER the limiter admits the attempt. Picking
+// before queueing means every member of a burst commits to the same rung before any
+// of them has learned it is dead — and made the whole-ladder budget measure QUEUE
+// time, which measured 0 of 200 urls resolved.
+const dataSrcBreaker = readFileSync(join(here, '..', '..', 'pb-data.js'), 'utf8');
+ok('pb-data picks the rung inside the limiter',
+  /_fetchLimit\(async \(\) => \{[\s\S]{0,400}nextProxy\(tried/.test(dataSrcBreaker));
+ok('pb-data budgets ATTEMPT time, not wall clock',
+  /spent \+= step\.spent/.test(dataSrcBreaker) && !/Date\.now\(\) - startedAt >= LADDER_BUDGET_MS/.test(dataSrcBreaker));
+ok('pb-data records a failure at every ladder exit',
+  (dataSrcBreaker.match(/noteProxyFail\(/g) || []).length >= 4);
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll data-proxy tests passed');
 process.exit(failures ? 1 : 0);

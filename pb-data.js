@@ -40,21 +40,148 @@
   // origins on its free tier (still useful for localhost dev). `lastGoodProxy`
   // floats the most-recently-successful proxy to the front of the next call so
   // we don't waste the user's latency budget on a known-failing edge.
+  // `provider` is the breaker key and is deliberately COARSER than `name`:
+  // allorigins-get and allorigins-raw are the same host, so one outage must cost
+  // one provider's worth of trust, not two rungs'.
   const CORS_PROXIES = [
-    { name: 'corsmirror',     build: url => `https://corsmirror.com/v1?url=${encodeURIComponent(url)}`,     unwrap: t => t },
-    { name: 'cors.lol',       build: url => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,         unwrap: t => t },
-    { name: 'allorigins-get', build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, unwrap: t => {
+    { name: 'corsmirror',     provider: 'corsmirror',   build: url => `https://corsmirror.com/v1?url=${encodeURIComponent(url)}`,     unwrap: t => t },
+    { name: 'cors.lol',       provider: 'cors.lol',     build: url => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,         unwrap: t => t },
+    { name: 'allorigins-get', provider: 'allorigins',   build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, unwrap: t => {
         try { const d = JSON.parse(t); return typeof d.contents === 'string' ? d.contents : t; } catch { return t; }
       } },
-    { name: 'allorigins-raw', build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, unwrap: t => t },
-    { name: 'corsproxy.io',   build: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,             unwrap: t => t },
-    { name: 'codetabs',       build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, unwrap: t => t }
+    { name: 'allorigins-raw', provider: 'allorigins',   build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, unwrap: t => t },
+    { name: 'corsproxy.io',   provider: 'corsproxy.io', build: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,             unwrap: t => t },
+    { name: 'codetabs',       provider: 'codetabs',     build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, unwrap: t => t }
   ];
   let lastGoodProxy = null;
-  function orderedProxies() {
-    if (!lastGoodProxy) return CORS_PROXIES;
-    const idx = CORS_PROXIES.findIndex(p => p.name === lastGoodProxy);
-    return idx <= 0 ? CORS_PROXIES : [CORS_PROXIES[idx], ...CORS_PROXIES.slice(0, idx), ...CORS_PROXIES.slice(idx + 1)];
+
+  // ─── Per-provider circuit breaker ───────────────────────────────────────────
+  //
+  // `lastGoodProxy` alone promotes WINNERS and never demotes LOSERS, and that one
+  // asymmetry is what set the sweep's wall clock. A failure was never recorded, so
+  // a dead edge was re-tried at the front of the ladder on every single request,
+  // forever, each time for the full 8s deadline. corsmirror sits at index 0: on a
+  // cold load (lastGoodProxy === null) EVERY request began by burning it. Even once
+  // another proxy won, the dead rung merely slid to position 1 and was still tried
+  // second, every time.
+  //
+  // BE HONEST ABOUT THE SIZE OF THIS. The tempting arithmetic -- ~200 upstream urls
+  // a sweep x 8s / 8 concurrent = ~200s of dead time -- is WRONG, and believing it
+  // is how this fix nearly shipped oversold. fetchQuoteBatch runs SEQUENTIAL batches
+  // of 8, so only the FIRST batch pays the dead rung; its winner is then pinned as
+  // lastGoodProxy and batches 2-25 go straight there. Measured on pristine code, a
+  // 200-url sweep with a stalling lead rung is 11.1s, not 200s.
+  //
+  // What the breaker is actually worth (200 urls, sequential batches of 8):
+  //   lead rung accepts then stalls   11.1s -> 8.1s
+  //   two dead rungs                  19.0s -> 13.0s
+  //   only the last rung answers      35.1s -> 26.0s
+  //   everything healthy               3.0s -> 3.0s   (no regression)
+  // A real, constant saving -- and, more importantly, cover for the case
+  // lastGoodProxy structurally cannot handle: a provider that keeps failing across a
+  // whole session is now DEMOTED, not merely un-promoted. But a sweep is 3-35s under
+  // every failure shape reproducible offline, so ladder latency alone cannot produce
+  // a 45-minute symptom; if that is the report, read Diagnostics -> Proxy health
+  // before assuming it is this.
+  //
+  // So: record every outcome, demote a provider that keeps failing, and make
+  // DISCOVERY cheap by giving an unproven rung a shorter deadline than a proven one.
+  const PROXY_HEALTH = new Map();   // provider -> { fails, openUntil, provenAt, lastFailAt, slowRetry }
+  let BREAKER_TRIP        = 2;         // consecutive failures before the penalty box
+  let BREAKER_COOLDOWN_MS = 90000;     // doubling per further failure...
+  let BREAKER_MAX_MS      = 600000;    // ...capped here
+  let PROBE_MS            = 5000;      // deadline for an unproven or penalised rung
+  // A safety net, not a tuning knob: it exists so one url cannot outlive the sweep
+  // watchdog, NOT to cut a recoverable walk short. Measured at 20000 it cost 2 of 200
+  // symbols in the "only the last rung works" scenario -- a real regression for no
+  // real saving -- so it sits above the worst honest walk (6 rungs x 5s probe).
+  let LADDER_BUDGET_MS    = 32000;     // whole-ladder cap for ONE fetchViaProxies call
+
+  function proxyHealth(provider) {
+    let rec = PROXY_HEALTH.get(provider);
+    if (!rec) { rec = { fails: 0, openUntil: 0, provenAt: 0, lastFailAt: 0, slowRetry: false }; PROXY_HEALTH.set(provider, rec); }
+    return rec;
+  }
+  function noteProxyOk(px, nowMs) {
+    const rec = proxyHealth(px.provider);
+    rec.fails = 0; rec.openUntil = 0; rec.slowRetry = false; rec.provenAt = nowMs;
+    lastGoodProxy = px.name;
+  }
+  // `kind` is 'timeout' | 'status' | 'body' | 'error'. A TIMEOUT is treated more
+  // gently than the others, and that is load-bearing: an unproven rung runs on the
+  // short PROBE_MS deadline, so a merely-slow-but-working proxy would otherwise be
+  // clipped at 5s forever, never earn a full budget, and be demoted for being slow.
+  // The first timeout therefore only sets `slowRetry` -- which buys that rung the
+  // caller's FULL timeoutMs on its next attempt -- and does not count toward the
+  // trip. Cleared only by a success.
+  function noteProxyFail(px, kind, nowMs) {
+    const rec = proxyHealth(px.provider);
+    rec.lastFailAt = nowMs;
+    if (kind === 'timeout' && !rec.slowRetry) { rec.slowRetry = true; return; }
+    rec.fails++;
+    if (rec.fails >= BREAKER_TRIP) {
+      const backoff = BREAKER_COOLDOWN_MS * Math.pow(2, rec.fails - BREAKER_TRIP);
+      rec.openUntil = nowMs + Math.min(backoff, BREAKER_MAX_MS);
+    }
+  }
+  // A rung that has succeeded this session and has a clean record gets the caller's
+  // full budget; everything else -- never tried, mid-failure, or penalised -- gets
+  // the short probe, so discovering a dead edge is cheap. `slowRetry` overrides both
+  // (see noteProxyFail).
+  function proxyDeadline(px, timeoutMs, nowMs) {
+    const rec = proxyHealth(px.provider);
+    if (rec.slowRetry) return timeoutMs;
+    if (rec.provenAt && rec.fails === 0 && rec.openUntil <= nowMs) return timeoutMs;
+    return Math.min(timeoutMs, PROBE_MS);
+  }
+  // Healthy rungs first (last winner floated to the front of them), penalised ones
+  // last. A penalised rung is DEMOTED, never removed: if every provider is in the
+  // box -- a total outage, or the user's own connection down -- the ladder must
+  // still walk all six rather than resolve null without trying.
+  function orderedProxies(nowMs) {
+    const now = typeof nowMs === 'number' ? nowMs : Date.now();
+    const healthy = [], penalised = [];
+    for (const px of CORS_PROXIES) (proxyHealth(px.provider).openUntil > now ? penalised : healthy).push(px);
+    const idx = lastGoodProxy ? healthy.findIndex(p => p.name === lastGoodProxy) : -1;
+    const ordered = idx <= 0 ? healthy : [healthy[idx], ...healthy.slice(0, idx), ...healthy.slice(idx + 1)];
+    return [...ordered, ...penalised];
+  }
+  // The ladder picks ONE rung at a time, re-reading health at each step, instead of
+  // committing to a whole ordering up front. That difference is what makes a burst
+  // converge: a sweep fires 8 symbols at once, and if all 8 chose their order before
+  // any of them had tried anything, all 8 would commit to the same dead rung. Picking
+  // late -- and, in fetchViaProxies, only after the limiter ADMITS the attempt -- lets
+  // the 8th request benefit from what the 1st just learned.
+  function nextProxy(tried, nowMs) {
+    let best = null, bestRank = Infinity;
+    for (const px of CORS_PROXIES) {
+      if (tried.has(px.name)) continue;
+      const rec = proxyHealth(px.provider);
+      const rank = rec.openUntil > nowMs ? 2 : (px.name === lastGoodProxy ? 0 : 1);
+      if (rank < bestRank) { best = px; bestRank = rank; }   // ties keep list order
+    }
+    return best;
+  }
+  // Read-only view for Settings -> Diagnostics. Pure: no clock of its own beyond the
+  // caller's, no mutation, safe to call from a render.
+  function proxyHealthSnapshot(nowMs) {
+    const now = typeof nowMs === 'number' ? nowMs : Date.now();
+    const seen = new Set();
+    const out = [];
+    for (const px of CORS_PROXIES) {
+      if (seen.has(px.provider)) continue;
+      seen.add(px.provider);
+      const rec = PROXY_HEALTH.get(px.provider);
+      out.push({
+        provider: px.provider,
+        state: !rec ? 'untried' : rec.openUntil > now ? 'penalised' : rec.fails > 0 ? 'failing' : rec.provenAt ? 'ok' : 'untried',
+        fails: rec ? rec.fails : 0,
+        okAgeMs: rec && rec.provenAt ? now - rec.provenAt : null,
+        openForMs: rec && rec.openUntil > now ? rec.openUntil - now : 0,
+        isLastGood: px.name === lastGoodProxy
+      });
+    }
+    return out;
   }
   // Detect proxy responses that returned 200 but contain an upstream error or
   // rate-limit message. Treating these as success would silently propagate
@@ -100,8 +227,11 @@
   // while it is queued for a slot — a request shouldn't time out waiting its turn,
   // so wall-clock-to-failure can still exceed timeoutMs by the queue wait.
   // Returns { ok, status, value }; `value` is whatever `read` produced.
-  function fetchWithDeadline(url, init, timeoutMs, read) {
-    return _fetchLimit(async () => {
+  // The deadline core, WITHOUT the limiter. Split out so the proxy ladder can pick
+  // its rung after being admitted (see fetchViaProxies) rather than before queuing;
+  // every other caller goes through fetchWithDeadline below and is unaffected.
+  function withDeadline(url, init, timeoutMs, read) {
+    return (async () => {
       const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
       try {
@@ -109,21 +239,49 @@
         if (!res.ok) return { ok: false, status: res.status, value: null };
         return { ok: true, status: res.status, value: await read(res) };
       } finally { if (t) clearTimeout(t); }
-    });
+    })();
+  }
+  function fetchWithDeadline(url, init, timeoutMs, read) {
+    return _fetchLimit(() => withDeadline(url, init, timeoutMs, read));
   }
   function fetchViaProxies(url, { timeoutMs = 8000 } = {}) {
     const existing = _inflight.get(url);
     if (existing) return existing;
     const run = (async () => {
-      for (const px of orderedProxies()) {
-        try {
-          const out = await fetchWithDeadline(px.build(url), { cache: 'no-store' }, timeoutMs, r => r.text());
-          if (!out.ok) continue;
-          const body = px.unwrap(out.value);
-          if (looksLikeProxyError(body)) continue;
-          lastGoodProxy = px.name;
-          return body;
-        } catch (e) {}
+      const tried = new Set();
+      // Time actually spent ATTEMPTING, never time spent queued for a limiter slot.
+      // Measuring wall clock from the call instead would make the budget a function
+      // of how busy the sweep is: under a 200-url burst every ladder would blow its
+      // budget while sitting in the queue and give up without a single fetch. (That
+      // is not hypothetical -- it measured 0/200 resolved before this was fixed.)
+      let spent = 0;
+      while (spent < LADDER_BUDGET_MS && tried.size < CORS_PROXIES.length) {
+        const step = await _fetchLimit(async () => {
+          // Chosen HERE, after admission, so this attempt sees every failure the
+          // rest of the burst has recorded while it waited its turn.
+          const now = Date.now();
+          const px = nextProxy(tried, now);
+          if (!px) return { done: true, spent: 0 };
+          tried.add(px.name);
+          const t0 = Date.now();
+          try {
+            const out = await withDeadline(px.build(url), { cache: 'no-store' }, proxyDeadline(px, timeoutMs, now), r => r.text());
+            if (!out.ok) { noteProxyFail(px, 'status', Date.now()); return { spent: Date.now() - t0 }; }
+            const body = px.unwrap(out.value);
+            if (looksLikeProxyError(body)) { noteProxyFail(px, 'body', Date.now()); return { spent: Date.now() - t0 }; }
+            noteProxyOk(px, Date.now());
+            return { body, spent: Date.now() - t0 };
+          } catch (e) {
+            // An AbortError is our own deadline firing (headers OR body -- one
+            // controller covers both); anything else is a transport fault. The
+            // distinction matters: only the former earns the slow-proxy grace.
+            noteProxyFail(px, (e && e.name === 'AbortError') ? 'timeout' : 'error', Date.now());
+            return { spent: Date.now() - t0 };
+          }
+        });
+        if (step.done) break;
+        if (step.body != null) return step.body;
+        spent += step.spent;
       }
       return null;
     })();
@@ -1253,6 +1411,23 @@
     cacheName, cachedName,
     fetchFxRates, fetchHistoricalFx,
     _setLastGoodProxy,
+    proxyHealthSnapshot,
+    // Test seams: the breaker is module-private and its real timings are in
+    // minutes, so a suite needs to start cold and shrink the constants to
+    // milliseconds. Never called from app code.
+    _resetProxyHealth() { PROXY_HEALTH.clear(); lastGoodProxy = null; },
+    _setProxyBreakerConfig(cfg) {
+      if (!cfg || typeof cfg !== 'object') {
+        BREAKER_TRIP = 2; BREAKER_COOLDOWN_MS = 90000; BREAKER_MAX_MS = 600000;
+        PROBE_MS = 5000; LADDER_BUDGET_MS = 32000;
+        return;
+      }
+      if (cfg.trip > 0) BREAKER_TRIP = cfg.trip;
+      if (cfg.cooldownMs > 0) BREAKER_COOLDOWN_MS = cfg.cooldownMs;
+      if (cfg.maxMs > 0) BREAKER_MAX_MS = cfg.maxMs;
+      if (cfg.probeMs > 0) PROBE_MS = cfg.probeMs;
+      if (cfg.budgetMs > 0) LADDER_BUDGET_MS = cfg.budgetMs;
+    },
     // Test hook: the FX cache + in-flight maps are module-private, so the
     // characterization suite needs a way to start each scenario cold.
     _resetFxCache() {
