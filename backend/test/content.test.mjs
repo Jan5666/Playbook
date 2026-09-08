@@ -35,31 +35,6 @@ test('BUILTIN_MACRO_2026 entries are well-formed', () => {
   }
 });
 
-test('PBContent.RULES is a well-formed section array', () => {
-  assert.ok(Array.isArray(PBContent.RULES), 'RULES is an array');
-  assert.ok(PBContent.RULES.length > 0, 'RULES non-empty');
-  const ids = PBContent.RULES.map(s => s.id);
-  assert.ok(ids.every(id => typeof id === 'string' && id.length), 'every section has a string id');
-  assert.strictEqual(new Set(ids).size, ids.length, 'section ids are unique');
-  for (const s of PBContent.RULES) {
-    assert.ok(typeof s.heading === 'string' && s.heading.length, `section ${s.id} has a heading`);
-    assert.ok(Array.isArray(s.bullets) && s.bullets.length, `section ${s.id} has bullets`);
-    for (const b of s.bullets) {
-      assert.ok(typeof b.text === 'string' && b.text.length, `bullet in ${s.id} has text`);
-      if ('strong' in b) assert.ok(typeof b.strong === 'string', `strong in ${s.id} is a string`);
-    }
-  }
-});
-
-test('PBContent.RULES has the three expected sections with the right bullet counts', () => {
-  const byId = id => PBContent.RULES.find(s => s.id === id);
-  assert.deepStrictEqual(PBContent.RULES.map(s => s.id), ['trim', 'thesisBreak', 'saTax'], 'ids in order');
-  assert.strictEqual(byId('trim').bullets.length, 5, 'trim has 5 bullets');
-  assert.strictEqual(byId('thesisBreak').bullets.length, 5, 'thesisBreak has 5 bullets');
-  assert.strictEqual(byId('saTax').bullets.length, 4, 'saTax has 4 bullets');
-  assert.ok(byId('trim').bullets.every(b => typeof b.strong === 'string'), 'every trim bullet has a bold lead-in');
-});
-
 test('PBContent.SECTOR_ETF maps sector names to {etf, name}', () => {
   assert.ok(PBContent.SECTOR_ETF && typeof PBContent.SECTOR_ETF === 'object', 'SECTOR_ETF is an object');
   const entries = Object.entries(PBContent.SECTOR_ETF);
@@ -144,8 +119,6 @@ test('app.js no longer defines the content blocks inline', () => {
   assert.ok(!appSrc.includes('const RIBBON_CATALOG_MAP = Object.fromEntries'), 'RIBBON_CATALOG_MAP not inline');
   assert.ok(!appSrc.includes('const INDICATOR_INFO = {'), 'INDICATOR_INFO not inline');
   assert.ok(!appSrc.includes('const BUILTIN_MACRO_2026 = ['), 'BUILTIN_MACRO_2026 not inline');
-  assert.ok(!appSrc.includes('Thesis-break triggers'), 'Rules headings not inline');
-  assert.ok(!appSrc.includes('bank profits') && !appSrc.includes('R80k of gains untaxed'), 'Rules prose not inline');
   assert.ok(!appSrc.includes('const SECTOR_ETF = {'), 'SECTOR_ETF not inline');
   assert.ok(!appSrc.includes('const SECTOR_TREND_WINDOWS = ['), 'SECTOR_TREND_WINDOWS not inline');
   assert.ok(!appSrc.includes('const SECTOR_FWD_PE = {'), 'SECTOR_FWD_PE not inline');
@@ -159,7 +132,6 @@ test('app.js delegates the content blocks to PBContent', () => {
   assert.ok(appSrc.includes('const RIBBON_CATALOG_MAP = PBContent.RIBBON_CATALOG_MAP'), 'binds RIBBON_CATALOG_MAP');
   assert.ok(appSrc.includes('const INDICATOR_INFO = PBContent.INDICATOR_INFO'), 'binds INDICATOR_INFO');
   assert.ok(appSrc.includes('const BUILTIN_MACRO_2026 = PBContent.BUILTIN_MACRO_2026'), 'binds BUILTIN_MACRO_2026');
-  assert.ok(appSrc.includes('const RULES = PBContent.RULES'), 'binds RULES');
   // SECTOR_ETF / SECTOR_TREND_WINDOWS's only consumer (fetchSectorTrend -> SectorDetailModal)
   // moved to pb-modals.js in inc-35, so their PBContent delegation now lives in the bucket —
   // still delegated, not inlined.
@@ -171,4 +143,56 @@ test('app.js delegates the content blocks to PBContent', () => {
   assert.ok(appSrc.includes('const MARKETS = PBContent.MARKETS'), 'binds MARKETS');
   assert.ok(appSrc.includes('const DISPLAY_CURRENCIES = PBContent.DISPLAY_CURRENCIES'), 'binds DISPLAY_CURRENCIES');
   assert.ok(appSrc.includes('const CURRENCY_SYMBOLS = PBContent.CURRENCY_SYMBOLS'), 'binds CURRENCY_SYMBOLS');
+});
+
+// ── The four tabs removed 2026-09-08 must stay removed ────────────────────────
+// New picks / Hedges / Rules / Thesis went in one change: the ALL_TABS entries,
+// the render-map entries, the four view components in pb-views.js, and the
+// content that only they read (PBContent.RULES, data.js RISKS + PILLARS). Each
+// half is checked separately because removing a tab and leaving its view behind
+// (or the reverse) is silent — the app renders identically either way and only
+// the shipped bundle gets bigger. pb-views.js carries NUL bytes, so it is read as
+// a buffer and decoded rather than grepped (see CLAUDE.md).
+const viewsSrc = readFileSync(new URL('../../pb-views.js', import.meta.url)).toString('utf8');
+const dataSrc = readFileSync(new URL('../../data.js', import.meta.url), 'utf8');
+const contentSrc = readFileSync(new URL('../../pb-content.js', import.meta.url), 'utf8');
+
+test('the four removed tabs are absent from the tab registry and the render map', () => {
+  const tabs = appSrc.slice(appSrc.indexOf('const ALL_TABS = ['), appSrc.indexOf('const ALL_TAB_KEYS'));
+  for (const key of ['picks', 'hedges', 'rules', 'overview']) {
+    assert.ok(!tabs.includes(`'${key}'`), `${key} not in ALL_TABS`);
+  }
+  for (const label of ['New picks', 'Hedges', 'Rules', 'Thesis']) {
+    assert.ok(!tabs.includes(`'${label}'`), `${label} label not in ALL_TABS`);
+  }
+  for (const view of ['PicksView', 'HedgesView', 'RulesView', 'OverviewView']) {
+    assert.ok(!appSrc.includes(`const ${view} = PBViews.${view}`), `app.js does not bind ${view}`);
+    assert.ok(!appSrc.includes(`React.createElement(${view}`), `app.js does not render ${view}`);
+  }
+});
+
+test('the four removed views are gone from pb-views.js and its registry', () => {
+  for (const view of ['PicksView', 'HedgesView', 'RulesView', 'OverviewView']) {
+    assert.ok(!viewsSrc.includes(`function ${view}(`), `${view} is not defined`);
+    assert.ok(!viewsSrc.includes(`window.PBViews.${view} =`), `${view} is not registered`);
+  }
+  assert.ok(!viewsSrc.includes('function ruleSection('), 'ruleSection (RulesView-only) is gone too');
+});
+
+test('content only those tabs rendered is gone from the bundle', () => {
+  assert.ok(!('RULES' in PBContent), 'PBContent no longer exports RULES');
+  assert.ok(!dataSrc.includes('RISKS: ['), 'data.js no longer defines RISKS');
+  assert.ok(!dataSrc.includes('PILLARS: ['), 'data.js no longer defines PILLARS');
+  // The prose itself, not just the binding — the whole point of the removal.
+  for (const src of [appSrc, viewsSrc, dataSrc, contentSrc]) {
+    assert.ok(!src.includes('Thesis-break triggers'), 'Rules headings gone');
+    assert.ok(!src.includes('R80k of gains untaxed'), 'SA tax prose gone');
+    assert.ok(!src.includes('Hyperscaler capex cut by top-3 player'), 'RISKS prose gone');
+    assert.ok(!src.includes('Harvest Winners'), 'PILLARS prose gone');
+  }
+});
+
+test('the lazy price-list registry is empty now that its three tabs are gone', () => {
+  assert.ok(/const LAZY_LISTS = \{\};/.test(appSrc), 'LAZY_LISTS is an empty object literal');
+  assert.ok(!appSrc.includes('THESIS_SNAPSHOT'), 'THESIS_SNAPSHOT (OverviewView-only) is gone from app.js and the bridge');
 });

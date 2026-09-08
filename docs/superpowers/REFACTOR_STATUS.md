@@ -8,6 +8,11 @@
 > - **Phase 4** reached its floor: the `window.PBApp` bridge is **38 members**, audited
 >   member-by-member in inc-36. Every one is genuinely shared, root-`App`-consumed, or an
 >   impure reader coupled to `DATA`. There is no verbatim-move candidate left.
+>   **Read it as 37 today**: the New picks / Hedges / Rules / Thesis tabs were removed on
+>   2026-09-08 (product change, not refactor work) and `THESIS_SNAPSHOT` went with the
+>   Thesis view, its only reader. `pb-views.js` correspondingly holds **7** tab views, not
+>   11. Nothing else about the floor moved — the counts below are the inc-36 audit as
+>   taken, and are left as written.
 > - **Phase 5** (IndexedDB) will **not** be built. Both justifications failed measurement:
 >   the app uses **261 KB = 5.1%** of a 5 MB budget (812 KB / 15.9% on a 5-year model, churny
 >   blobs bounded by construction), and Safari's ITP evicts IndexedDB too, so the swap does not

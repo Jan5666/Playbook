@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v112`), or installed PWAs serve stale assets offline.
+`playbook-shell-v113`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -443,9 +443,12 @@ Adding a **new runtime file** additionally requires ALL of:
 Refactor Phases 0-3 complete. **Phase 4 view/modal extraction is COMPLETE — the `window.PBApp` bridge has
 reached its floor (38 members)** as of **inc-35**, and inc-36 **verified that floor member-by-member**
 (the previous three increments each corrected an unverified "floor reached" claim; this one enumerated all
-38 and counted real callers — it holds). The living roadmap a fresh chat should read is
-**[docs/superpowers/REFACTOR_STATUS.md](docs/superpowers/REFACTOR_STATUS.md)**. `pb-views.js` holds all 11
-tab views + the Heatmap cluster + the growth-chart cluster; `pb-modals.js` holds all 11 modals (incl. the
+38 and counted real callers — it holds). **It is 37 since 2026-09-08**: removing the Thesis tab took
+`THESIS_SNAPSHOT` (OverviewView's only reader) with it. That is a tab removal, not a floor correction —
+the other 37 are unchanged and still at their audited floor. The living roadmap a fresh chat should read is
+**[docs/superpowers/REFACTOR_STATUS.md](docs/superpowers/REFACTOR_STATUS.md)**. `pb-views.js` holds the
+**7** tab views (11 until the New picks / Hedges / Rules / Thesis tabs were removed 2026-09-08) + the
+Heatmap cluster + the growth-chart cluster; `pb-modals.js` holds all 11 modals (incl. the
 three rule-#3 money modals) + the detail/settings subtrees + `SectorWeightRows` + `useSwipeDownToClose` +
 `fetchSectorTrend`. Every bridge member is genuinely shared across both buckets, consumed by the root `App`,
 or an impure/anchored reader coupled to `DATA`/root infra.
@@ -547,4 +550,6 @@ cancels). `CACHE_NAME` -> **v101**.
 Substitute evidence: all 41 node suites green, `fundamentals-parse.test.mjs` grown 35 -> 103
 assertions (including a `vm` render of the real `FundamentalsBlock`), plus an ad-hoc evaluation of all
 10 shipped scripts in index.html order under browser stubs — 11 modals, 17 views, **38** bridge
-members, i.e. the `window.PBApp` floor is unchanged.
+members, i.e. the `window.PBApp` floor is unchanged. (Those counts are as of 2026-08-04; four views and
+one bridge member went with the tab removal of 2026-09-08. The "gate could not run" claim is also stale
+— see the Commands block: it runs here with a vendored-React patch, and it ran for that removal.)
