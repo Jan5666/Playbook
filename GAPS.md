@@ -497,9 +497,18 @@ resolution note at the top of this entry), so **this entry is fully closed**.
 - **Perplexity API key in plaintext localStorage** (`pb.perplexityKey.v1`) —
   accepted trade-off for a no-backend app; the key is user-supplied and scoped to
   their own account. Revisit under roadmap Phase 2 (cloud accounts).
-- **Personal content ships in the public bundle** — theses, price targets, the
-  page title "Jan's 30% Target" (`data.js`, `index.html:5`). Jan knows; Preview
-  mode exists for demoing, not for hiding the deploy.
+- **Personal content ships in the public bundle** — theses, price targets
+  (`data.js`). Jan knows; Preview mode exists for demoing, not for hiding the
+  deploy. **Reduced 2026-09-08**: removing the New picks / Hedges / Rules / Thesis
+  tabs took `RISKS` + `PILLARS` (data.js) and `PBContent.RULES` out of the bundle
+  with their views. What still ships is `HOLDINGS`/`NEW_PICKS`/`HEDGES` — the
+  per-ticker theses, actions and price targets — because the ticker search, the
+  add-holding "popular" list and the stock card's thesis blurb read them. The **page title** used to be part of this — `index.html:5` read
+  "Playbook · Jan’s 30% Target", and that string is what iOS/Android put on the
+  card in the **share sheet**, so it went out with every link Jan sent anyone.
+  It is now plain `Playbook` (2026-09-08), matching `apple-mobile-web-app-title`
+  and the manifest `name`. Anything added to `<title>` is public by the same
+  route.
 - **`marketOpen` fails open** (pb-core.js:50): if Intl/timezone lookup throws, the
   market is treated as open (poll normally) — chosen so a platform quirk degrades
   to extra polling, not missed alerts.

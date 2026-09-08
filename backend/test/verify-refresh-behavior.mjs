@@ -28,6 +28,13 @@ const SEED = {
     { id: 'p1', ticker: 'AAPL', market: 'US', shares: 12, costBasis: 150, name: 'Apple Inc.', purchaseDate: '2024-02-01', buyFx: 1 },
     { id: 'p2', ticker: 'GOOGL', market: 'US', shares: 5, costBasis: 120.5, name: 'Alphabet Inc. Class A', purchaseDate: '2024-03-01', buyFx: 1 },
   ],
+  // Deliberately the SAME symbol as p1: the watchlist is a fast tier, so a new
+  // symbol here would add a request and shift every count/order assertion below.
+  // AAPL dedupes into the position's request and just gives the Watchlist tab a
+  // card to render — which is where the session badge now lives (see below).
+  'pb.watchlist.v2': [
+    { id: 'w1', ticker: 'AAPL', market: 'US', name: 'Apple Inc.', listIds: ['default'], addedAt: '2024-02-01T00:00:00.000Z' },
+  ],
 };
 const seedJson = JSON.stringify(SEED).replace(/</g, '\\u003c');
 
@@ -144,7 +151,11 @@ try {
 
   // Phase 2 inc 3: the routine cold-start poll must NOT include the static
   // recommendation lists (DATA.NEW_PICKS / DATA.HEDGES) or the dead VOO benchmark
-  // — they are now lazy/on-view. This is the regression that proves fan-out dropped.
+  // — they were lazy/on-view. This is the regression that proves fan-out dropped.
+  // Since 2026-09-08 no tab renders those two lists at all (Picks/Hedges were
+  // removed) — they survive in data.js only for the ticker search and the stock
+  // card's thesis blurb, neither of which polls. So this is now an even stronger
+  // claim than it was: those symbols must never enter a sweep, warm or cold.
   const lazySyms = JSON.parse(await evals(ws, `return JSON.stringify([...DATA.NEW_PICKS, ...DATA.HEDGES].map(x => x.ticker).concat('VOO'));`));
   const polledLazy = [...new Set(autoLog.filter(e => lazySyms.includes(e.sym)).map(e => e.sym))];
   ok('cold start excludes static lists (picks/hedges/VOO)', polledLazy.length === 0, polledLazy.join(',') || 'none');
@@ -182,18 +193,29 @@ try {
   ok('manual refresh fetched the positions', manualLog.some(e => e.sym === 'AAPL') && manualLog.some(e => e.sym === 'GOOGL'));
   ok('manual refresh cache-busts every request (&_=)', manualLog.length > 0 && manualLog.every(e => e.cb === true));
 
-  // ---- LAZY TAB ACTIVATION: opening Picks warms its list AND floats it to front ----
-  await evals(ws, `window.__log = []; return true;`);
-  const wentPicks = await evals(ws, `const b=document.querySelector('button[data-tab="picks"]'); if(!b) return false; b.click(); return true;`);
-  ok('picks tab nav button exists & clickable', wentPicks === true);
-  await sleep(2500);
-  const picksLog = JSON.parse(await evals(ws, `return JSON.stringify(window.__log);`));
-  const picksSyms = JSON.parse(await evals(ws, `return JSON.stringify(DATA.NEW_PICKS.map(p => p.ticker));`));
-  const firstPickIdx = picksLog.findIndex(e => picksSyms.includes(e.sym));
-  ok('opening Picks fetches its list (lazy warm)', firstPickIdx >= 0);
-  const firstPosIdx2 = Math.min(...['AAPL', 'GOOGL'].map(s => { const i = picksLog.findIndex(e => e.sym === s); return i < 0 ? Infinity : i; }));
-  ok('active Picks list floats to the front of the sweep', firstPickIdx >= 0 && firstPickIdx < firstPosIdx2, `pick=${firstPickIdx} pos=${firstPosIdx2}`);
-
+  // ---- REMOVED TABS: New picks / Hedges / Rules / Thesis are gone ----
+  // This section used to open the Picks tab and assert its lazy list warmed and
+  // floated to the front of the sweep. All four tabs were removed 2026-09-08 and
+  // LAZY_LISTS went empty with them (its only three entries were picks/hedges/
+  // overview), so there is no lazy warming left to observe in the running app —
+  // PBCore.buildFetchPlan's lazy behaviour is still covered by fetch-plan.test.mjs,
+  // which builds its own lists. What is worth asserting in a MOUNTED app is that
+  // the tabs really are unreachable: reconcileTabOrder drops unknown keys, so a
+  // stored pb.tabOrder.v2 naming them must not resurrect a nav button.
+  const navTabs = JSON.parse(await evals(ws,
+    `return JSON.stringify([...document.querySelectorAll('button[data-tab]')].map(b => b.dataset.tab));`));
+  ok('nav renders tabs at all', Array.isArray(navTabs) && navTabs.length > 0, JSON.stringify(navTabs));
+  for (const gone of ['picks', 'hedges', 'rules', 'overview']) {
+    ok(`removed tab "${gone}" has no nav button`, !navTabs.includes(gone), JSON.stringify(navTabs));
+  }
+  // And the app still mounts every tab that remains — a stale key in the render
+  // map would throw on click, not at load.
+  for (const key of navTabs) {
+    const clickedTab = await evals(ws, `const b=document.querySelector('button[data-tab="${key}"]'); if(!b) return false; b.click(); return true;`);
+    await sleep(250);
+    const alive = await evals(ws, `return !!document.querySelector('.app') && !document.body.innerText.includes('Something went wrong');`);
+    ok(`tab "${key}" opens without crashing the app`, clickedTab === true && alive === true);
+  }
 
   // ---- REFRESH-CONFIDENCE STATUS (now folded into the refresh button) ----
   // The relative-time/state label lives in the always-rendered .refresh-peek-text
@@ -209,9 +231,12 @@ try {
 
 
   // ---- PER-SYMBOL SESSION BADGE: a closed/quiet market reads as state, not blank ----
-  await evals(ws, `const d=document.querySelector('button[data-tab="picks"]'); if(d) d.click(); return true;`);
+  // The badge used to be read off the Picks tab; that tab is gone, so read it off
+  // the Watchlist card, which is the other place SessionBadge renders (a holding
+  // row deliberately has none — pinned right below).
+  await evals(ws, `const d=document.querySelector('button[data-tab="watchlist"]'); if(d) d.click(); return true;`);
   await sleep(800);
-  const badge = await evals(ws, `const b=document.querySelector('.session-badge'); return b ? b.innerText : null;`);
+  const badge = await evals(ws, `const b=document.querySelector('.watchlist-view .session-badge, .session-badge'); return b ? b.innerText : null;`);
   ok('a session badge renders (Open/Closed/Pre-market/After-hours)', !!badge && /Open|Closed|Pre-market|After-hours/i.test(badge), JSON.stringify(badge));
 
 

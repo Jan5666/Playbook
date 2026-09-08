@@ -87,25 +87,32 @@ pb-content.js  263 ln  Pure static content: RIBBON_CATALOG, INDICATOR_INFO,
 pb-import.js   874 ln  Pure import engine: Yahoo-suffix→market mapping, fuzzy
                        name/ticker matching, CSV/table→holdings mapper, and the
                        EasyEquities screenshot OCR parsers.
-pb-views.js  4,388 ln  Phase 4 view bucket (browser-only classic script): all 11
+pb-views.js  4,829 ln  Phase 4 view bucket (browser-only classic script): the 7
                        tab views + the Heatmap cluster (HeatmapTreemap/ZoomPanHeatmap
                        + treemap math), the growth-chart cluster, HoldingRow/
                        HoldingsListHead, PortfolioPieChart, useContainerWidth. Reads
                        shared app.js internals at render time via window.PBApp.
+                       (11 tab views until 2026-09-08, when the New picks / Hedges /
+                       Rules / Thesis tabs and their views were removed.)
 pb-modals.js 3,907 ln  Phase 4 modal bucket: all 11 modals (incl. the three rule-#3
                        money modals), the detail + settings subtrees,
                        SectorWeightRows, useSwipeDownToClose, fetchSectorTrend.
                        Registers on window.PBModals; same PBApp bridge.
-data.js      1,114 ln  window.PB_DATA — Jan's hand-written reference data:
-                       HOLDINGS (theses), NEW_PICKS, HEDGES, RISKS, PILLARS +
-                       sector classifiers (findSector/normalizeSector/findInfo).
+data.js      1,105 ln  window.PB_DATA — Jan's hand-written reference data:
+                       HOLDINGS (theses), NEW_PICKS, HEDGES + sector classifiers
+                       (findSector/normalizeSector/findInfo). RISKS + PILLARS went
+                       with the Rules/Thesis tabs (2026-09-08); NEW_PICKS + HEDGES
+                       stayed — no tab renders them any more, but the ticker search,
+                       the add-holding "popular" list and the stock card's thesis
+                       blurb all still read them.
 demo-data.js    54 ln  window.PB_DEMO — deterministic demo portfolio for Preview mode.
 app.js       5,030 ln  Everything else, after Phase 4 moved the views + modals out
                        (was ~12.3k): the root App, the shared components still used
                        by both buckets, the hooks (usePortfolio, usePriceFeed,
                        useAlertEngine, useCloudBackup, usePushBackend…), the LS
                        persistence adapter, backup crypto, Hot Topics, and the
-                       window.PBApp bridge (38 members, at its verified floor).
+                       window.PBApp bridge (37 members — 38 at its verified floor
+                       until the Thesis tab took THESIS_SNAPSHOT with it, 2026-09-08).
                        Contains NO network code since inc-36 — the FX providers
                        moved to pb-data.js.
 ```
@@ -268,11 +275,12 @@ without knowing the plan:
   portfolio slices; removed toast from the data layer; stabilized handler
   identities so `React.memo` bites on holdings rows.
 - **Phase 4** (done): content extraction into `pb-content.js` / `pb-import.js`
-  (increments 1–6), then the view/modal split into `pb-views.js` (all 11 tab views +
+  (increments 1–6), then the view/modal split into `pb-views.js` (all tab views +
   the Heatmap and growth-chart clusters) and `pb-modals.js` (all 11 modals + the
   detail/settings subtrees), reached across increments 7–35. Components read shared
   `app.js` internals through the render-time `window.PBApp` bridge, which is at its
-  **verified floor of 38 members** (audited member-by-member in inc-36 — every one is
+  **verified floor of 38 members** (37 since the 2026-09-08 tab removal dropped
+  `THESIS_SNAPSHOT`; audited member-by-member in inc-36 — every one is
   genuinely shared across both buckets, consumed by the root `App`, or an impure reader
   coupled to `DATA`). The Vite-vs-no-build decision never had to be forced: the
   dual-mode classic-script pattern carried the whole split with **no build step**.

@@ -318,7 +318,6 @@ const RIBBON_CATALOG = PBContent.RIBBON_CATALOG;
 const RIBBON_CATALOG_MAP = PBContent.RIBBON_CATALOG_MAP;
 const DEFAULT_RIBBON_ITEMS = ['US:^SPX', 'US:^VIX'];
 const INDICATOR_INFO = PBContent.INDICATOR_INFO;
-const RULES = PBContent.RULES;
 // The CORS proxy ladder now lives in pb-data.js (client-only network layer).
 // Bound here so app.js call sites are unchanged. PBData is loaded before app.js.
 const fetchViaProxies = PBData.fetchViaProxies;
@@ -2917,15 +2916,17 @@ class ModalBoundary extends React.Component {
   }
   render() { return this.state.error ? null : this.props.children; }
 }
-// Canonical tab registry. Order here is the default layout (TFSA sits between
-// Heatmap and New picks); the user can reorder/hide via Settings → Tabs, which
-// persists as a key list. reconcileTabOrder() keeps a stored order valid as the
-// app gains/loses tabs: known keys keep their saved order, brand-new tabs are
-// appended (so an update never hides a new feature), unknown keys are dropped.
+// Canonical tab registry. Order here is the default layout; the user can
+// reorder/hide via Settings → Tabs, which persists as a key list.
+// reconcileTabOrder() keeps a stored order valid as the app gains/loses tabs:
+// known keys keep their saved order, brand-new tabs are appended (so an update
+// never hides a new feature), unknown keys are dropped — which is what retires a
+// removed tab from an existing install with no migration. New picks / Hedges /
+// Rules / Thesis were removed 2026-09-08 (their views went with them); a stored
+// pb.tabOrder.v2 still listing those keys drops them on the next read.
 const ALL_TABS = [
   ['dashboard', 'Dashboard'], ['current', 'Holdings'], ['watchlist', 'Watchlist'],
-  ['hot', 'Hot Topics'], ['heatmap', 'Heatmap'], ['rotation', 'Rotation'], ['tfsa', 'TFSA'], ['picks', 'New picks'],
-  ['hedges', 'Hedges'], ['rules', 'Rules'], ['overview', 'Thesis']
+  ['hot', 'Hot Topics'], ['heatmap', 'Heatmap'], ['rotation', 'Rotation'], ['tfsa', 'TFSA']
 ];
 const ALL_TAB_KEYS = ALL_TABS.map(t => t[0]);
 const TAB_LABELS = Object.fromEntries(ALL_TABS);
@@ -2977,17 +2978,17 @@ const PORTFOLIO_SCHEMA = [
 PBStore.configureCollections({ schema: PORTFOLIO_SCHEMA, storage: LS });
 // Dashboard always stays available so the nav can never be emptied entirely.
 const TAB_ALWAYS_VISIBLE = 'dashboard';
-// Static recommendation lists are fetched lazily — only once their tab has been
-// visited (Phase 2 inc 3) — instead of on every 45s poll. THESIS_SNAPSHOT is the
-// handful of names the Thesis (overview) tab shows live; shared with OverviewView
-// so the snapshot and the poll list can't drift. DATA is a data.js global,
-// available at module-eval time (data.js loads before app.js).
-const THESIS_SNAPSHOT = ['NVDA', 'GOOGL', 'C', 'ASML'];
-const LAZY_LISTS = {
-  picks:    DATA.NEW_PICKS.map(p => 'US:' + p.ticker),
-  hedges:   DATA.HEDGES.map(h => 'US:' + h.ticker),
-  overview: THESIS_SNAPSHOT.map(t => 'US:' + t),
-};
+// Per-tab price lists fetched lazily — only once their tab has been visited
+// (Phase 2 inc 3) — instead of on every 45s poll. EMPTY since 2026-09-08: all
+// three entries (picks / hedges / overview) belonged to tabs that were removed,
+// and every symbol they warmed was a static recommendation list, never a holding.
+// The machinery below it is deliberately kept rather than unpicked from the price
+// feed for an empty map: buildFetchPlan already defaults lazyLists to {} and the
+// warm effect returns early, so an empty registry costs one property lookup per
+// tab change, and the next tab that needs a lazy list just adds a key here.
+// PBCore.buildFetchPlan's lazy behaviour stays covered by fetch-plan.test.mjs,
+// which builds its own lists and does not read this one.
+const LAZY_LISTS = {};
 function reconcileTabOrder(stored) {
   const arr = Array.isArray(stored) ? stored : [];
   const known = arr.filter((k, i) => ALL_TAB_KEYS.includes(k) && arr.indexOf(k) === i);
@@ -3089,8 +3090,9 @@ function App() {
     [orderedKeys, hiddenTabs]
   );
   const [view, setView] = useState('dashboard');
-  // Lazy price lists (picks/hedges/thesis) the user has visited this session.
-  // Once a tab is opened its list stays in the poll set until reload (kept warm).
+  // Lazy price lists the user has visited this session. Once a tab is opened its
+  // list stays in the poll set until reload (kept warm). LAZY_LISTS is currently
+  // empty — see its definition — so nothing warms today.
   const [warmedLists, setWarmedLists] = useState(() => new Set());
   const visibleKeysStr = TAB_LIST.map(t => t[0]).join(',');
   // If the active tab gets hidden, fall back to the first visible tab.
@@ -3636,12 +3638,6 @@ function App() {
     rotation: React.createElement(MarketRotationView, {
       onOpenDetail: openDetail
     }),
-    picks: React.createElement(PicksView, {
-      onOpenDetail: openDetail
-    }),
-    hedges: React.createElement(HedgesView, {
-      onOpenDetail: openDetail
-    }),
     tfsa: React.createElement(TFSAView, {
       positions: positions.filter(p => p.market === 'TFSA'),
       onOpenDetail: openDetail,
@@ -3667,9 +3663,7 @@ function App() {
       perplexityKey: perplexityKey,
       onOpenAlerts: () => setShowAlerts(true),
       toast: toast
-    }),
-    rules: React.createElement(RulesView, null),
-    overview: React.createElement(OverviewView, null)
+    })
   };
   const recentTriggered24h = triggered.filter(t => Date.now() - new Date(t.triggeredAt).getTime() < 24 * 3600 * 1000).length;
   return React.createElement("div", {
@@ -5153,21 +5147,13 @@ const WatchlistView = PBViews.WatchlistView;
 // SECTOR_TREND_CACHE moved to pb-modals.js (Phase 4 inc 35) — pb-modals-only
 // (SectorDetailModal); useContainerWidth moved to pb-views.js (Phase 4 inc 33).
 const HeatmapView = PBViews.HeatmapView;
-// PicksView is defined in pb-views.js (Phase 4 inc 8); bind it here.
-const PicksView = PBViews.PicksView;
 // MarketRotationView (Rotation tab) is defined in pb-views.js; bind it here.
 const MarketRotationView = PBViews.MarketRotationView;
-// HedgesView is defined in pb-views.js (Phase 4 inc 9); bind it here.
-const HedgesView = PBViews.HedgesView;
 // fmtShares + the TFSA cluster (Collapsible / TFSAContributions / TFSABalancer)
 // and TFSAView moved to pb-views.js (Phase 4 inc 27); bind TFSAView here.
 const TFSAView = PBViews.TFSAView;
 // HotTopicsView is defined in pb-views.js (Phase 4 inc 7 spike); bind it here.
 const HotTopicsView = PBViews.HotTopicsView;
-// RulesView + OverviewView are defined in pb-views.js (Phase 4 inc 10); bind them here.
-// ruleSection (RulesView-only helper) moved with the view.
-const RulesView = PBViews.RulesView;
-const OverviewView = PBViews.OverviewView;
 // Detail-card subtree (PriceChart, EarningsBadge, FundamentalsBlock, WatchlistControl,
 // HoldingNotesControl, IndicatorValueBlock, IndicatorAbout + private helpers) moved to pb-modals.js (Phase 4 inc-16).
 // DetailModal moved to pb-modals.js (Phase 4 inc-15). Reads app.js internals via
@@ -5336,7 +5322,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 // App-runtime bridge: shared primitives that extracted view/modal scripts read at render.
-window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, THESIS_SNAPSHOT, useBodyScrollLock, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
+window.PBApp = { Icon, timeAgo, hotToDate, hotDayDiff, prettyName, PriceBlock, fmt, useBodyScrollLock, sanitizeDecimalInput, uid, parseCashFlowsFromText, parseCashFlowFile, fmtCcy, fmtCcySigned, fmtIndicator, resolveTickerName, indicatorFor, watchListIds, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, resolvePositionSector, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE, TAB_LABELS, usePersistedState, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti, MarketPicker, fmtNum, SessionBadge, useHotStocks, buildSuggestions };
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(React.createElement(ErrorBoundary, null, React.createElement(ToastProvider, null, React.createElement(App, null))));
 // SW registration handled in index.html with auto-update logic

@@ -136,31 +136,9 @@ const BUILTIN_MACRO_2026 = [
   { date: '2026-11-19', title: 'SARB MPC rate decision (South Africa)', type: 'SARB' }
 ];
 
-  // Rules tab: pre-written trim rules, thesis-break triggers, and SA tax-year
-  // discipline. Sections keyed by `id`; a bullet is { text } or { strong, text }
-  // (a bold lead-in + text). Rendered by RulesView via the `ruleSection` helper.
-  const RULES = [
-    { id: 'trim', heading: 'Trim rules', bullets: [
-      { strong: '+100% gain',            text: ' \u2014 trim 25% of position, bank profits' },
-      { strong: '+150% gain',            text: ' \u2014 trim another 20% of remainder' },
-      { strong: '+200% gain',            text: ' \u2014 trim another 20%, let the rest ride' },
-      { strong: '-20% from cost',        text: ' \u2014 re-examine thesis, never average down without fresh conviction' },
-      { strong: 'Position >12% of book', text: ' \u2014 trim to 10% regardless of gain' },
-    ]},
-    { id: 'thesisBreak', heading: 'Thesis-break triggers', bullets: [
-      { text: 'Hyperscaler capex cut by top-3 player (MSFT, GOOGL, META, AMZN, ORCL)' },
-      { text: 'Core CPI above 3.2% for two consecutive prints' },
-      { text: 'Brent above $120 \u2014 consumer weakness trigger' },
-      { text: 'VOO drawdown >15% from buy-zone \u2014 deploy all cash' },
-      { text: 'Any position where CEO reneges on publicly-stated commitment (the MSTR lesson)' },
-    ]},
-    { id: 'saTax', heading: 'SA tax-year discipline', bullets: [
-      { text: 'Tax year ends 28 February. Split disposals across 28 Feb + 1 March for two annual R40k CGT exclusions.' },
-      { text: 'Combined shelter: up to R80k of gains untaxed per year.' },
-      { text: 'At 40% marginal rate with 40% inclusion, each exclusion = ~R12,800 saved.' },
-      { text: 'Keep broker IT3(c) certificates for each tax year.' },
-    ]},
-  ];
+  // The Rules tab's content (RULES: trim rules, thesis-break triggers, SA tax-year
+  // discipline) was removed 2026-09-08 with the tab and RulesView. It had no other
+  // reader. content.test.mjs guards it staying gone.
 
 const SECTOR_ETF = {
   'Technology':              { etf: 'XLK',  name: 'Technology Select Sector' },
@@ -5723,5 +5701,5 @@ function logoFor(ticker, market) {
   return entry;
 }
 
-return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, RULES, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS, ROTATION_COPY, ROTATION_GLOSSARY, ROTATION_SECTOR_SHORT, LOGO_MANIFEST, logoFor };
+return { RIBBON_CATALOG, RIBBON_CATALOG_MAP, INDICATOR_INFO, BUILTIN_MACRO_2026, SECTOR_ETF, SECTOR_TREND_WINDOWS, SECTOR_FWD_PE, MARKETS, DISPLAY_CURRENCIES, CURRENCY_SYMBOLS, ROTATION_COPY, ROTATION_GLOSSARY, ROTATION_SECTOR_SHORT, LOGO_MANIFEST, logoFor };
 });

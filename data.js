@@ -290,17 +290,8 @@ window.PB_DATA = {
     { order:4, phase:'Phase 4', title:'Final Push (Mar — Jul 2027)',
       actions:['Continue monthly DCA','If ahead of 30% by end-2026: shift hedges to 22-25%','Lock in gains through target window'] }
   ],
-  RISKS: [
-    { title:'Hyperscaler capex cut by top-3 player', probability:'HIGH', impact:'Cut NVDA, AMZN, ETN, CEG, GEV weights 25-50%.' },
-    { title:'Iran/oil re-escalation + Hormuz closure', probability:'MEDIUM', impact:'Brent >$120 is threshold. Add to OXY and hedges.' },
-    { title:'Fed cannot cut / must hike', probability:'MEDIUM', impact:'Core CPI >3.2% for two prints. Reduce small-cap, prefer IEF.' },
-    { title:'AI capex digestion narrative', probability:'MEDIUM-HIGH', impact:'Accelerate NVDA trim to -30%.' }
-  ],
-  PILLARS: [
-    { num:'01', title:'Exit MSTR', body:'Thesis no longer holds. Dilution compounding, mNAV vanished, CEO broke never-sell pledge.', action:'Sell 50-100%' },
-    { num:'02', title:'Harvest Winners', body:'Citi +141%, NVDA +138%, Alphabet +110%, ASML +106%. Trim against pre-written rules.', action:'Lock ~$400' },
-    { num:'03', title:'Diversify', body:'Into healthcare (UNH, VRTX, LLY), nuclear (CEG), defense (GD, ITA), semi-ADRs (TSM).', action:'8 new picks' }
-  ],
+  // RISKS (Rules tab) + PILLARS (Thesis tab) were removed 2026-09-08 with those
+  // two tabs and their views. Nothing else read either array.
   HEATMAPS: [
     { id:'sp500', label:'S&P 500', market:'US', coverageNote:'145 largest names ~ 87% of index cap', constituents: [
       // Technology
