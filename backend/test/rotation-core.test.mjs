@@ -76,6 +76,51 @@ const { aggregateSectorSnapshot, classifyRotation, pairFlows, buildRotationFetch
   ok('zero-quoted: wPct null', sectors[0].wPct === null);
   ok('zero-quoted: deltaCap 0', sectors[0].deltaCap === 0);
 }
+{
+  // Two gainers + two losers per sector. The split is asymmetric below four
+  // names so a ticker can never land on both lists: ceil(n/2) + floor(n/2) is
+  // exactly n there, and 2+2 fits from four names up.
+  const mk = (t, p) => ({ ticker: t, sector: 'S', m: 10, changePct: p });
+  const shape = rows => {
+    const s0 = aggregateSectorSnapshot(rows).sectors[0];
+    return [s0.gainers.map(x => x.ticker).join(''), s0.losers.map(x => x.ticker).join('')];
+  };
+  const five = shape([mk('A', 5), mk('B', 4), mk('C', 3), mk('D', 2), mk('E', 1)]);
+  ok('movers: 5 names -> 2 gainers + 2 losers', five[0] === 'AB' && five[1] === 'ED');
+  const three = shape([mk('A', 5), mk('B', 4), mk('C', 3)]);
+  ok('movers: 3 names -> 2 gainers + 1 loser', three[0] === 'AB' && three[1] === 'C');
+  const two = shape([mk('A', 5), mk('B', 4)]);
+  ok('movers: 2 names -> 1 each', two[0] === 'A' && two[1] === 'B');
+  const one = shape([mk('A', 5)]);
+  ok('movers: 1 name -> 1 gainer, no loser', one[0] === 'A' && one[1] === '');
+  // The overlap guard is the whole point of the asymmetry: the view no longer
+  // de-duplicates, so a ticker on both lists would render twice.
+  let overlap = false;
+  for (let n = 1; n <= 8; n++) {
+    const rows = [];
+    for (let i = 0; i < n; i++) rows.push(mk('T' + i, n - i));
+    const s0 = aggregateSectorSnapshot(rows).sectors[0];
+    const g = new Set(s0.gainers.map(x => x.ticker));
+    if (s0.losers.some(x => g.has(x.ticker))) overlap = true;
+  }
+  ok('movers: no ticker appears on both lists, n = 1..8', !overlap);
+  // gainers[0] must BE top and losers[0] must BE bottom, ties included — the
+  // strict >/< that feed top/bottom keep the first-seen name, so the ranking
+  // sort tie-breaks on input index to match.
+  const tied = aggregateSectorSnapshot([mk('A', 2), mk('B', 2), mk('C', -1), mk('D', -1)]).sectors[0];
+  ok('movers: gainers[0] is top, even on a tie', tied.gainers[0].ticker === tied.top.ticker && tied.top.ticker === 'A');
+  ok('movers: losers[0] is bottom, even on a tie', tied.losers[0].ticker === tied.bottom.ticker && tied.bottom.ticker === 'C');
+  // A missing quote is "unknown", not "unchanged" — same rule as wPct/deltaCap.
+  const withNull = aggregateSectorSnapshot([mk('A', 2), { ticker: 'N', sector: 'S', m: 10, changePct: null }, mk('B', -2)]).sectors[0];
+  ok('movers: unquoted rows are excluded', withNull.gainers[0].ticker === 'A' && withNull.losers[0].ticker === 'B'
+    && !withNull.gainers.concat(withNull.losers).some(x => x.ticker === 'N'));
+  // The snapshot is persisted into pb.rotation.lastgood.v1, so the internal
+  // full-constituent accumulator must stay internal. Only the <=4 ranked
+  // records ship.
+  const emitted = aggregateSectorSnapshot([mk('A', 1), mk('B', 2), mk('C', 3), mk('D', 4), mk('E', 5)]).sectors[0];
+  ok('movers: the full constituent list is not emitted', !('movers' in emitted)
+    && emitted.gainers.length === 2 && emitted.losers.length === 2);
+}
 
 // ── 2. classifyRotation boundaries ───────────────────────────────────────────
 // Helper: synth a snapshot from sector specs {sector, wPct, m, deltaCap?} with

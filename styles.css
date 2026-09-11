@@ -4409,7 +4409,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 /* Every figure in this tab is a column of digits that ticks; without tabular
    figures the columns jitter on each refresh. */
 .rot-stat-val, .rot-row-num, .rot-val-lbl, .rot-flow-amt, .rot-head-val,
-.rot-head-side-val, .rot-cross-val, .rot-tkr-chip, .rot-row-sub { font-variant-numeric: tabular-nums; }
+.rot-head-side-val, .rot-tkr-chip, .rot-spark-name { font-variant-numeric: tabular-nums; }
 
 /* Loading skeleton — a 145-symbol sweep is long enough that a bare progress bar
    reads as a broken screen. */
@@ -4532,61 +4532,50 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   background: var(--bg-elev); color: var(--text-dim); cursor: pointer; margin-top: 6px;
 }
 
-.rot-chart-outer { display: flex; flex-direction: column; gap: 10px; }
-.rot-chart-wrap { width: 100%; position: relative; }
-.rot-chart-svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
-.rot-line { transition: opacity 0.2s; stroke-linejoin: round; stroke-linecap: round; }
+.rot-chart-outer { display: flex; flex-direction: column; gap: 6px; }
+.rot-line { stroke-linejoin: round; stroke-linecap: round; }
 /* Extended hours is a different day from the one the sector list is measuring,
    so it is drawn as a visibly separate thing rather than a silent continuation. */
 .rot-line-ext { stroke-dasharray: 3 3; }
-.rot-line-bench { stroke: var(--text); stroke-width: 2.25; stroke-linejoin: round; fill: none; }
-.rot-line-bench-halo { stroke: var(--text); stroke-width: 7; stroke-linejoin: round; stroke-linecap: round; fill: none; }
-.rot-band { fill: color-mix(in srgb, var(--bg-elev) 60%, transparent); }
-.rot-band-lbl { font-family: var(--mono); font-size: 8.5px; fill: var(--text-dim); letter-spacing: 0.06em; text-transform: uppercase; }
-.rot-grid { stroke: var(--border); stroke-width: 1; opacity: 0.5; }
+.rot-line-bench { stroke: var(--text); stroke-width: 2; stroke-linejoin: round; fill: none; }
 .rot-zero { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 3; }
-.rot-axis-lbl { font-family: var(--mono); font-size: 9px; fill: var(--text-dim); }
-.rot-grid-lbl { font-size: 8.5px; opacity: 0.75; }
-.rot-val-lbl { font-family: var(--mono); font-size: 10px; font-weight: 600; }
-.rot-val-lbl.up { fill: var(--emerald); }
-.rot-val-lbl.down { fill: var(--rose); }
-.rot-val-lbl.flat { fill: var(--text-muted); }
-.rot-val-lbl.bench { font-weight: 700; }
-.rot-val-lbl.bench.flat { fill: var(--text); }
-.rot-cross { stroke: var(--text-dim); stroke-width: 1; stroke-dasharray: 2 2; }
-.rot-cross-dot { stroke: var(--bg-raised); stroke-width: 1.5; }
-.rot-cross-dot.bench { fill: var(--text); }
-/* Scrub readout. Deliberately a strip UNDER the plot rather than a tooltip over
-   it: at phone width a floating card covers a large share of the very lines it
-   is describing. It occupies the legend's slot, so the panel height is stable
-   whether you are scrubbing or not. */
-.rot-cross-strip {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
-  padding: 7px 9px; border-radius: 9px; min-height: 30px;
-  background: var(--bg-elev); border: 1px solid var(--border);
-}
-.rot-cross-time {
-  font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--text-dim);
-  display: flex; align-items: center; gap: 5px;
-}
-.rot-cross-sess {
-  font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase;
-  padding: 1px 5px; border-radius: 999px; background: var(--bg-elev); color: var(--text-dim);
-}
-.rot-cross-row { display: inline-flex; align-items: center; gap: 5px; }
-.rot-cross-dotm { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; }
-.rot-cross-name { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
-.rot-cross-row.bench .rot-cross-name { color: var(--text); font-weight: 700; }
-.rot-cross-val { font-family: var(--mono); font-size: 10.5px; font-weight: 600; }
 
-.rot-legend { display: flex; flex-wrap: wrap; gap: 6px; }
-.rot-legend-chip {
-  display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px;
-  font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--text-muted);
-  background: var(--bg-elev); border: 1px solid var(--border); cursor: pointer;
+/* One sparkline per sector. The three columns are set inline from JS, because
+   the same two widths also size the SVG's viewBox — CSS and JS disagreeing by a
+   few pixels is what would stretch the plot. The middle column is minmax(0,1fr)
+   so it can always shrink: that is what keeps this tab off the document's
+   scrollable width at 320px (see .rot-sr below for what that bug looks like). */
+.rot-spark-list { display: flex; flex-direction: column; }
+.rot-spark-row {
+  display: grid; align-items: center; gap: 8px; width: 100%;
+  padding: 3px 2px; border: 0; background: none; cursor: pointer; text-align: left;
+  border-radius: 7px; transition: opacity 0.15s, background 0.15s;
 }
-.rot-legend-chip.active { border-color: var(--text-muted); color: var(--text); }
-.rot-legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+.rot-spark-row.hl { background: var(--bg-elev); }
+.rot-spark-row.faded { opacity: 0.4; }
+.rot-spark-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.rot-spark-name {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rot-spark-row.hl .rot-spark-name { color: var(--text); }
+.rot-spark-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.rot-spark-svg { display: block; width: 100%; }
+.rot-spark-axis { display: grid; gap: 8px; align-items: center; margin-top: 2px; }
+.rot-spark-axis-times {
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 9px; color: var(--text-dim);
+}
+/* The end value is an HTML span, not SVG text, so its tone rules are `color`.
+   They were `fill` while this lived inside the plot; a `fill` left behind here
+   does not error, it just silently renders every value untoned. */
+.rot-val-lbl { font-family: var(--mono); font-size: 11px; font-weight: 600; text-align: right; color: var(--text-muted); }
+.rot-val-lbl.up { color: var(--emerald); }
+.rot-val-lbl.down { color: var(--rose); }
+.rot-val-lbl.flat { color: var(--text-muted); }
+.rot-val-lbl.bench { font-weight: 700; }
+.rot-val-lbl.bench.flat { color: var(--text); }
 
 .rot-chart-missing { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 30px 0; color: var(--text-dim); font-size: 13px; }
 
@@ -4596,7 +4585,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .rot-row.hl { background: var(--bg-elev); border-radius: 8px; }
 .rot-row.faded { opacity: 0.45; }
 .rot-row:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; border-radius: 8px; }
-.rot-row-main { display: grid; grid-template-columns: auto 1fr auto auto auto; align-items: center; gap: 8px; }
+.rot-row-main { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; }
 .rot-row-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
 .rot-row-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rot-row-title { font-family: var(--mono); font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 6px; }
@@ -4605,22 +4594,7 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
   text-transform: uppercase; padding: 1px 5px; border-radius: 4px;
   background: color-mix(in srgb, var(--amber) 18%, transparent); color: var(--amber);
 }
-.rot-row-sub { font-family: var(--mono); font-size: 9.5px; font-weight: 500; color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 8px; }
-.rot-row-sub-sep::before, .rot-row-sub-bps::before { content: '\00b7'; margin-right: 8px; }
-.rot-row-sub-bps { display: none; }
-.rot-row-num { font-family: var(--mono); font-size: 13px; font-weight: 600; text-align: right; white-space: nowrap; }
-.rot-row-bps { color: var(--text-dim); font-size: 11px; min-width: 52px; }
-.rot-row-flow { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; min-width: 66px; }
-.rot-row-flow-bn { font-family: var(--mono); font-size: 9.5px; color: var(--text-dim); white-space: nowrap; }
-.rot-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; padding-left: 17px; }
-.rot-cov-chip {
-  font-family: var(--mono); font-size: 9px; color: var(--text-dim);
-  padding: 1px 6px; border-radius: 5px; background: var(--bg-elev); border: 1px solid var(--border);
-}
-.rot-act { display: inline-flex; align-items: center; gap: 6px; }
-.rot-act-track { width: 54px; height: 4px; border-radius: 999px; background: var(--bg-elev); overflow: hidden; }
-.rot-act-fill { display: block; height: 100%; border-radius: 999px; opacity: 0.8; }
-.rot-act-lbl { font-family: var(--mono); font-size: 9px; color: var(--text-dim); }
+.rot-row-num { font-family: var(--mono); font-size: 14px; font-weight: 600; text-align: right; white-space: nowrap; }
 .rot-row-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; padding-left: 17px; }
 /* Tone is set from the value's sign in JS. .up/.down here must never be applied
    by position — that is the bug that showed a sector's best-but-still-negative
@@ -4659,15 +4633,9 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 @media (max-width: 680px) {
   .rot-stats-row { grid-template-columns: repeat(2, 1fr); }
   .rot-head-val { font-size: 32px; }
-  .rot-row-main { grid-template-columns: auto 1fr auto auto; }
-  /* "vs market" is the one number that answers whether a sector led or lagged,
-     so on narrow screens it moves into the sub-line instead of being dropped. */
-  .rot-row-bps { display: none; }
-  .rot-row-sub-bps { display: inline; }
   .rot-foot-method { max-width: 100%; }
   .rot-foot { flex-direction: column; align-items: stretch; gap: 8px; }
   .rot-foot-right { justify-content: space-between; }
-  .rot-cross-strip { gap: 4px 9px; font-size: 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rot-phase-dot { animation: none; }

@@ -292,13 +292,19 @@ try {
       headCls: (document.querySelector('.rot-head-val')||{}).className,
       verdict: txt('.rot-verdict-pill'),
       thin: document.querySelectorAll('.rot-thin-tag').length,
-      cov: [...document.querySelectorAll('.rot-cov-chip')].map(e=>e.textContent.trim()),
       coverage: txt('.rot-coverage'),
       ribbons: document.querySelectorAll('.rot-flow-ribbon').length,
-      grid: document.querySelectorAll('.rot-grid').length,
+      sparkRows: document.querySelectorAll('.rot-spark-row').length,
+      sparkNames: [...document.querySelectorAll('.rot-spark-name')].map(e=>e.textContent.trim()),
+      zeroLines: document.querySelectorAll('.rot-zero').length,
       extLines: document.querySelectorAll('.rot-line-ext').length,
       valLbls: [...document.querySelectorAll('.rot-val-lbl')].map(e=>e.textContent.trim()),
-      act: document.querySelectorAll('.rot-act').length,
+      valToned: [...document.querySelectorAll('.rot-val-lbl')].every(e=>/rot-val-lbl (up|down|flat)/.test(e.className)),
+      rowChips: [...document.querySelectorAll('.rot-row')].map(r=>[
+        (r.querySelector('.rot-row-title')||{textContent:''}).textContent.trim(),
+        r.querySelectorAll('.rot-tkr-chip').length ]),
+      stripped: ['.rot-cov-chip','.rot-act','.rot-row-sub','.rot-row-flow','.rot-row-bps','.rot-row-meta','.rot-legend-chip']
+        .reduce((t,sel)=>t+document.querySelectorAll(sel).length,0),
       srRows: document.querySelectorAll('.rot-sr tbody tr').length,
       updated: txt('.rot-updated'),
       stats: [...document.querySelectorAll('.rot-stat-label')].map(e=>e.textContent.trim())
@@ -310,12 +316,24 @@ try {
   check('headline is toned down (red)', /\bdown\b/.test(info.headCls || ''));
   check('verdict is outflow-with-rotation', info.verdict === 'Outflows, with rotation underneath');
   check('single-name sector flagged thin', info.thin === 1);
-  check('per-sector chart coverage chips rendered', info.cov.length >= 3 && /of \d+ names/.test(info.cov[0]));
   check('universe coverage line rendered', /of 9 names quoted/.test(info.coverage || '') && /87% of index cap/.test(info.coverage || ''));
   check('flow ribbons rendered and interactive', info.ribbons >= 3);
-  check('chart has y gridlines', info.grid >= 2);
+  // Small multiples: one row per sector plus the market, each with its own
+  // baseline. The overlay this replaced labelled only the six coloured movers,
+  // so every sector having a readable value is the point of the change.
+  check('a sparkline row per sector, plus the market', info.sparkRows === 4 && info.sparkNames[0] === 'Market');
+  check('every sparkline carries a prior-close baseline', info.zeroLines === info.sparkRows);
+  check('every sparkline row carries an end value', info.valLbls.length === info.sparkRows);
+  check('every end value is toned from its own sign', info.valToned === true);
   check('extended-hours tail drawn separately', info.extLines >= 2);
-  check('dollar-volume activity bars rendered', info.act >= 3);
+  // The row is cut to name + move + movers. These selectors are what carried
+  // the nine-figure version; any of them coming back is the regression.
+  check('sector rows carry no bp / flow / coverage / volume clutter', info.stripped === 0);
+  // 3 quoted names -> 2 gainers + 1 loser; 2 -> 1 each; a single name -> 1.
+  // PBCore guarantees the two lists never name the same ticker.
+  const chipsFor = n => (info.rowChips.find(r => r[0].startsWith(n)) || [n, -1])[1];
+  check('two gainers + one loser in a three-name sector', chipsFor('Tech') === 3 && chipsFor('Energy') === 3);
+  check('mover chips degrade with the sector size', chipsFor('Financials') === 2 && chipsFor('Real Estate') === 1);
   check('screen-reader table mirrors the sectors', info.srRows === 4);
   check('stat tiles include participation + dispersion', info.stats.includes('Participation') && info.stats.includes('Dispersion'));
 
@@ -326,15 +344,47 @@ try {
   await shot(ws, 'tab');
 
   // ── Interactions ───────────────────────────────────────────────────────────
-  const cross = await evals(ws, `
-    const svg=document.querySelector('.rot-chart-svg'); if(!svg) return 'no-svg';
-    const r=svg.getBoundingClientRect();
-    svg.dispatchEvent(new PointerEvent('pointermove',{clientX:r.left+r.width*0.45,clientY:r.top+r.height*0.5,bubbles:true}));
-    await new Promise(r=>setTimeout(r,250));
-    const c=document.querySelector('.rot-cross-strip');
-    return c?c.textContent.trim():'no-card';`);
-  console.log('  crosshair readout:', JSON.stringify(cross));
-  check('crosshair readout appears on pointer move', cross !== 'no-svg' && cross !== 'no-card' && /Market/.test(cross));
+  // The sparklines share ONE percentage scale — that is the whole reason small
+  // multiples replaced the overlay without losing cross-sector comparison. Each
+  // row's last plotted point must therefore sit at a height that ranks the same
+  // way its end value does, and the heights must actually SPREAD: per-row
+  // autoscaling would park every line at the same relative position and still
+  // look plausible in a screenshot.
+  const scale = JSON.parse(await evals(ws, `
+    const rows=[...document.querySelectorAll('.rot-spark-row')].map(r=>{
+      const path=r.querySelector('path.rot-line-bench:not(.rot-line-ext), path.rot-line:not(.rot-line-ext)');
+      const lbl=r.querySelector('.rot-val-lbl');
+      if(!path||!lbl) return null;
+      const seg=(path.getAttribute('d')||'').trim().split(/[ML]/).filter(x=>x.trim()).pop();
+      if(!seg) return null;
+      return { v: parseFloat(lbl.textContent.replace('\u2212','-').replace('%','')),
+               y: parseFloat(seg.trim().split(',')[1]) };
+    }).filter(Boolean);
+    return JSON.stringify(rows);`));
+  console.log('  spark scale (value -> y):', JSON.stringify(scale));
+  const ranked = scale.slice().sort((a, b) => b.v - a.v);
+  const monotonic = ranked.every((r, i) => i === 0 || r.y >= ranked[i - 1].y - 0.6);
+  check('every sparkline row plots a line', scale.length === info.sparkRows);
+  check('a higher end value sits higher on a shared scale', scale.length >= 3 && monotonic);
+  check('the shared scale actually spreads the rows apart',
+    scale.length >= 3 && (Math.max(...scale.map(r => r.y)) - Math.min(...scale.map(r => r.y))) > 4);
+
+  // Tapping a sparkline must isolate the same sector in the list below — the
+  // chart and the list are two views of one selection, and that link is the
+  // only way to read a sector's line against its numbers now that the shared
+  // crosshair readout is gone.
+  const linked = await evals(ws, `
+    const row=[...document.querySelectorAll('.rot-spark-row')].find(r=>/Energy/.test(r.textContent));
+    if(!row) return 'no-spark'; row.click(); await new Promise(r=>setTimeout(r,250));
+    const hit=[...document.querySelectorAll('.rot-row')].find(r=>/Energy/.test(r.textContent));
+    if(!hit) return 'no-row';
+    return (hit.classList.contains('faded')?'wrong-row-faded':'') +
+      (document.querySelectorAll('.rot-row.faded').length>=1?'others-faded':'none-faded');`);
+  console.log('  spark -> list link:', JSON.stringify(linked));
+  check('tapping a sparkline isolates that sector in the list', linked === 'others-faded');
+  await evals(ws, `
+    const row=[...document.querySelectorAll('.rot-spark-row')].find(r=>/Energy/.test(r.textContent));
+    if(row) row.click(); await new Promise(r=>setTimeout(r,200)); return true;`);
 
   const gloss = await evals(ws, `
     const b=[...document.querySelectorAll('.rot-stat-head')].find(x=>/Dispersion/.test(x.textContent));
