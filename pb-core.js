@@ -1686,13 +1686,30 @@ const THIN_SECTOR_MIN_SHARE = 0.01; // ...or under this share of quoted index ca
 // distorted by that truncation (mega-caps advance more often than the median
 // index member), while the cap-weighted figure is the one the flow story
 // actually rests on. Both are reported so the view can show them side by side.
+// The two ends of a sector, ranked. `dir` picks which end: 'up' takes the best
+// names, 'down' the worst. The split is deliberately asymmetric for small
+// sectors so a ticker can NEVER appear on both lists: ceil + floor sum to n
+// below four names (1 -> 1+0, 2 -> 1+1, 3 -> 2+1), and 2+2 fits from four up.
+// The index tie-break makes first-seen win at both ends, which is exactly what
+// the strict >/< comparisons feeding `top`/`bottom` do — so gainers[0] is
+// always `top` and losers[0] always `bottom`, ties included.
+function rankMovers(movers, dir) {
+  const n = movers.length;
+  const want = dir === 'up' ? Math.min(2, Math.ceil(n / 2)) : Math.min(2, Math.floor(n / 2));
+  if (want <= 0) return [];
+  return movers.map((m, i) => ({ m, i }))
+    .sort((a, b) => (dir === 'up' ? b.m.changePct - a.m.changePct : a.m.changePct - b.m.changePct) || (a.i - b.i))
+    .slice(0, want)
+    .map(x => x.m);
+}
+
 function aggregateSectorSnapshot(rows) {
   const bySector = new Map();
   for (const r of rows || []) {
     if (!r || !r.sector) continue;
     let s = bySector.get(r.sector);
     if (!s) {
-      s = { sector: r.sector, count: 0, quoted: 0, weight: 0, quotedWeight: 0, wSum: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0, advWeight: 0, decWeight: 0, top: null, bottom: null };
+      s = { sector: r.sector, count: 0, quoted: 0, weight: 0, quotedWeight: 0, wSum: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0, advWeight: 0, decWeight: 0, top: null, bottom: null, movers: [] };
       bySector.set(r.sector, s);
     }
     const m = isFinite(r.m) && r.m > 0 ? r.m : 0;
@@ -1705,6 +1722,7 @@ function aggregateSectorSnapshot(rows) {
     if (pct > 0) { s.adv++; s.advWeight += m; } else if (pct < 0) { s.dec++; s.decWeight += m; } else s.flat++;
     if (!s.top || pct > s.top.changePct) s.top = { ticker: r.ticker, changePct: pct };
     if (!s.bottom || pct < s.bottom.changePct) s.bottom = { ticker: r.ticker, changePct: pct };
+    s.movers.push({ ticker: r.ticker, changePct: pct });
   }
   const sectors = [...bySector.values()].map(s => ({
     sector: s.sector, count: s.count, quoted: s.quoted, weight: s.weight, quotedWeight: s.quotedWeight,
@@ -1714,7 +1732,7 @@ function aggregateSectorSnapshot(rows) {
     // Cap-weighted advancers as a share of the sector's own directional cap.
     // Null when nothing directional quoted, so "no data" never reads as 0%.
     participation: (s.advWeight + s.decWeight) > 0 ? s.advWeight / (s.advWeight + s.decWeight) : null,
-    top: s.top, bottom: s.bottom, thin: false
+    top: s.top, bottom: s.bottom, gainers: rankMovers(s.movers, 'up'), losers: rankMovers(s.movers, 'down'), thin: false
   }));
   sectors.sort((a, b) => (b.deltaCap - a.deltaCap) || a.sector.localeCompare(b.sector));
   const market = { count: 0, quoted: 0, totalWeight: 0, quotedWeight: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0, advWeight: 0, decWeight: 0 };
