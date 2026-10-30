@@ -203,12 +203,88 @@
     // overrides a sessionDay claiming today, because a quote whose two signals
     // contradict each other has not earned the right to render as live.
     if (typeof quote.regularMarketTime === 'number' && isFinite(quote.regularMarketTime)) {
-      return tradedToday(quote.regularMarketTime, nowMs) ? settled : 'stale';
+      if (tradedToday(quote.regularMarketTime, nowMs)) return settled;
+      // Not on the VIEWER's day — but a row describes the MARKET's session, so ask
+      // the market's calendar too. Seen from SA, New York's session ends at 22:00
+      // SAST and its day runs on until 06:00 SAST (07:00 in winter), so after SA
+      // midnight a perfectly good US quote sat on the viewer's yesterday and every
+      // US row was withheld as 'stale' for six or seven hours each night. On the
+      // market's own day it is that session's move; `settled` captions it.
+      // The aggregates (quoteTradedToday) deliberately keep the viewer's day — the
+      // "Today" pill is about the user's today — so this can only turn a would-be
+      // 'stale' row into a captioned one, never put an uncounted number on a row
+      // as 'live' outside a session that straddles the viewer's midnight.
+      return marketDayKey(quote.regularMarketTime, market) === marketDayKey(nowMs, market) ? settled : 'stale';
     }
     // No tick at all (Stooq's CSV, an old cached quote). Absence is evidence of
     // nothing, so it reads as the last completed session and gets captioned
     // rather than withheld.
     return settled;
+  }
+
+  // Is `next` a quote from EARLIER than the one already held? Then it must not
+  // replace it. The merge used to accept whatever arrived last, and plenty arrives
+  // late or old: an auto-poll answered from a CORS proxy's cache (the pre-open
+  // response, served for hours), the Stooq end-of-day fallback (yesterday's row by
+  // construction), or a superseded sweep's last batch landing after a newer one.
+  // Each of those quietly put yesterday back on a row the refresh button had just
+  // fixed — "I press refresh and nothing happens", and "it mixes up yesterday and
+  // today". Order of evidence: the session the quote belongs to, then the tick.
+  // Unknown on either side never blocks — a source that cannot say how old it is
+  // gets the benefit of the doubt, exactly as before.
+  function quoteOlderThan(prev, next, nowMs = Date.now()) {
+    if (!prev || !next) return false;
+    if (typeof prev.price !== 'number' || !isFinite(prev.price) || prev.price <= 0) return false;
+    // A held quote claiming a tick from the future is not a yardstick (device clock
+    // or a corrupt cache); never let it lock a symbol out of updates.
+    const tPrev = prev.regularMarketTime, tNext = next.regularMarketTime;
+    if (typeof tPrev === 'number' && tPrev > nowMs + 3600 * 1000) return false;
+    const a = prev.sessionDay, b = next.sessionDay;
+    // YYYY-MM-DD, so a string compare is a date compare.
+    if (typeof a === 'string' && typeof b === 'string' && a !== b) return b < a;
+    if (typeof tPrev === 'number' && isFinite(tPrev) && typeof tNext === 'number' && isFinite(tNext)) {
+      return tNext < tPrev;
+    }
+    return false;
+  }
+
+  // The market-local day of the most recent regular session that has at least
+  // STARTED (today once the bell has rung, else the previous weekday). No holiday
+  // calendar, same as everything else here — a holiday just makes a quote look
+  // one session short, which only ever costs an extra fetch.
+  function lastSessionDay(market, nowMs = Date.now()) {
+    const today = marketDayKey(nowMs, market);
+    if (today == null) return null;
+    if (regularSessionStartedToday(market, nowMs)) return today;
+    let t = Date.parse(today + 'T12:00:00Z');
+    if (!isFinite(t)) return null;
+    do { t -= 86400000; } while (new Date(t).getUTCDay() === 0 || new Date(t).getUTCDay() === 6);
+    return new Date(t).toISOString().slice(0, 10);
+  }
+
+  // Sweep order: what the user is waiting on goes first. The plan's order is
+  // "active list, positions, watchlist, alerts, ribbon" — fine for a healthy book,
+  // but in the SA morning it put every closed US name ahead of the JSE holding
+  // whose price is actually moving, and a symbol that FAILED sat behind a hundred
+  // that were fine. Stable three-tier partition, original order kept inside each:
+  //   0  nothing usable to show: no quote, a 'stale' one, or a key the caller
+  //      flags (held by the plausibility gate / missed by the last sweep)
+  //   1  its market is in its regular session right now
+  //   2  everything else
+  function prioritizeSweep(items, prices, nowMs = Date.now(), flagged) {
+    const tiers = [[], [], []];
+    const p = prices || {};
+    for (const it of items || []) {
+      const key = priceKey(it.market, it.ticker);
+      const q = p[key];
+      let tier = 2;
+      if (!q || typeof q.price !== 'number' || !isFinite(q.price)
+          || (flagged && flagged.has(key))
+          || quoteSessionState(q, it.market, nowMs) === 'stale') tier = 0;
+      else if (marketSession(it.market, nowMs).phase === 'open') tier = 1;
+      tiers[tier].push(it);
+    }
+    return tiers[0].concat(tiers[1], tiers[2]);
   }
 
   // Does this market have a pre/post session at all? Markets without regOpen and
@@ -236,12 +312,27 @@
   //     get another chance at the open.
   // Only the auto-poll consults this; a manual refresh must never skip anything.
   const QUOTE_SETTLED_MAX_AGE_MS = 24 * 3600 * 1000;
+  // How long after a market shuts before a fetch can be trusted to hold its CLOSE.
+  // Yahoo's JSE and LSE feeds run ~15 minutes behind, and both exchanges finish
+  // with a closing auction, so a quote fetched at 17:06 SAST carries a ~16:50
+  // print — before the auction set the official close. It used to be marked
+  // settled on the spot and frozen until the next morning's bell, so the whole
+  // "At close" morning view was built on a pre-auction price.
+  const QUOTE_SETTLE_GRACE_MS = 40 * 60 * 1000;
   function quoteSettled(quote, market, nowMs = Date.now()) {
     if (!quote || market === 'CRYPTO') return false;
     if (typeof quote.price !== 'number' || !isFinite(quote.price) || quote.price <= 0) return false;
     const at = quote.fetchedAt;
     if (typeof at !== 'number' || !isFinite(at) || (nowMs - at) > QUOTE_SETTLED_MAX_AGE_MS) return false;
     if (marketSession(market, nowMs).phase !== 'closed') return false;
+    // Fetched well after the market shut — not in the minutes the delayed feed is
+    // still catching up with the close.
+    if (marketSession(market, at).phase !== 'closed'
+        || marketSession(market, at - QUOTE_SETTLE_GRACE_MS).phase !== 'closed') return false;
+    // ...and it is the most recent session's quote. Before the bell
+    // quoteSessionState calls EVERY quote 'atClose', so a proxy-cached answer two
+    // sessions old used to be skipped all night too.
+    if (quote.sessionDay != null && quote.sessionDay !== lastSessionDay(market, nowMs)) return false;
     return quoteSessionState(quote, market, nowMs) === 'atClose';
   }
 
@@ -2104,6 +2195,9 @@ function rotationSummary(classified) {
     quoteTradedToday,
     quoteSessionState,
     quoteSettled,
+    quoteOlderThan,
+    lastSessionDay,
+    prioritizeSweep,
     hasExtendedSession,
     regularSessionStartedToday,
     fmtAgo,

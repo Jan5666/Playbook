@@ -18,7 +18,7 @@ npx serve .                       # or: python -m http.server
 
 # Unit tests — zero-framework Node scripts, run individually (cwd doesn't matter):
 node backend/test/money-math.test.mjs
-for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (42)
+for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (45)
 
 # MONEY GATE — must be green on ANY change touching money/import code:
 #   money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers
@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v114`), or installed PWAs serve stale assets offline.
+`playbook-shell-v115`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -249,18 +249,43 @@ Adding a **new runtime file** additionally requires ALL of:
   shut + already that session's close = it cannot change, and its 24 h age bound is what
   stops a symbol that quietly died being skipped all night), and a **manual refresh never
   skips anything** — the button has to stay strictly more powerful than the poll.
-- **"Force refresh" used to spend its whole budget on symbols that were already fine.**
-  `refreshNow` restarted the ENTIRE order from the top, so the handful of symbols that had
-  actually failed sat behind ~100 healthy ones — that is exactly "the stocks that have not
-  fetched prices still don't update". A press now runs `collectUnhealthy()` FIRST (no
-  quote, `quoteSessionState` `'stale'`, held by the plausibility gate, or on the last
-  sweep's miss list), capped at `RECOVERY_MAX` so a press can never become a second full
-  sweep, always cache-busted (a proxy-cached failure is precisely what a retry must see
-  past), and it runs even while a sweep is in flight. Note `hasExtendedSession` also drops
-  the redundant second Yahoo call: on a market with no pre/post tier, inside its regular
-  session, `deriveIntradayExt` returns `null` by construction and the 1m chart's meta is
-  the daily response's meta — measured 2 requests -> 1 for JSE/TFSA, US pre-market and
-  CRYPTO untouched.
+- **The refresh button SUPERSEDES the sweep; it does not wait for it (2026-10-30).** The
+  2026-08-13 design (a capped `collectUnhealthy`/`runRecovery` side-pass, then a forced sweep
+  queued *behind* the in-flight one) left the button a no-op in exactly the SA morning: before
+  the bell every quote reads `'atClose'`, so nothing counted as "unhealthy" and the press waited
+  minutes for a sweep walking ~100 closed US names. Now `refreshNow` bumps the sweep sequence,
+  the old sweep stops at its next batch boundary (`fetchQuoteBatch`'s `shouldStop`, and a
+  stopped sweep publishes no miss list), and a forced sweep starts at once. Every sweep is
+  ordered by `PBCore.prioritizeSweep`: no quote / `'stale'` / held / missed first, then markets
+  in their regular session, then the rest. A **tab switch** still uses `queueRefresh` (the old
+  polite queue) so browsing can't keep restarting the sweep. Note `hasExtendedSession` also
+  drops the redundant second Yahoo call on markets with no pre/post tier — measured 2 requests
+  -> 1 for JSE/TFSA in session.
+- **A merge must never step a symbol BACKWARDS in time.** `guardBatch` used to accept any
+  plausible quote, and old ones arrive constantly: a proxy replaying its cached pre-open
+  response, Stooq's EOD row (yesterday by construction), a superseded sweep's last batch. Each
+  put yesterday back on a row that had moved to today. `PBCore.quoteOlderThan` (sessionDay,
+  then tick; unknown never blocks; a future-ticked held quote never locks a symbol out) now
+  drops them before `guardQuote`. Two companions: the auto-poll URL carries a per-MINUTE key
+  `&_b=` (it had none, so a proxy cache's age was unbounded — the browser gate tells `_b` from
+  the manual `_`), and `fetchViaProxies` keeps per-proxy health — 2 consecutive failures send a
+  proxy to the BACK of the ladder for 3 min (a 404 is about the symbol, not the proxy, and
+  counts for nothing). Simulated with three dead edges and two rate-limited live ones: 80
+  requests to dead edges per 20 URLs before, 8 after (`morning-feed.test.mjs` E3).
+- **`quoteSettled` must not freeze a close the delayed feed hasn't printed yet.** Yahoo's JSE
+  and LSE data run ~15 min late and both exchanges close with an auction, so a quote fetched
+  at 17:06 SAST is a ~16:50 pre-auction print. It used to be settled on the spot and served as
+  "At close" until the next bell. Now settled needs a fetch >= 40 min after the market shut
+  (`QUOTE_SETTLE_GRACE_MS`) and a `sessionDay` equal to `PBCore.lastSessionDay` — a quote two
+  sessions old is no longer skipped all night. (The ~15 min delay is Yahoo's published
+  exchange delay, not measured from here: this container cannot reach Yahoo.)
+- **A row's tick is judged on the MARKET's calendar; the "Today" sums keep the VIEWER's.**
+  `quoteSessionState` compared the tick with the device's local day, so on an SA phone every US
+  row was `'stale'` (withheld) from 00:00 SAST until NY midnight — 06:00 SAST in EDT, **07:00
+  SAST once US clocks change** — every night. A tick on the market's own today now reads as that
+  session (`'atClose'` after the bell). `quoteTradedToday` deliberately still uses the viewer's
+  day, so the US session stays out of the user's "Today" after SA midnight; the
+  never-contradict invariant in `traded-today.test.mjs` still holds.
 - **A quote's `sessionDay` is a claim about which session it came from — honour it.**
   `quoteTradedToday` rejects a quote whose `sessionDay` isn't today's market day;
   `null` still passes. Stooq's CSV is end-of-day and carries no `regularMarketTime`,

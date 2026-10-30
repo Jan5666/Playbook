@@ -175,18 +175,26 @@ const { quoteSettled, hasExtendedSession } = PBCore;
     /if\s*\(!due\.length\)\s*continue;/.test(appSrc));
   ok('app.js: the sweep flag is released in a finally (a stuck one kills the poll)',
     /\}\s*finally\s*\{[\s\S]{0,500}?sweepActiveRef\.current\s*=\s*false;/.test(appSrc));
-  ok('app.js: only one recovery pass runs at a time',
-    /if\s*\(recoveryActiveRef\.current\)\s*return;/.test(appSrc));
-  ok('app.js: a superseded sweep cannot publish its miss list',
-    /onMissing:\s*\(miss\)\s*=>\s*\{\s*\n\s*if\s*\(seq\s*!==\s*sweepSeqRef\.current\)\s*return;/.test(appSrc));
-  ok('app.js: the refresh button collects the unhealthy symbols first',
-    /const\s+refreshNow\s*=\s*useCallback\(\(\)\s*=>\s*\{\s*\n\s*const\s+unhealthy\s*=\s*collectUnhealthy\(\);/.test(appSrc));
-  ok('app.js: the recovery pass always cache-busts',
-    /const\s+runRecovery[\s\S]{0,600}?cacheBust:\s*true/.test(appSrc));
-  ok('app.js: and is capped so a press can never become a second full sweep',
-    /out\.length\s*>=\s*RECOVERY_MAX/.test(appSrc));
-  ok('app.js: recovery treats a stale quote as unhealthy',
-    /collectUnhealthy[\s\S]{0,800}?quoteSessionState\(q,\s*it\.market\)\s*===\s*'stale'/.test(appSrc));
+  // The refresh button used to defer to an in-flight sweep, with a capped
+  // "recovery" side-pass for symbols already known to be broken. Before the bell
+  // nothing reads as broken, so a press during a long morning sweep did nothing
+  // visible for minutes. It now SUPERSEDES the sweep (2026-10-30); see
+  // morning-feed.test.mjs for the kernels. These pin the control flow.
+  ok('app.js: the refresh button starts a forced sweep at once, never queues',
+    /const\s+refreshNow\s*=\s*useCallback\(\(\)\s*=>\s*\{\s*\n\s*pendingForceRef\.current\s*=\s*false;\s*\n\s*runFetch\(true\);/.test(appSrc));
+  ok('app.js: a superseded sweep stops at its next batch boundary',
+    /shouldStop:\s*\(\)\s*=>\s*seq\s*!==\s*sweepSeqRef\.current/.test(appSrc));
+  ok('app.js: and cannot carry a queued force away with it',
+    /while\s*\(pendingForceRef\.current\s*&&\s*seq\s*===\s*sweepSeqRef\.current\)/.test(appSrc));
+  ok('app.js: a tab switch still queues politely instead of superseding',
+    /const\s+queueRefresh\s*=\s*useCallback\(\(\)\s*=>\s*\{\s*\n\s*if\s*\(sweepActiveRef\.current\)\s*\{\s*pendingForceRef\.current\s*=\s*true;\s*return;\s*\}/.test(appSrc)
+    && /queuePricesRefresh\(\);\s*\n\s*\},\s*\[view\]\);/.test(appSrc));
+  ok('app.js: every sweep is ordered broken-first, then trading markets',
+    /PBCore\.prioritizeSweep\(due,/.test(appSrc) && /fetchQuoteBatch\(ordered,/.test(appSrc));
+  ok('app.js: the prioritiser sees held and missed symbols as broken',
+    /const\s+flagged\s*=\s*new\s+Set\(Object\.keys\(heldRef\.current\)[\s\S]{0,120}?missingRef\.current/.test(appSrc));
+  ok('app.js: the merge never steps a symbol backwards in time',
+    /guardBatch[\s\S]{0,900}?if\s*\(PBCore\.quoteOlderThan\(cur\[k\],\s*obj\[k\],\s*now\)\)\s*continue;/.test(appSrc));
 }
 
 // ── The second Yahoo call is skipped only where it cannot say anything new ───
