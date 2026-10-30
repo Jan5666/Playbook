@@ -1,7 +1,9 @@
 // Verifies the price-refresh fast-path fixes for the holdings "today" move:
 //   1. The header Refresh button is never a no-op — a click issues a fresh sweep.
 //   2. A manual refresh cache-busts (inner Yahoo URL carries &_=) so shared CORS
-//      proxies can't serve a stale cached quote; the auto-poll does NOT cache-bust.
+//      proxies can't serve a stale cached quote. The auto-poll does NOT carry that
+//      per-call buster; since 2026-10-30 it carries a per-MINUTE key (&_b=) instead,
+//      so a proxy cache can be at most ~60s old (it used to be unbounded).
 //   3. The user's own positions are fetched BEFORE the static recommendation
 //      lists (VOO lands last), so the portfolio "today" move repaints first.
 //   4. The portfolio "Today" pill reflects the merged quotes — present once the
@@ -66,7 +68,7 @@ const VERIFY_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
     if (inner && inner.includes('/v8/finance/chart/')) {
       let sym = '';
       try { sym = decodeURIComponent(inner.split('/chart/')[1].split('?')[0]); } catch (e) {}
-      window.__log.push({ sym, cb: /[?&]_=/.test(inner), t: performance.now() });
+      window.__log.push({ sym, cb: /[?&]_=/.test(inner), bucket: /[?&]_b=[0-9]+/.test(inner), quote: /interval=1d&range=5d|interval=1m&range=1d/.test(inner), t: performance.now() });
       return new Response(quoteJSON(sym), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     // Everything else (FX, news, etc.) — benign empty payload, no network.
@@ -147,7 +149,11 @@ try {
   const autoLog = JSON.parse(await evals(ws, `return JSON.stringify(window.__log);`));
   console.log('  auto-poll requests:', autoLog.length);
   ok('auto-poll fetched the positions', autoLog.some(e => e.sym === 'AAPL') && autoLog.some(e => e.sym === 'GOOGL'));
-  ok('auto-poll does NOT cache-bust', autoLog.length > 0 && autoLog.every(e => e.cb === false));
+  ok('auto-poll does NOT cache-bust per call', autoLog.length > 0 && autoLog.every(e => e.cb === false));
+  // Quote requests only — the growth chart's weekly history (range=max) is not a poll.
+  const autoQuotes = autoLog.filter(e => e.quote);
+  ok('auto-poll bounds proxy caches with a per-minute key (&_b=)', autoQuotes.length > 0 && autoQuotes.every(e => e.bucket === true),
+     `${autoQuotes.filter(e => e.bucket).length}/${autoQuotes.length} quote requests`);
 
   // Phase 2 inc 3: the routine cold-start poll must NOT include the static
   // recommendation lists (DATA.NEW_PICKS / DATA.HEDGES) or the dead VOO benchmark

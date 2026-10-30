@@ -51,10 +51,37 @@
     { name: 'codetabs',       build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, unwrap: t => t }
   ];
   let lastGoodProxy = null;
+  // Per-proxy health. Floating the last success to the front was the only memory
+  // the ladder had, so a proxy that had DIED stayed in its slot and every URL that
+  // missed the front-runner walked into it and waited out the full timeout — 8s a
+  // dead edge, per URL, for every symbol in the sweep. Free proxies die and get
+  // rate-limited all the time, and that is exactly when the sweep crawls: "the
+  // prices only load after midday". A proxy that fails PROXY_TRIP times in a row
+  // now sits at the BACK of the ladder for PROXY_COOLDOWN_MS. Never removed — if
+  // every edge is cooling the order is just the normal one, and one success clears
+  // the record. A 404 is the upstream's answer about the symbol, not the proxy's
+  // health, so it neither trips nor clears anything.
+  const PROXY_TRIP = 2;
+  const PROXY_COOLDOWN_MS = 3 * 60 * 1000;
+  const proxyHealth = {};   // name -> { fails, at }
+  function proxyCooling(name, now) {
+    const h = proxyHealth[name];
+    return !!h && h.fails >= PROXY_TRIP && (now - h.at) < PROXY_COOLDOWN_MS;
+  }
+  function noteProxy(name, ok) {
+    if (ok) { delete proxyHealth[name]; return; }
+    const h = proxyHealth[name] || (proxyHealth[name] = { fails: 0, at: 0 });
+    h.fails++; h.at = Date.now();
+  }
   function orderedProxies() {
-    if (!lastGoodProxy) return CORS_PROXIES;
-    const idx = CORS_PROXIES.findIndex(p => p.name === lastGoodProxy);
-    return idx <= 0 ? CORS_PROXIES : [CORS_PROXIES[idx], ...CORS_PROXIES.slice(0, idx), ...CORS_PROXIES.slice(idx + 1)];
+    let base = CORS_PROXIES;
+    if (lastGoodProxy) {
+      const idx = CORS_PROXIES.findIndex(p => p.name === lastGoodProxy);
+      if (idx > 0) base = [CORS_PROXIES[idx], ...CORS_PROXIES.slice(0, idx), ...CORS_PROXIES.slice(idx + 1)];
+    }
+    const now = Date.now();
+    const cooling = base.filter(p => proxyCooling(p.name, now));
+    return cooling.length ? base.filter(p => !proxyCooling(p.name, now)).concat(cooling) : base;
   }
   // Detect proxy responses that returned 200 but contain an upstream error or
   // rate-limit message. Treating these as success would silently propagate
@@ -118,12 +145,13 @@
       for (const px of orderedProxies()) {
         try {
           const out = await fetchWithDeadline(px.build(url), { cache: 'no-store' }, timeoutMs, r => r.text());
-          if (!out.ok) continue;
+          if (!out.ok) { if (out.status !== 404) noteProxy(px.name, false); continue; }
           const body = px.unwrap(out.value);
-          if (looksLikeProxyError(body)) continue;
+          if (looksLikeProxyError(body)) { noteProxy(px.name, false); continue; }
           lastGoodProxy = px.name;
+          noteProxy(px.name, true);
           return body;
-        } catch (e) {}
+        } catch (e) { noteProxy(px.name, false); }   // timeout / network failure
       }
       return null;
     })();
@@ -134,6 +162,7 @@
 
   // Test seams (Node only; harmless in browser).
   function _setLastGoodProxy(v) { lastGoodProxy = v; }
+  function _resetProxyHealth() { for (const k in proxyHealth) delete proxyHealth[k]; }
 
   // ─── Company-name cache ─────────────────────────────────────────────────────
   // Heatmap constituents (and many Yahoo-searched tickers) ship without a curated
@@ -594,9 +623,16 @@
     // A manual refresh passes cacheBust so a unique query param sidesteps any
     // response the shared CORS proxies have cached — that stale-proxy cache is a
     // big reason tapping "refresh" could return the same numbers. Yahoo ignores
-    // the extra param, so it's harmless on the auto-poll path (left off there to
-    // keep benefiting from proxy caching).
-    const cb = opts.cacheBust ? `&_=${Date.now()}` : '';
+    // the extra param.
+    //
+    // The auto-poll used to send NO key at all, which left the age of what it got
+    // back up to each proxy's cache — a TTL we neither set nor can see. A proxy
+    // replaying the pre-open response through the morning would make every poll
+    // "succeed" with yesterday's quote, and nothing retries a success. A per-MINUTE
+    // key bounds any proxy cache to ~60s while identical requests inside the same
+    // minute still de-dupe in _inflight. (`_b`, not `_`: the browser gate tells the
+    // two apart — only a manual press carries the per-call `_`.)
+    const cb = opts.cacheBust ? `&_=${Date.now()}` : `&_b=${Math.floor(Date.now() / 60000)}`;
     // NO includePrePost on the daily chart, deliberately: with it, the current
     // day's daily bar absorbs pre/post trades, so the bar that derivePrevClose /
     // deriveDayMove treat as "the regular close" silently becomes an after-hours
@@ -763,11 +799,17 @@
   // next batch. Per-symbol failures are kept out of `results` so callers can
   // treat absence as "no data"; the rejection reason is logged for diagnostics.
   async function fetchQuoteBatch(items, opts = {}) {
-    const { onBatch, onMissing, cacheBust } = opts;
+    const { onBatch, onMissing, cacheBust, shouldStop } = opts;
+    // A superseded sweep stops at the next batch boundary (see usePriceFeed's
+    // refreshNow). Batches already in flight finish and still merge — only new
+    // ones are not started — and a stopped sweep reports no miss list, because a
+    // plan it abandoned half-way has no verdict on the symbols it never asked for.
+    const stopped = () => !!(shouldStop && shouldStop());
     const results = {};
     const batchSize = 8;
     const runPass = async (list, bust) => {
       for (let i = 0; i < list.length; i += batchSize) {
+        if (stopped()) return;
         const batch = list.slice(i, i + batchSize);
         const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market, { cacheBust: bust })));
         // Collect just this batch's fresh quotes so the caller can paint them
@@ -800,8 +842,10 @@
     // that the retry re-requested a byte-identical url and any proxy-cached error
     // — the very thing that made pass 1 fail — was served straight back, so the
     // "retry" could not recover a symbol whose failure lived in a proxy's cache.
+    if (stopped()) return results;
     const missing = items.filter(it => !results[priceKey(it.market, it.ticker)]);
     if (missing.length) await runPass(missing, true);
+    if (stopped()) return results;
     // Per-symbol misses are the ONLY place the sweep knows which holdings it
     // failed to price: `results` carries successes, a fetchQuote that returns null
     // (the common failure — fetchViaProxies resolves null rather than throwing)
@@ -1253,6 +1297,7 @@
     cacheName, cachedName,
     fetchFxRates, fetchHistoricalFx,
     _setLastGoodProxy,
+    _resetProxyHealth,
     // Test hook: the FX cache + in-flight maps are module-private, so the
     // characterization suite needs a way to start each scenario cold.
     _resetFxCache() {

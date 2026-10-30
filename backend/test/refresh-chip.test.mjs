@@ -65,7 +65,7 @@ ok('a thrown sweep drops its queued force instead of leaking it',
 // Without it, a holding that quietly stops updating shows the "Updated ✓" chip, a
 // believable price, and a blank Today cell, with nothing anywhere naming it.
 ok('the feed reports per-symbol health, not just the sweep verdict',
-  /return \{ loading, lastUpdate, failStreak, refresh, refreshNow, mergePrices, feedHealth \};/.test(feed));
+  /return \{ loading, lastUpdate, failStreak, refresh, refreshNow,[^}]*\bfeedHealth \};/.test(feed));
 ok('feedHealth carries both the misses and the guard-held symbols',
   /feedHealth\s*=\s*useMemo\([\s\S]{0,200}?missing:\s*feedMissing[\s\S]{0,80}?held:\s*feedHeld/.test(feed));
 ok('runFetch collects fetchQuoteBatch\'s miss list', /onMissing:\s*\(miss\)\s*=>/.test(feed));
