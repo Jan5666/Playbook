@@ -28,7 +28,7 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
 
 const { aggregateSectorSnapshot, classifyRotation, pairFlows, buildRotationFetchPlan,
         buildIntradaySeries, combineSectorSeries, downsampleRotationSeries,
-        rotationSummary, ROTATION_THRESHOLDS, priceKey,
+        rotationSummary, ROTATION_THRESHOLDS, priceKey, rotationSessionDay,
         THIN_SECTOR_MIN_NAMES, THIN_SECTOR_MIN_SHARE } = PBCore;
 
 // ── 1. aggregateSectorSnapshot ───────────────────────────────────────────────
@@ -109,7 +109,21 @@ const { aggregateSectorSnapshot, classifyRotation, pairFlows, buildRotationFetch
   // sort tie-breaks on input index to match.
   const tied = aggregateSectorSnapshot([mk('A', 2), mk('B', 2), mk('C', -1), mk('D', -1)]).sectors[0];
   ok('movers: gainers[0] is top, even on a tie', tied.gainers[0].ticker === tied.top.ticker && tied.top.ticker === 'A');
-  ok('movers: losers[0] is bottom, even on a tie', tied.losers[0].ticker === tied.bottom.ticker && tied.bottom.ticker === 'C');
+  // The worst end is the best end's order reversed, so among tied losers the
+  // LAST-seen name leads (D). That is what keeps the two lists disjoint on ties.
+  ok('movers: losers[0] is bottom, even on a tie', tied.losers[0].ticker === tied.bottom.ticker && tied.bottom.ticker === 'D');
+}
+{
+  // Live regression (DAX, 2026-10-31 audit): two names tied put the same ticker
+  // on BOTH the best and the worst list.
+  const mk = (t, p) => ({ ticker: t, sector: 'S', m: 10, changePct: p });
+  for (const n of [2, 3, 4, 5, 6]) {
+    const s = aggregateSectorSnapshot(Array.from({ length: n }, (_, i) => mk('T' + i, 1))).sectors[0];
+    const g = new Set(s.gainers.map(x => x.ticker));
+    ok('movers: all-tied sector of ' + n + ' never lists a ticker twice', s.losers.every(x => !g.has(x.ticker)));
+  }
+  const two = aggregateSectorSnapshot([mk('SAP', 1), mk('IFX', 1)]).sectors[0];
+  ok('movers: tied pair -> best SAP, worst IFX', two.gainers[0].ticker === 'SAP' && two.losers[0].ticker === 'IFX');
   // A missing quote is "unknown", not "unchanged" — same rule as wPct/deltaCap.
   const withNull = aggregateSectorSnapshot([mk('A', 2), { ticker: 'N', sector: 'S', m: 10, changePct: null }, mk('B', -2)]).sectors[0];
   ok('movers: unquoted rows are excluded', withNull.gainers[0].ticker === 'A' && withNull.losers[0].ticker === 'B'
@@ -620,6 +634,170 @@ const SECTOR_ETF = { Technology: { etf: 'XLK' }, Energy: { etf: 'XLE' }, Financi
   ok('summary: unquoted sector excluded from the denominator', classifyRotation(snap).quotedSectors === 1);
 }
 
+// ── 17. Session alignment (2026-10-31 audit) ─────────────────────────────────
+// Every row's changePct is a claim about ONE session. Rows from ~30-150 separate
+// proxied fetches routinely include a few a session behind (cached proxy
+// response, lagging daily series, halted name). They must be left out, not
+// blended into today's figures.
+{
+  const T = '2026-10-30', Y = '2026-10-29';
+  const rows = [
+    { ticker: 'A', sector: 'Tech', m: 100, changePct: 1, sessionDay: T },
+    { ticker: 'B', sector: 'Tech', m: 50, changePct: 2, sessionDay: T },
+    { ticker: 'C', sector: 'Energy', m: 40, changePct: -1, sessionDay: T },
+    // yesterday's +5% must NOT leak into today's Energy figure
+    { ticker: 'D', sector: 'Energy', m: 30, changePct: 5, sessionDay: Y },
+  ];
+  const snap = aggregateSectorSnapshot(rows);
+  const energy = snap.sectors.find(s => s.sector === 'Energy');
+  ok('session: snapshot picks the session holding most quoted cap', snap.market.sessionDay === T);
+  ok('session: off-session row counted, not aggregated', snap.market.offSession === 1);
+  ok('session: Energy wPct is today only (-1, not blended)', near(energy.wPct, -1));
+  ok('session: off-session row stays in the universe (count 2, quoted 1)', energy.count === 2 && energy.quoted === 1);
+  ok('session: market move ignores the stale row', near(snap.market.wPct, (100 * 1 + 50 * 2 + 40 * -1) / 190));
+  ok('session: off-session name is not a top/bottom mover', energy.top.ticker === 'C' && energy.bottom.ticker === 'C');
+  const c = classifyRotation(snap);
+  ok('session: classifyRotation reports sessionDay + offSession', c.sessionDay === T && c.offSession === 1);
+}
+{
+  // Plurality by CAP, not "newest wins": shortly after an open only a minority
+  // of cap has printed today; one early print must not flip the whole snapshot.
+  const rows = [
+    { ticker: 'BIG', sector: 'Tech', m: 900, changePct: 1.5, sessionDay: '2026-10-29' },
+    { ticker: 'SML', sector: 'Tech', m: 10, changePct: 0.4, sessionDay: '2026-10-30' },
+  ];
+  ok('session: cap plurality beats recency', rotationSessionDay(rows) === '2026-10-29');
+  // Tie on cap -> the newer session.
+  ok('session: cap tie goes to the newer session', rotationSessionDay([
+    { ticker: 'A', sector: 'X', m: 10, changePct: 1, sessionDay: '2026-10-29' },
+    { ticker: 'B', sector: 'X', m: 10, changePct: 1, sessionDay: '2026-10-30' },
+  ]) === '2026-10-30');
+  // Rows that can't say which session they are from always count.
+  const snap = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'X', m: 10, changePct: 1, sessionDay: '2026-10-30' },
+    { ticker: 'B', sector: 'X', m: 10, changePct: 3, sessionDay: null },
+  ]);
+  ok('session: null sessionDay passes (benefit of the doubt)', snap.market.quoted === 2 && snap.market.offSession === 0);
+  // No session info at all (legacy rows) -> behaviour unchanged.
+  const legacy = aggregateSectorSnapshot([{ ticker: 'A', sector: 'X', m: 10, changePct: 1 }]);
+  ok('session: legacy rows -> sessionDay null, nothing excluded', legacy.market.sessionDay === null && legacy.market.offSession === 0 && legacy.market.quoted === 1);
+  // An unquoted row never votes.
+  ok('session: unquoted rows do not vote', rotationSessionDay([
+    { ticker: 'A', sector: 'X', m: 999, changePct: null, sessionDay: '2026-10-29' },
+    { ticker: 'B', sector: 'X', m: 1, changePct: 1, sessionDay: '2026-10-30' },
+  ]) === '2026-10-30');
+}
+{
+  // A string cap must not string-concatenate into the weight sums.
+  const snap = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'X', m: '100', changePct: 1 },
+    { ticker: 'B', sector: 'X', m: 50, changePct: -1 },
+  ]);
+  ok('caps: string cap coerced to a number', snap.market.totalWeight === 150 && near(snap.market.wPct, 50 / 150));
+}
+
+// ── 18. Thin sectors cannot anchor a rotation ────────────────────────────────
+{
+  // One big, broad sector up; the only "down" sector is a single name. That is a
+  // single-stock move, not money rotating out of a sector.
+  const rows = [
+    { ticker: 'A1', sector: 'Fin', m: 100, changePct: 1.2 },
+    { ticker: 'A2', sector: 'Fin', m: 100, changePct: 1.0 },
+    { ticker: 'A3', sector: 'Fin', m: 100, changePct: 0.9 },
+    { ticker: 'H1', sector: 'Health', m: 120, changePct: -2.5 },
+  ];
+  const snap = aggregateSectorSnapshot(rows);
+  ok('thin anchor: Health is flagged thin (one name)', snap.sectors.find(s => s.sector === 'Health').thin === true);
+  const c = classifyRotation(snap);
+  ok('thin anchor: dispersion alone is high', c.dispersion >= ROTATION_THRESHOLDS.DISP);
+  ok('thin anchor: single-name down side does NOT make it a rotation', c.rotating === false);
+  // Same shape with a real two-name down side DOES rotate.
+  const snap2 = aggregateSectorSnapshot(rows.concat([{ ticker: 'H2', sector: 'Health', m: 120, changePct: -2.0 }]));
+  ok('thin anchor: two-name down side rotates', classifyRotation(snap2).rotating === true);
+}
+
+// ── 19. Breadth with nothing directional + the 'mixed' sentences ─────────────
+{
+  const snap = aggregateSectorSnapshot([
+    { ticker: 'A', sector: 'X', m: 10, changePct: 0 },
+    { ticker: 'B', sector: 'Y', m: 10, changePct: 0 },
+  ]);
+  const c = classifyRotation(snap);
+  ok('breadth: no advancers or decliners -> null, not 50%', c.breadthPct === null);
+  ok('breadth: still classifies (quiet)', c.verdict === 'quiet');
+  ok('breadth: summary never prints NaN/0% for null breadth', !/NaN/.test(rotationSummary(Object.assign({}, c, { verdict: 'mixed', net: 'flat' }))));
+}
+{
+  // Net-in but narrow (breadth < BREADTH_LO): the market HAS a direction.
+  const narrowUp = synthSnapshot([
+    { sector: 'A', wPct: 1.2, m: 100, adv: 2, dec: 8 },
+    { sector: 'B', wPct: 0.05, m: 40, adv: 3, dec: 7 },
+  ]);
+  const c = classifyRotation(narrowUp);
+  const sum = rotationSummary(c);
+  ok('summary: narrow advance is not called "no clear direction"', c.verdict === 'mixed' && /Narrow advance/.test(sum) && !/No clear direction/.test(sum));
+  const narrowDown = synthSnapshot([
+    { sector: 'A', wPct: -1.2, m: 100, adv: 8, dec: 2 },
+    { sector: 'B', wPct: -0.05, m: 40, adv: 7, dec: 3 },
+  ]);
+  const d = classifyRotation(narrowDown);
+  ok('summary: narrow decline sentence', d.verdict === 'mixed' && /Narrow decline/.test(rotationSummary(d)));
+}
+
+// ── 20. Light quotes carry their session; no prevClose = unknown, not 0% ─────
+{
+  PBData.configure({ indicatorCatalog: {} });
+  const DAY = 86400;
+  const utcMid = (backDays, hh) => {
+    const d = new Date(Date.now() - backDays * DAY * 1000);
+    return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hh, 0, 0) / 1000);
+  };
+  const savedFetch = globalThis.fetch;
+  // Two daily bars on two consecutive days -> deriveDayMove resolves a session.
+  const bars = [utcMid(3, 15), utcMid(2, 15)];
+  const ok1 = { chart: { result: [{
+    meta: { regularMarketPrice: 105, currency: 'USD', chartPreviousClose: 100,
+            regularMarketTime: utcMid(2, 20), marketState: 'POSTPOST' },
+    timestamp: bars, indicators: { quote: [{ close: [100, 105] }] } }] } };
+  globalThis.fetch = async () => ({ ok: true, text: async () => JSON.stringify(ok1) });
+  const q = await PBData.fetchQuoteLight('ROTA', 'US');
+  ok('light: quote carries a sessionDay string', q && typeof q.sessionDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.sessionDay));
+  // One bar, no usable previous close anywhere -> changePct null (unknown).
+  const lone = { chart: { result: [{
+    meta: { regularMarketPrice: 105, currency: 'USD', regularMarketTime: utcMid(2, 20), marketState: 'POSTPOST' },
+    timestamp: [utcMid(2, 15)], indicators: { quote: [{ close: [105] }] } }] } };
+  globalThis.fetch = async () => ({ ok: true, text: async () => JSON.stringify(lone) });
+  const q2 = await PBData.fetchQuoteLight('ROTB', 'US');
+  ok('light: no previous close -> changePct null, not 0', q2 && q2.changePct === null);
+  globalThis.fetch = savedFetch;
+}
+
+// ── 21. Intraday windows come from the bars' OWN day ─────────────────────────
+{
+  // A pre-open / weekend fetch: currentTradingPeriod has rolled to the NEXT
+  // session, the bars are the previous one's. tradingPeriods describes the bars.
+  const DAY = 86400;
+  const base = 1761800000; // arbitrary epoch seconds
+  const result = {
+    timestamp: [base + 100, base + 400, base + 900],
+    meta: { currency: 'USD', chartPreviousClose: 100,
+      tradingPeriods: { pre: [[{ start: base, end: base + 300 }]], regular: [[{ start: base + 300, end: base + 800 }]], post: [[{ start: base + 800, end: base + 1200 }]] },
+      currentTradingPeriod: { regular: { start: base + DAY + 300, end: base + DAY + 800 } } },
+    indicators: { quote: [{ close: [101, 102, 103] }] },
+  };
+  const parsed = PBData.parseIntradayResult(result, 'XLK', 'US');
+  ok('intraday: windows anchored to tradingPeriods, not the rolled ctp',
+    parsed.regularStart === (base + 300) * 1000 && parsed.regularEnd === (base + 800) * 1000);
+  ok('intraday: bars classified pre/regular/post on their own day',
+    parsed.points.map(p => p.session).join(',') === 'pre,regular,post');
+  // ctp-only and rolled forward: walked back to cover the bars.
+  const r2 = { timestamp: [base + 400, base + 500],
+    meta: { currency: 'USD', chartPreviousClose: 100, currentTradingPeriod: { regular: { start: base + DAY + 300, end: base + DAY + 800 } } },
+    indicators: { quote: [{ close: [101, 102] }] } };
+  const p2 = PBData.parseIntradayResult(r2, 'XLK', 'US');
+  ok('intraday: ctp-only rolled window walked back a day', p2.regularStart === (base + 300) * 1000 && p2.points.every(p => p.session === 'regular'));
+}
+
 // ── 16. Anti-drift source guards ─────────────────────────────────────────────
 ok('guard: app.js registers the rotation tab', /\['rotation',\s*'Rotation'\]/.test(appSrc));
 ok('guard: app.js binds MarketRotationView from PBViews', /const\s+MarketRotationView\s*=\s*PBViews\.MarketRotationView/.test(appSrc));
@@ -628,6 +806,8 @@ ok('guard: app.js mounts rotation in the views map', /rotation:\s*React\.createE
 ok('guard: BACKUP_SKIP carries pb.rotation.lastgood.v1', /pb\.rotation\.lastgood\.v1/.test(appSrc));
 ok('guard: pb-views.js delegates to PBCore.aggregateSectorSnapshot', /PBCore\.aggregateSectorSnapshot/.test(viewsSrc));
 ok('guard: pb-views.js delegates to PBCore.pairFlows', /PBCore\.pairFlows/.test(viewsSrc));
+ok('guard: pb-views.js rows carry sessionDay into the aggregator', /changePct:\s*q\s*\?\s*q\.changePct\s*:\s*null,\s*sessionDay:/.test(viewsSrc));
+ok('guard: pb-views.js flow thresholds are in bp, not absolute bn', /ROT_MIN_FLOW_BP/.test(viewsSrc) && !/flows\.totalIn\s*>\s*0\.05/.test(viewsSrc));
 ok('guard: pb-views.js does not re-implement the math', !/function\s+(aggregateSectorSnapshot|pairFlows|classifyRotation)\s*\(/.test(viewsSrc));
 ok('guard: sw.js CACHE_NAME bumped off v65', !/playbook-shell-v65/.test(swSrc));
 

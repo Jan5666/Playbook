@@ -18,7 +18,7 @@
   // ladder itself could need; the rest are forward-looking.)
   const { yahooSymbol, centDivisor, parseYahooQuote, buildDailyBars,
           deriveDayMove, deriveIntradayExt, plausiblePriceMove, marketSession,
-          marketDayKey, regularTickAfterBars, hasExtendedSession,
+          marketDayKey, regularTickAfterBars, hasExtendedSession, resolveTradingWindows,
           MARKET_CURRENCY, priceKey, pLimit } = PBCore;
 
   // App-injected config (set once from app.js via PBData.configure). Kept here so
@@ -907,8 +907,16 @@
         ? metaPrevRaw / divisor : null;
       const move = deriveDayMove(bars, price, meta.chartPreviousClose / divisor, market, { lastTick, metaPrevClose });
       const prevClose = move.prevClose;
-      const changePct = prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0;
-      return { price, changePct, fetchedAt: Date.now() };
+      // No previous close = the day move is UNKNOWN, not 0%. Reporting 0 counted
+      // the name as "unchanged" in the Rotation tab's breadth and cap-weighted
+      // move and painted it a neutral heatmap tile; null is what every consumer
+      // (heatmap, rotation, hot-stocks) already treats as "no data".
+      const changePct = prevClose > 0 ? (price - prevClose) / prevClose * 100 : null;
+      // sessionDay = the market-local day this move belongs to (deriveDayMove's
+      // verdict). The Rotation tab aggregates ~30-150 of these into one session's
+      // figures and needs it to drop quotes a session behind; it used to be
+      // computed here and thrown away.
+      return { price, changePct, sessionDay: move.sessionDay != null ? move.sessionDay : null, fetchedAt: Date.now() };
     } catch (_e) { return null; }
   }
   async function fetchQuoteBatchLight(items, onProgress) {
@@ -1042,9 +1050,15 @@
     const currency = meta.currency || (MARKET_CURRENCY[market]?.code || 'USD');
     const divisor = centDivisor(market, currency);
     cacheName(market, ticker, meta.shortName || meta.longName);
-    const ctp = meta.currentTradingPeriod || {};
-    const regularStart = ctp.regular?.start ? ctp.regular.start * 1000 : null;
-    const regularEnd = ctp.regular?.end ? ctp.regular.end * 1000 : null;
+    // The regular window of the bars' OWN day. currentTradingPeriod alone rolls
+    // to the NEXT session at exchange midnight, so a weekend or pre-open fetch
+    // (which returns the last session's bars) classified every bar as 'pre' and
+    // the chart's x-range — anchored to that window — excluded all of them.
+    // resolveTradingWindows is the kernel the ext-hours path already uses for
+    // exactly this.
+    const win = resolveTradingWindows(result);
+    const regularStart = win && win.regular ? win.regular.start * 1000 : null;
+    const regularEnd = win && win.regular ? win.regular.end * 1000 : null;
     const points = [];
     for (let i = 0; i < ts.length; i++) {
       const c = closes[i];

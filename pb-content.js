@@ -209,7 +209,7 @@ const ROTATION_COPY = {
     rotation: 'Money is rotating, not leaving',
     'inflow-rotation': 'Inflows, with rotation underneath',
     'outflow-rotation': 'Outflows, with rotation underneath',
-    mixed: 'Mixed - no clear direction',
+    mixed: 'Mixed signals',
     quiet: 'Quiet session',
   },
   phase: {

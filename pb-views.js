@@ -270,6 +270,22 @@ function rotBps(v, signed) {
 function rotPctOf(frac) {
   return (frac == null || !isFinite(frac)) ? '\u2013' : Math.round(frac * 100) + '%';
 }
+// 'YYYY-MM-DD' market-day key -> 'Thu 30-10-2026'. The tab has to say WHICH
+// session it is showing: before the bell (and all through US pre-market) the
+// snapshot is the previous session's, while the chip beside it reads the
+// market's current phase, and a bare "Pre-market" over yesterday's numbers read
+// as today's.
+function rotDay(key) {
+  if (typeof key !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return '';
+  const d = new Date(key + 'T12:00:00Z');
+  if (!isFinite(d.getTime())) return '';
+  const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()];
+  return wd + ' ' + key.slice(8, 10) + '-' + key.slice(5, 7) + '-' + key.slice(0, 4);
+}
+// Below this many basis points of quoted index cap a flow is noise. It used to
+// be an absolute 0.05bn, which is a different bar in every currency and index
+// size: ~0.01bp of the S&P universe but ~0.5bp of the AEX one.
+const ROT_MIN_FLOW_BP = 0.5;
 function rotTime(ms, tz) {
   try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(ms)); }
   catch (_e) { return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
@@ -700,7 +716,9 @@ function MarketRotationView(_refMR) {
     setProgress({ phase: 'quotes', done: 0, total: constituents.length });
     const buildRows = quotes => constituents.map(c => {
       const q = quotes[PBCore.priceKey(exchange.market, c.t)];
-      return { ticker: c.t, sector: c.s, m: c.m, changePct: q ? q.changePct : null };
+      // sessionDay lets PBCore.aggregateSectorSnapshot keep the snapshot on ONE
+      // session; a quote a session behind is dropped, not blended in.
+      return { ticker: c.t, sector: c.s, m: c.m, changePct: q ? q.changePct : null, sessionDay: q && q.sessionDay ? q.sessionDay : null };
     });
     const aggregate = (quotes, series, activity, fetchedAt) => {
       const snapshot = PBCore.aggregateSectorSnapshot(buildRows(quotes));
@@ -784,11 +802,25 @@ function MarketRotationView(_refMR) {
   // load()'s own 5-minute gate still applies.
   const loadStable = useRef(load);
   loadStable.current = load;
+  const cacheRef = useRef(cached);
+  cacheRef.current = cached;
   useEffect(() => {
     const tick = () => {
       setNowTick(Date.now());
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      if (PBCore.marketSession(exchange.market).phase !== 'open') return;
+      // While the session runs, and for one more pass after it: Yahoo's JSE/LSE
+      // feeds run ~15 min late and both exchanges close with an auction, so the
+      // last fetch made while the market was open is a pre-auction print. It used
+      // to stand as "the close" until the user happened to press Refresh. Keep
+      // polling (load()'s 5-minute gate still applies) until a fetch lands at
+      // least QUOTE_SETTLE_GRACE_MS after the bell — the same rule quoteSettled
+      // applies to holdings.
+      const phase = PBCore.marketSession(exchange.market).phase;
+      const at = cacheRef.current && cacheRef.current.fetchedAt;
+      const grace = PBCore.QUOTE_SETTLE_GRACE_MS || 2400000;
+      const unsettled = !!at && (PBCore.marketSession(exchange.market, at).phase === 'open'
+        || PBCore.marketSession(exchange.market, at - grace).phase === 'open');
+      if (phase !== 'open' && !unsettled) return;
       loadStable.current(false);
     };
     const id = setInterval(tick, 60000);
@@ -807,7 +839,20 @@ function MarketRotationView(_refMR) {
   const copy = PBContent.ROTATION_COPY;
   const marketPct = classified ? classified.marketPct : 0;
   const quotedWeight = snapshot ? snapshot.market.quotedWeight : 0;
-  const flowShown = classified && flows && (flows.totalIn > 0.05 || flows.totalOut > 0.05);
+  const bpOf = v => rotContribBps(v, quotedWeight);
+  const flowShown = classified && flows && quotedWeight > 0
+    && (bpOf(flows.totalIn) >= ROT_MIN_FLOW_BP || bpOf(flows.totalOut) >= ROT_MIN_FLOW_BP);
+  // The session the snapshot actually describes (null on entries persisted
+  // before quotes carried one) vs the market's own today.
+  const snapDay = classified && classified.sessionDay ? classified.sessionDay : null;
+  const todayDay = PBCore.marketDayKey(nowTick, exchange.market);
+  const priorSession = !!(snapDay && todayDay && snapDay !== todayDay);
+  // The intraday lines are a separate fetch and can describe a different day
+  // (US pre-market: the list is yesterday's session, the chart today's
+  // pre-market). Date the chart whenever the two disagree.
+  const chartDay = series && Array.isArray(series.ts) && series.ts.length
+    ? PBCore.marketDayKey(series.ts[series.ts.length - 1], exchange.market) : null;
+  const chartDiffers = !!(chartDay && snapDay && chartDay !== snapDay);
   const progText = progress
     ? (progress.phase === 'intraday'
       ? 'Sector lines ' + progress.done + ' / ' + progress.total
@@ -816,12 +861,20 @@ function MarketRotationView(_refMR) {
   // A cached snapshot from a previous session must say so. The footer used to
   // print a bare "16:32", which reads as today at a glance.
   const stale = useMemo(() => {
+    // Older than the most recent session that has started = genuinely out of
+    // date. Being the PREVIOUS session before today's bell is not stale; it is
+    // the latest complete session, and the chip names its date.
+    const sd = cached && cached.classified && cached.classified.sessionDay;
+    if (sd) {
+      const last = PBCore.lastSessionDay(exchange.market, nowTick);
+      return !!(last && sd < last);
+    }
     const at = cached && cached.fetchedAt;
     if (!at) return false;
     const a = PBCore.marketDayKey(at, exchange.market);
     const b = PBCore.marketDayKey(nowTick, exchange.market);
     return !!(a && b && a !== b);
-  }, [cached && cached.fetchedAt, exchange.market, nowTick]);
+  }, [cached && cached.fetchedAt, cached && cached.classified, exchange.market, nowTick]);
   const skeleton = loading && !classified;
 
   return RE('div', { className: 'rot-view' },
@@ -844,9 +897,16 @@ function MarketRotationView(_refMR) {
     classified ? RE('div', { className: 'rot-verdict-card' },
       RE('div', { className: 'rot-verdict-top' },
         RE('span', { className: 'rot-verdict-pill v-' + classified.verdict }, copy.verdicts[classified.verdict] || 'Market'),
-        RE('span', { className: 'rot-phase-chip' + (session.phase !== 'closed' && !stale ? ' live' : '') },
-          session.phase !== 'closed' && !stale ? RE('span', { className: 'rot-phase-dot' }) : null,
-          stale ? 'Previous session' : (copy.phase[session.phase] || 'Market'))),
+        // The live dot means "these numbers are from the session in progress".
+        // Before the bell — including all of US pre-market — the snapshot is the
+        // previous session's, so the chip names that session's date instead of
+        // the market's phase.
+        RE('span', { className: 'rot-phase-chip' + (session.phase !== 'closed' && !stale && !priorSession ? ' live' : ''),
+                     title: snapDay ? 'Figures are for the ' + rotDay(snapDay) + ' session' : undefined },
+          session.phase !== 'closed' && !stale && !priorSession ? RE('span', { className: 'rot-phase-dot' }) : null,
+          (stale || priorSession)
+            ? (snapDay ? 'Session ' + rotDay(snapDay) : 'Previous session')
+            : (copy.phase[session.phase] || 'Market'))),
       // Headline: the market move is the number this whole tab is about, so it
       // gets the size. It used to be a 14px cell in a four-up grid.
       RE('div', { className: 'rot-headline' },
@@ -877,7 +937,8 @@ function MarketRotationView(_refMR) {
           note: flows ? rotBn(sym, flows.matched) + ' est.' : null
         })),
       snapshot ? RE('div', { className: 'rot-coverage' },
-        RE('span', null, snapshot.market.quoted + ' of ' + snapshot.market.count + ' names quoted'),
+        RE('span', null, snapshot.market.quoted + ' of ' + snapshot.market.count + ' names quoted'
+          + (snapshot.market.offSession > 0 ? ' (' + snapshot.market.offSession + ' still on an earlier session, left out)' : '')),
         exchange.coverageNote ? RE('span', { className: 'rot-cov-note' }, exchange.coverageNote) : null,
         classified.confidence === 'low' ? RE('span', { className: 'rot-conf-low' }, 'Partial data') : null) : null
     ) : (!loading && !error && !skeleton ? RE('div', { className: 'rot-empty' }, 'Loading rotation\u2026') : null),
@@ -885,7 +946,7 @@ function MarketRotationView(_refMR) {
     flowShown ? RE('div', { className: 'rot-panel' },
       RE('div', { className: 'rot-panel-head' },
         RE('span', { className: 'rot-panel-title' }, 'Money flow'),
-        RE('span', { className: 'rot-panel-sub' }, flows.matched > 0.05
+        RE('span', { className: 'rot-panel-sub' }, bpOf(flows.matched) >= ROT_MIN_FLOW_BP
           ? '~' + rotBps(rotContribBps(flows.matched, quotedWeight)) + ' rotating \u00b7 net ' + rotBps(rotContribBps(flows.net, quotedWeight), true)
           : 'One-sided \u00b7 net ' + rotBps(rotContribBps(flows.net, quotedWeight), true))),
       RE(RotationFlowDiagram, { classified, flows, sym, quotedWeight, colorMap, highlight, onHighlight: onHi })
@@ -894,7 +955,7 @@ function MarketRotationView(_refMR) {
     classified ? RE('div', { className: 'rot-panel' },
       RE('div', { className: 'rot-panel-head' },
         RE('span', { className: 'rot-panel-title' }, 'Through the day'),
-        RE('span', { className: 'rot-panel-sub' }, 'Cumulative % vs prior close \u00b7 dashed = extended hours')),
+        RE('span', { className: 'rot-panel-sub' }, (chartDiffers ? rotDay(chartDay) + ' \u00b7 ' : '') + 'Cumulative % vs prior close \u00b7 dashed = extended hours')),
       series ? RE(RotationIntradayChart, { built: series, colorMap, market: exchange.market, highlight, onHighlight: onHi })
         : RE('div', { className: 'rot-chart-missing' },
           RE('span', null, loading ? 'Loading intraday lines\u2026' : 'Intraday lines unavailable.'),
