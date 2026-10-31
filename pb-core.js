@@ -1877,20 +1877,64 @@ const THIN_SECTOR_MIN_SHARE = 0.01; // ...or under this share of quoted index ca
 // names, 'down' the worst. The split is deliberately asymmetric for small
 // sectors so a ticker can NEVER appear on both lists: ceil + floor sum to n
 // below four names (1 -> 1+0, 2 -> 1+1, 3 -> 2+1), and 2+2 fits from four up.
-// The index tie-break makes first-seen win at both ends, which is exactly what
-// the strict >/< comparisons feeding `top`/`bottom` do — so gainers[0] is
-// always `top` and losers[0] always `bottom`, ties included.
+//
+// That guarantee also needs the two ends to be the SAME total order read from
+// opposite ends, ties included. They used to both tie-break first-seen, which is
+// two different orders: two names tied at +1.00% put the first one on BOTH
+// lists (seen live on the DAX: "best SAP +1.00%, worst SAP +1.00%"). Now 'up'
+// is (value desc, index asc) and 'down' is its exact reverse (value asc, index
+// desc), so the first k of one and the first j of the other are disjoint
+// whenever k + j <= n. `top` (strict >, first-seen) and `bottom` (<=, last-seen)
+// follow the same order, so gainers[0] is always `top` and losers[0] always
+// `bottom`, ties included.
 function rankMovers(movers, dir) {
   const n = movers.length;
   const want = dir === 'up' ? Math.min(2, Math.ceil(n / 2)) : Math.min(2, Math.floor(n / 2));
   if (want <= 0) return [];
   return movers.map((m, i) => ({ m, i }))
-    .sort((a, b) => (dir === 'up' ? b.m.changePct - a.m.changePct : a.m.changePct - b.m.changePct) || (a.i - b.i))
+    .sort((a, b) => dir === 'up'
+      ? (b.m.changePct - a.m.changePct) || (a.i - b.i)
+      : (a.m.changePct - b.m.changePct) || (b.i - a.i))
     .slice(0, want)
     .map(x => x.m);
 }
 
+// WHICH SESSION is this snapshot? Every row's changePct is a claim about one
+// session's move, and the rows arrive from ~30-150 independent fetches through
+// shared CORS proxies: a proxy replaying a cached pre-open response, a daily
+// series that lags its own tape, or a halted name all hand back a perfectly
+// plausible quote from an EARLIER session. Summing those into today's figures
+// was the bug — at 10:00 SAST a JSE snapshot could be 70% today's moves and 30%
+// yesterday's, and every number on the tab (market move, flows, verdict) quietly
+// blended two different days. The session is chosen by QUOTED CAP (plurality),
+// not "newest wins": one rogue quote stamped with a different day can't drag the
+// whole snapshot onto a session nothing else is on, and in the minutes after an
+// open — when only part of the index has printed — the tab keeps reading one
+// complete-ish day instead of a blend. Ties go to the newer session. A row with
+// no sessionDay (a source that can't say) gets the benefit of the doubt and
+// always counts, exactly as quoteTradedToday treats it. Rows from any other
+// session are demoted to "unquoted" (unknown, not unchanged) and counted in
+// `offSession` so the view can say how many were left out.
+function rotationSessionDay(rows) {
+  const capByDay = new Map();
+  for (const r of rows || []) {
+    if (!r || r.changePct == null || !isFinite(r.changePct)) continue;
+    if (typeof r.sessionDay !== 'string' || !r.sessionDay) continue;
+    const m = isFinite(r.m) && r.m > 0 ? Number(r.m) : 0;
+    // A tiny epsilon per name so a session whose names all lack a cap still
+    // outvotes nothing, and cap ties are broken by name count before recency.
+    capByDay.set(r.sessionDay, (capByDay.get(r.sessionDay) || 0) + m + 1e-9);
+  }
+  let best = null, bestCap = -1;
+  for (const [day, cap] of capByDay) {
+    if (cap > bestCap + 1e-12 || (Math.abs(cap - bestCap) <= 1e-12 && day > best)) { best = day; bestCap = cap; }
+  }
+  return best;
+}
+
 function aggregateSectorSnapshot(rows) {
+  const sessionDay = rotationSessionDay(rows);
+  let offSession = 0;
   const bySector = new Map();
   for (const r of rows || []) {
     if (!r || !r.sector) continue;
@@ -1899,16 +1943,22 @@ function aggregateSectorSnapshot(rows) {
       s = { sector: r.sector, count: 0, quoted: 0, weight: 0, quotedWeight: 0, wSum: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0, advWeight: 0, decWeight: 0, top: null, bottom: null, movers: [] };
       bySector.set(r.sector, s);
     }
-    const m = isFinite(r.m) && r.m > 0 ? r.m : 0;
+    // Number(): `isFinite` coerces, so a string cap ("120") would pass the test
+    // and then string-concatenate into the weight sums below.
+    const m = isFinite(r.m) && r.m > 0 ? Number(r.m) : 0;
     s.count++; s.weight += m;
     const pct = r.changePct;
     if (pct == null || !isFinite(pct)) continue;
+    if (sessionDay != null && typeof r.sessionDay === 'string' && r.sessionDay && r.sessionDay !== sessionDay) {
+      offSession++;
+      continue;
+    }
     s.quoted++; s.quotedWeight += m;
     s.wSum += m * pct;
     s.deltaCap += m * pct / 100;
     if (pct > 0) { s.adv++; s.advWeight += m; } else if (pct < 0) { s.dec++; s.decWeight += m; } else s.flat++;
     if (!s.top || pct > s.top.changePct) s.top = { ticker: r.ticker, changePct: pct };
-    if (!s.bottom || pct < s.bottom.changePct) s.bottom = { ticker: r.ticker, changePct: pct };
+    if (!s.bottom || pct <= s.bottom.changePct) s.bottom = { ticker: r.ticker, changePct: pct };
     s.movers.push({ ticker: r.ticker, changePct: pct });
   }
   const sectors = [...bySector.values()].map(s => ({
@@ -1922,7 +1972,8 @@ function aggregateSectorSnapshot(rows) {
     top: s.top, bottom: s.bottom, gainers: rankMovers(s.movers, 'up'), losers: rankMovers(s.movers, 'down'), thin: false
   }));
   sectors.sort((a, b) => (b.deltaCap - a.deltaCap) || a.sector.localeCompare(b.sector));
-  const market = { count: 0, quoted: 0, totalWeight: 0, quotedWeight: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0, advWeight: 0, decWeight: 0 };
+  const market = { count: 0, quoted: 0, totalWeight: 0, quotedWeight: 0, deltaCap: 0, adv: 0, dec: 0, flat: 0, advWeight: 0, decWeight: 0,
+                   sessionDay, offSession };
   let mWSum = 0;
   for (const s of sectors) {
     market.count += s.count; market.quoted += s.quoted;
@@ -1955,7 +2006,11 @@ function classifyRotation(snapshot, thresholds) {
   const market = (snapshot && snapshot.market) || {};
   const marketPct = market.wPct != null ? market.wPct : 0;
   const dirTotal = (market.adv || 0) + (market.dec || 0);
-  const breadthPct = dirTotal === 0 ? 0.5 : market.adv / dirTotal;
+  // null when no name moved either way: "no data" must never print as a 50%
+  // (or 0%) breadth. The verdict ladder below reads the neutral 0.5 instead —
+  // with nothing directional the market move is ~0, so it can't decide anything.
+  const breadthPct = dirTotal === 0 ? null : market.adv / dirTotal;
+  const breadthForVerdict = breadthPct == null ? 0.5 : breadthPct;
   let varSum = 0, wTot = 0;
   for (const s of sectors) {
     if (s.wPct == null || !(s.quotedWeight > 0)) continue;
@@ -1973,16 +2028,23 @@ function classifyRotation(snapshot, thresholds) {
   // verdict ladder is deliberately unchanged.
   const dispersionRatio = dispersion / Math.max(Math.abs(marketPct), T.FLAT);
   const net = marketPct >= T.NET ? 'in' : marketPct <= -T.NET ? 'out' : 'flat';
-  const hasUpSide = sectors.some(s => s.wPct != null && s.wPct >= T.SIDE && s.deltaCap > 0);
-  const hasDownSide = sectors.some(s => s.wPct != null && s.wPct <= -T.SIDE && s.deltaCap < 0);
+  // A THIN sector (one or two names, or under 1% of quoted cap — see
+  // THIN_SECTOR_MIN_*) cannot anchor a side. It is one stock wearing a sector's
+  // name, and "money rotated out of Healthcare" on the strength of a single JSE
+  // name's -2% is the narrow, single-name move this two-sided test exists to
+  // reject. Thin sectors still count toward dispersion and flows at their real
+  // (cap) weight; they just can't be the evidence that a rotation happened.
+  const anchor = s => s.wPct != null && !s.thin;
+  const hasUpSide = sectors.some(s => anchor(s) && s.wPct >= T.SIDE && s.deltaCap > 0);
+  const hasDownSide = sectors.some(s => anchor(s) && s.wPct <= -T.SIDE && s.deltaCap < 0);
   const rotating = dispersion >= T.DISP && hasUpSide && hasDownSide;
   let verdict;
   if (net === 'flat' && !rotating && Math.abs(marketPct) < T.FLAT && dispersion < T.QUIET_DISP) verdict = 'quiet';
   else if (net === 'in' && rotating) verdict = 'inflow-rotation';
   else if (net === 'out' && rotating) verdict = 'outflow-rotation';
   else if (rotating) verdict = 'rotation';
-  else if (net === 'in') verdict = breadthPct >= T.BREADTH_LO ? 'inflow' : 'mixed';
-  else if (net === 'out') verdict = breadthPct <= T.BREADTH_HI ? 'outflow' : 'mixed';
+  else if (net === 'in') verdict = breadthForVerdict >= T.BREADTH_LO ? 'inflow' : 'mixed';
+  else if (net === 'out') verdict = breadthForVerdict <= T.BREADTH_HI ? 'outflow' : 'mixed';
   else verdict = 'mixed';
   const confidence = (market.quoted >= 0.6 * market.count && market.quotedWeight >= 0.6 * market.totalWeight) ? 'high' : 'low';
   const inflows = sectors.filter(s => s.deltaCap > 0).slice().sort((a, b) => b.deltaCap - a.deltaCap);
@@ -1993,7 +2055,9 @@ function classifyRotation(snapshot, thresholds) {
   const quotedSectors = sectors.filter(s => s.wPct != null).length;
   const participation = market.participation != null ? market.participation : null;
   return { verdict, net, rotating, confidence, marketPct, breadthPct, participation,
-           dispersion, dispersionRatio, quotedSectors, inflows, outflows };
+           dispersion, dispersionRatio, quotedSectors, inflows, outflows,
+           sessionDay: market.sessionDay != null ? market.sessionDay : null,
+           offSession: market.offSession || 0 };
 }
 
 // Proportionally allocate today's sector outflow pool onto the inflow pool for
@@ -2270,15 +2334,21 @@ function rotationSummary(classified) {
   // Denominator is every sector that priced, not just the ones that moved:
   // inflows+outflows silently drops any sector sitting at exactly zero.
   const secAll = c.quotedSectors != null ? c.quotedSectors : (secUp + secDown);
+  const br = (c.breadthPct == null || !isFinite(c.breadthPct)) ? 'n/a' : Math.round(c.breadthPct * 100) + '%';
   if (c.rotating) {
     const outN = names(c.outflows), inN = names(c.inflows);
     const lead = outN && inN ? 'Out of ' + outN + ', into ' + inN + '.' : (outN ? 'Out of ' + outN + '.' : (inN ? 'Into ' + inN + '.' : ''));
     return (lead + ' Market net ' + pct(c.marketPct) + '.').trim();
   }
-  if (c.verdict === 'inflow') return secUp + ' of ' + secAll + ' sectors gaining; breadth ' + Math.round(c.breadthPct * 100) + '%. Market ' + pct(c.marketPct) + '.';
-  if (c.verdict === 'outflow') return secDown + ' of ' + secAll + ' sectors losing; breadth ' + Math.round(c.breadthPct * 100) + '%. Market ' + pct(c.marketPct) + '.';
+  if (c.verdict === 'inflow') return secUp + ' of ' + secAll + ' sectors gaining; breadth ' + br + '. Market ' + pct(c.marketPct) + '.';
+  if (c.verdict === 'outflow') return secDown + ' of ' + secAll + ' sectors losing; breadth ' + br + '. Market ' + pct(c.marketPct) + '.';
   if (c.verdict === 'quiet') return 'Little net movement or sector dispersion. Market ' + pct(c.marketPct) + '.';
-  return 'No clear direction; breadth ' + Math.round(c.breadthPct * 100) + '%, dispersion ' + c.dispersion.toFixed(2) + 'pp. Market ' + pct(c.marketPct) + '.';
+  // 'mixed' covers three different sessions and the old single sentence ("No
+  // clear direction") was false for two of them: a market up 0.6% has a clear
+  // direction — what it lacks is breadth. Say which kind of mixed it is.
+  if (c.net === 'in') return 'Narrow advance: market ' + pct(c.marketPct) + ' but only ' + br + ' of names rose - a few large caps carried it.';
+  if (c.net === 'out') return 'Narrow decline: market ' + pct(c.marketPct) + ' but ' + br + ' of names rose - the losses sat in a few large caps.';
+  return 'No clear direction; breadth ' + br + ', dispersion ' + c.dispersion.toFixed(2) + 'pp. Market ' + pct(c.marketPct) + '.';
 }
 
   const PBCore = {
@@ -2340,6 +2410,8 @@ function rotationSummary(classified) {
     ROTATION_THRESHOLDS,
     THIN_SECTOR_MIN_NAMES,
     THIN_SECTOR_MIN_SHARE,
+    QUOTE_SETTLE_GRACE_MS,
+    rotationSessionDay,
     aggregateSectorSnapshot,
     classifyRotation,
     pairFlows,

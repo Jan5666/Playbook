@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v118`), or installed PWAs serve stale assets offline.
+`playbook-shell-v119`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)
@@ -443,6 +443,18 @@ Adding a **new runtime file** additionally requires ALL of:
   but a session behind (never in the numerator), forever. Reachable in one tap: the Add-Holding
   modal saves the **raw typed text** when live verification fails and the user force-adds. Those
   branches now also `encodeURIComponent` like the US/CRYPTO ones.
+- **The Rotation tab aggregates ONE session, chosen by quoted cap (2026-10-31 audit).** Its
+  snapshot sums ~30-150 light quotes fetched separately through shared proxies, and some always
+  come back a session behind (cached proxy reply, lagging daily series, halted name). They used to
+  be blended straight into "today": one stale +10% SAP turned a true **+1.00%** DAX day into
+  **~+2.29%**, and every flow and verdict inherited it. `fetchQuoteLight` now returns
+  `sessionDay` (it computed and discarded it) and `changePct: null` when there is no previous
+  close (it returned **0**, i.e. "unchanged", into breadth and the cap-weighted move);
+  `PBCore.aggregateSectorSnapshot` keeps only the session holding the most quoted cap (ties ->
+  newer; `null` sessionDay passes) and reports the rest as `offSession`. Plurality, not "newest
+  wins", so one odd quote can't flip the whole snapshot. Also: a THIN sector can no longer anchor
+  a 'rotation' verdict (one stock is not a sector), and `rankMovers` breaks ties in reverse order
+  at the worst end — first-seen at both ends put a tied ticker on both the best AND worst list.
 - **`verify-modals.mjs`'s stock-detail section had never once opened the card.** Its row
   selector was a `[class*="holding"]` union, which matches the `.holdings-summary`
   container first; the section printed `(no stock detail)` and, having no assertion behind
