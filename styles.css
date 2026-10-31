@@ -312,9 +312,16 @@ a { color: inherit; text-decoration: none; }
 .ribbon-pill-tappable:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
 /* Market ribbon — marquee */
+/* pan-y: a vertical swipe starting on the ribbon still scrolls the page (it was
+   `none`, which made the strip a dead zone); horizontal drags come to the JS. */
 .ribbon-marquee {
-  overflow: hidden; padding: 0 0; touch-action: none;
+  overflow: hidden; padding: 0 0; touch-action: pan-y;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  cursor: grab;
 }
+.ribbon-marquee.dragging { cursor: grabbing; }
+/* While scrubbing, the pill under the finger must not shrink as if being tapped. */
+.ribbon-marquee.dragging .ribbon-pill-tappable:active { transform: none; }
 .ribbon-marquee-track {
   display: flex; gap: 8px; width: max-content;
   will-change: transform;
@@ -723,6 +730,28 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .hsum-today-partial {
   color: var(--text-dim); font-weight: 500; font-size: 10px;
 }
+/* Pre-market estimate (Holdings pre-market toggle ON only). Deliberately unlike the
+   Today line above it: amber dashed frame, moon + session name + "est.", a ≈ on the
+   number and a caption -- the same amber that rings the ext chips on the rows, so
+   "amber = extended hours, an estimate" reads the same everywhere on the tab. */
+.hsum-ext {
+  margin-top: 10px; padding: 7px 9px 6px; border-radius: 9px;
+  border: 1px dashed color-mix(in srgb, var(--amber) 60%, transparent);
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
+  font-family: var(--mono);
+}
+.hsum-ext-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; min-width: 0; }
+.hsum-ext-val, .hsum-ext-note { margin-left: auto; }
+.hsum-ext-tag {
+  display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--amber); white-space: nowrap;
+}
+.hsum-ext-val { font-size: 11px; font-weight: 700; white-space: nowrap; }
+.hsum-ext.up .hsum-ext-val { color: var(--emerald); }
+.hsum-ext.down .hsum-ext-val { color: var(--rose); }
+.hsum-ext-cap { font-size: 9.5px; color: var(--text-dim); margin-top: 3px; line-height: 1.3; }
+.hsum-ext-note { font-size: 10px; color: var(--text-dim); text-align: right; }
 /* Holdings action cluster — sort + import + add, pinned to the right. The sort
    popover anchors to this cluster's right edge so it never opens off-screen. */
 .holdings-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }

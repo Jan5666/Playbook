@@ -290,6 +290,25 @@ try {
   ok('holdings: KO (no ext reading) shows a dim dash, not its day move', koRow.chip == null && !!koRow.dash, JSON.stringify(koRow));
   ok('holdings: Pre/post sort appears while the toggle is on', sortOn.includes('Pre/post move'), sortOn.join(' / '));
 
+  // Portfolio estimate band (2026-10-31): only while the toggle is on, visibly
+  // unlike the Today line, and the share-weighted sum of exactly the row chips.
+  // MU: 10 sh x +23.42 after hours = +$234.20 on a $12,113.80 close -> +1.93%.
+  // KO has no reading, so the band speaks for 1 of the 2 priced holdings.
+  const readBand = `
+    const b=document.querySelector('.holdings-summary .hsum-ext');
+    if(!b) return JSON.stringify(null);
+    const t=b.querySelector('.hsum-ext-tag'), v=b.querySelector('.hsum-ext-val'), c=b.querySelector('.hsum-ext-cap');
+    return JSON.stringify({ cls: b.className, tag: t?t.textContent.trim():null, val: v?v.textContent.trim():null,
+      cap: c?c.textContent.trim():null, todayInside: !!b.querySelector('.hsum-today') });`;
+  const band = JSON.parse(await evals(ws, readBand));
+  console.log('  estimate band (toggle on):', JSON.stringify(band));
+  ok('holdings: estimate band shows while the toggle is on', !!band, JSON.stringify(band));
+  ok('holdings: band is labelled with the session + "est."', !!band && /After-hours/i.test(band.tag || '') && /est\./i.test(band.tag || ''), band && band.tag);
+  ok('holdings: band value is the share-weighted ext move +$234.20 / +1.93%', !!band && /\u2248/.test(band.val) && /\+\$234\.20/.test(band.val) && /\+1\.93%/.test(band.val), band && band.val);
+  ok('holdings: band reports coverage "1 of 2" (KO has no reading)', !!band && /1 of 2/.test(band.val || ''), band && band.val);
+  ok('holdings: band coloured up', !!band && /\bup\b/.test(band.cls || ''), band && band.cls);
+  ok('holdings: band says it is not part of Today', !!band && /not in Today/.test(band.cap || ''), band && band.cap);
+
   // Back off again: the column reverts and the sort option is withdrawn.
   const untoggled = await evals(ws, `
     const b=document.querySelector('[aria-label="Show pre-market moves"]');
@@ -297,6 +316,26 @@ try {
   const hBack = JSON.parse(await evals(ws, readHoldings));
   ok('holdings: toggling back off restores the day move', untoggled === 'false' && hBack.dayLabel === 'Today' && (hBack.rows.find(r => r.tkr === 'MU') || {}).chip === '+6.82%',
      untoggled + ' / ' + hBack.dayLabel);
+  ok('holdings: estimate band gone once the toggle is off', JSON.parse(await evals(ws, readBand)) === null);
+
+  // The toggle belongs to ONE market tab: switching to another market turns it
+  // off, and coming back does not bring it back on (Jan, 2026-10-31).
+  const marketHop = await evals(ws, `
+    const tab=(lab)=>[...document.querySelectorAll('.toggle-opt-market')].find(b=>(b.querySelector('.toggle-opt-label')||{}).textContent===lab);
+    const t=document.querySelector('[aria-label="Show pre-market moves"]'); if(!t) return 'no-toggle';
+    t.click(); await new Promise(r=>setTimeout(r,300));
+    const onBefore=t.getAttribute('aria-pressed');
+    const sa=tab('SA'), us=tab('USA'); if(!sa||!us) return 'no-tabs';
+    sa.click(); await new Promise(r=>setTimeout(r,300));
+    us.click(); await new Promise(r=>setTimeout(r,300));
+    const t2=document.querySelector('[aria-label="Show pre-market moves"]');
+    const head=document.querySelector('.holding-list-head .hlh-day');
+    return JSON.stringify({ onBefore, after: t2?t2.getAttribute('aria-pressed'):null,
+      head: head?head.textContent.trim():null, band: !!document.querySelector('.hsum-ext') });`);
+  console.log('  market hop:', marketHop);
+  const hop = marketHop && marketHop[0] === '{' ? JSON.parse(marketHop) : {};
+  ok('holdings: switching market turns the pre-market toggle off', hop.onBefore === 'true' && hop.after === 'false', marketHop);
+  ok('holdings: back on USA the column is "Today" and no estimate band', hop.head === 'Today' && hop.band === false, marketHop);
 
   // ── 3. DETAIL CARD (showDailyRow) ───────────────────────────────────────────
   await sleep(300);
