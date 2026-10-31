@@ -3886,8 +3886,12 @@ function Hero(_ref4) {
     },
       React.createElement("span", { className: "ribbon-pill-label" }, cat.short),
       React.createElement("span", { className: "ribbon-pill-val" }, valStr),
-      React.createElement("span", { className: `ribbon-pill-chg ${colorUp ? 'up' : 'down'}` },
-        has ? (quote.changePct >= 0 ? '+' : '') + quote.changePct.toFixed(2) + '%' : ''
+      // Before the quote lands the chip holds a no-break space, uncoloured: an EMPTY
+      // span collapsed to its 2px padding, so when the first index quote arrived
+      // (often just after the launch loader lifted) the chip grew ~12px, the ribbon
+      // grew with it and the whole page below dropped. Same height either way now.
+      React.createElement("span", { className: has ? `ribbon-pill-chg ${colorUp ? 'up' : 'down'}` : "ribbon-pill-chg" },
+        has ? (quote.changePct >= 0 ? '+' : '') + quote.changePct.toFixed(2) + '%' : '\u00a0'
       )
     );
   };

@@ -3277,6 +3277,16 @@ main.view-slide-left, main.view-slide-right { animation: view-fade 0.26s cubic-b
 .chart-line-svg {
   width: 100%; height: auto;
   display: block;
+  /* Eases the line in where the skeleton stood, rather than popping. Runs once
+     per mount only - range changes reuse the same <svg> and don't replay it. */
+  animation: fade 0.24s ease-out;
+}
+/* Launch skeleton for the growth chart: the SVG's own viewBox aspect (560x220)
+   instead of .chart-skeleton's fixed 180px, so the card is exactly as tall
+   before the line arrives as after it and nothing below the chart moves. */
+.chart-skeleton.chart-skeleton--line { height: auto; aspect-ratio: 560 / 220; }
+@media (prefers-reduced-motion: reduce) {
+  .chart-line-svg { animation: none; }
 }
 .chart-line-header {
   display: flex; align-items: center; justify-content: space-between;

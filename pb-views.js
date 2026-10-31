@@ -1693,7 +1693,11 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
   const valueHidden = PBStore.useSetting('valueHidden');
   const [range, setRange] = useState('1y');
   const [historyCache, setHistoryCache] = useState({});
-  const [loading, setLoading] = useState(false);
+  // Starts true when there is anything to load: the effect below only flips it
+  // after the first paint, so starting false let ONE frame of the cost-basis
+  // placeholder line through before the skeleton - visible each time the
+  // Dashboard tab is re-entered (this chart remounts and refetches then).
+  const [loading, setLoading] = useState(() => positions.length > 0);
   const [hoverIdx, setHoverIdx] = useState(null);
   const svgRef = useRef(null);
   const ranges = [
@@ -1725,7 +1729,6 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
             const data = await fetchHistory(p.ticker, p.market, 'max').catch(() => null);
             if (data && data.points.length > 0) store[key] = data.points;
           }));
-          if (!cancelled && Object.keys(store).length) setHistoryCache(prev => ({ ...prev, ...store }));
         }
       };
       const results = {};
@@ -1733,6 +1736,14 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
       const missing = needed.filter(p => !results[priceKey(p.market, p.ticker)]);
       if (missing.length) await fetchInto(missing, results);
       if (cancelled) return;
+      // ONE commit for the whole load, together with loading=false (React 18
+      // batches both into a single render). This used to setHistoryCache after
+      // every batch of 5 so the line could "paint in as data lands" - but on a
+      // real book (~18 holdings over the shared proxies) that redrew the Dashboard
+      // chart four or five times in the seconds after the launch loader lifted,
+      // each frame a different blend of real history and the cost-basis
+      // placeholder. That was the flicker on opening the app.
+      if (Object.keys(results).length) setHistoryCache(prev => ({ ...prev, ...results }));
       setLoading(false);
     };
     fetchAll();
@@ -1876,6 +1887,34 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
     return Math.max(0, Math.min(points.length - 1, idx));
   }, [points.length]);
 
+  // Header shared by the skeleton and the live chart, so swapping one for the
+  // other moves nothing. The "Loading…" note is ALWAYS laid out and only
+  // toggled visible: it is 11px text beside 10px legend items, so inserting and
+  // removing it changed the row's height and nudged every card below the chart.
+  const header = React.createElement("div", { className: "chart-line-header" },
+    React.createElement("div", { className: "chart-ranges" },
+      ranges.map(r => React.createElement("button", {
+        key: r.key, className: `chart-range-btn ${range === r.key ? 'active' : ''}`,
+        onClick: () => setRange(r.key) }, r.label))),
+    React.createElement("div", { className: "chart-line-meta" },
+      React.createElement("span", { className: "chart-legend-item" },
+        React.createElement("span", { className: "chart-legend-dot", style: { background: 'var(--brand)' } }), "Value"),
+      React.createElement("span", { className: "chart-legend-item" },
+        React.createElement("span", { className: "chart-legend-dot chart-legend-dot--dashed" }), "Cost"),
+      React.createElement("span", { className: "text-dim text-xs", "aria-hidden": !loading,
+        style: { visibility: loading ? 'visible' : 'hidden' } }, "Loading…")));
+  // First load of the session: no history has landed yet, so the only line we
+  // could draw is the cost-basis placeholder - which the real history then
+  // replaces a few seconds after launch, visibly. Hold a skeleton the chart's
+  // exact shape instead (.chart-skeleton--line matches the SVG's viewBox aspect),
+  // so the line appears ONCE, in place. Later loads (a newly added holding) keep
+  // the cached lines on screen; only the very first load gets the skeleton.
+  if (loading && Object.keys(historyCache).length === 0) {
+    return React.createElement("div", { className: "chart-line-wrap" }, header,
+      React.createElement("div", { className: "chart-skeleton chart-skeleton--line", role: "status", "aria-label": "Loading portfolio growth" },
+        React.createElement("div", { className: "chart-skeleton-line" }),
+        React.createElement("div", { className: "chart-skeleton-shimmer" })));
+  }
   const emptyMsg = loading ? 'Loading historical prices…' : 'Add positions and log deposits to see portfolio growth.';
   if (points.length < 2) {
     return React.createElement("div", { className: "chart-line-wrap" },
@@ -1963,19 +2002,7 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
     if (idx != null) setHoverIdx(idx);
   };
 
-  return React.createElement("div", { className: "chart-line-wrap" },
-    React.createElement("div", { className: "chart-line-header" },
-      React.createElement("div", { className: "chart-ranges" },
-        ranges.map(r => React.createElement("button", {
-          key: r.key, className: `chart-range-btn ${range === r.key ? 'active' : ''}`,
-          onClick: () => setRange(r.key) }, r.label))),
-      React.createElement("div", { className: "chart-line-meta" },
-        React.createElement("span", { className: "chart-legend-item" },
-          React.createElement("span", { className: "chart-legend-dot", style: { background: 'var(--brand)' } }), "Value"),
-        React.createElement("span", { className: "chart-legend-item" },
-          React.createElement("span", { className: "chart-legend-dot chart-legend-dot--dashed" }), "Cost"),
-        loading ? React.createElement("span", { className: "text-dim text-xs" }, "Loading…") : null)
-    ),
+  return React.createElement("div", { className: "chart-line-wrap" }, header,
     React.createElement("svg", {
       ref: svgRef,
       viewBox: `0 0 ${W} ${H}`, className: "chart-line-svg", preserveAspectRatio: "xMidYMid meet",
