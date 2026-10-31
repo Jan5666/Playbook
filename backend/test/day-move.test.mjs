@@ -604,5 +604,15 @@ ok('parseStooqCsv reads its own session date, not just the closes',
 ok('quoteTradedToday rejects a quote anchored to another session',
   /function\s+quoteTradedToday[\s\S]{0,1500}?quote\.sessionDay\s*!==\s*marketDayKey\(nowMs, market\)/.test(coreSrc));
 
+// 4-day closure (JSE Easter 2027: Thu 25-03 -> Tue 30-03). Bars are stamped at the
+// OPEN, so at 09:20 the last bar is 5 days + 20 min old; the 5-day staleness bound
+// rejected it and Wednesday's close became the anchor (+3.92% for a true +1.92%).
+{
+  const bar = (d, p) => ({ t: Date.parse(d + 'T07:00:00Z'), p });
+  const bars = [bar('2027-03-22', 100), bar('2027-03-23', 101), bar('2027-03-24', 102), bar('2027-03-25', 104)];
+  const m = PBCore.deriveDayMove(bars, 106, 103, 'JSE', { now: Date.parse('2027-03-30T07:20:00Z'), lastTick: Date.parse('2027-03-30T07:19:00Z'), metaPrevClose: 104 });
+  ok('Easter Tuesday anchors to Thursday\'s close, not Wednesday\'s', m.prevClose === 104 && m.sessionDay === '2027-03-30', JSON.stringify(m));
+}
+
 console.log(failures === 0 ? '\nAll day-move tests passed' : `\n${failures} test(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

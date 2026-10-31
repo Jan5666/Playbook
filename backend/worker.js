@@ -18,7 +18,7 @@ import PBCore from '../pb-core.js';
 // the client (app.js) via pb-core.js, so the foreground app and this always-on
 // server can never drift on "did this alert fire?" or "which instrument/units?".
 // The cron path builds number-keyed prices, exactly what evaluateAlerts expects.
-const { marketOpen, evaluateAlerts: evaluate, SESSIONS, yahooSymbol, centDivisor } = PBCore;
+const { marketOpen, evaluateAlerts: evaluate, SESSIONS, yahooSymbol, centDivisor, MARKET_CURRENCY } = PBCore;
 
 const MAX_TRIGGER_HISTORY = 100;
 const ACTIVE_SUPPRESS_MS = 90 * 1000;        // skip push if app was foreground this recently
@@ -69,7 +69,9 @@ async function handleFetch(request, env) {
         return json({ error: 'bad blob' }, 400);
       if (b.ct.length > 6_000_000) return json({ error: 'too large' }, 413); // ~4.5MB plaintext cap
       const updatedAt = Date.now();
-      await kvPut(env, 'backup:' + body.key, { blob: b, updatedAt });
+      // A failed write must not answer ok: the app would mark the backup 'synced'
+      // while nothing was stored (e.g. the free tier's daily KV write cap).
+      if (!(await kvPut(env, 'backup:' + body.key, { blob: b, updatedAt }))) return json({ error: 'storage unavailable' }, 503);
       return json({ ok: true, updatedAt });
     }
     return json({ error: 'method not allowed' }, 405);
@@ -85,7 +87,7 @@ async function handleFetch(request, env) {
     if (path === '/subscribe') {
       if (!body.subscription?.endpoint || !body.subscription?.keys?.p256dh) return json({ error: 'bad subscription' }, 400);
       const prev = (await kvGet(env, key)) || {};
-      await kvPut(env, key, {
+      const stored = await kvPut(env, key, {
         ...prev,
         subscription: body.subscription,
         alerts: sanitizeAlerts(body.alerts ?? prev.alerts ?? []),
@@ -93,6 +95,7 @@ async function handleFetch(request, env) {
         lastActiveAt: Date.now(),
         updatedAt: Date.now()
       });
+      if (!stored) return json({ error: 'storage unavailable' }, 503);
       return json({ ok: true });
     }
 
@@ -102,7 +105,7 @@ async function handleFetch(request, env) {
       const next = { ...prev, lastActiveAt: Date.now(), updatedAt: Date.now() };
       if (Array.isArray(body.alerts)) next.alerts = sanitizeAlerts(body.alerts);
       if (body.subscription?.endpoint) next.subscription = body.subscription;
-      await kvPut(env, key, next);
+      if (!(await kvPut(env, key, next))) return json({ error: 'storage unavailable' }, 503);
       return json({ ok: true });
     }
 
@@ -141,8 +144,11 @@ function sanitizeAlerts(list) {
 async function kvGet(env, key) {
   try { return await env.PB.get(key, 'json'); } catch (_e) { return null; }
 }
+// Returns whether the write landed. It used to swallow every error, so callers
+// answered {ok:true} for data that was never stored, and the cron re-fired the
+// same crossing every minute because its 'seen' state never persisted.
 async function kvPut(env, key, val) {
-  try { await env.PB.put(key, JSON.stringify(val)); } catch (_e) {}
+  try { await env.PB.put(key, JSON.stringify(val)); return true; } catch (_e) { return false; }
 }
 
 // ─── Quote fetching (server-side: direct, with proxy fallback) ───────────────
@@ -160,12 +166,18 @@ async function fetchQuote(ticker, market) {
     const base = `https://${host}.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d&includePrePost=true`;
     for (const build of PROXIES) {
       try {
+        // One deadline covers headers AND body: fetch() resolves on headers, so
+        // clearing the timer there left a proxy that stalls mid-body free to hang
+        // the cron loop for every remaining client (the app's fetchWithDeadline fix).
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), 6000);
-        const res = await fetch(build(base), { cache: 'no-store', signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
-        clearTimeout(t);
-        if (!res.ok) continue;
-        const meta = (await res.json())?.chart?.result?.[0]?.meta;
+        let payload;
+        try {
+          const res = await fetch(build(base), { cache: 'no-store', signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
+          if (!res.ok) continue;
+          payload = await res.json();
+        } finally { clearTimeout(t); }
+        const meta = payload?.chart?.result?.[0]?.meta;
         const px = meta?.regularMarketPrice;
         if (typeof px === 'number' && isFinite(px)) return px / centDivisor(market, meta.currency);
       } catch (_e) {}
@@ -226,14 +238,20 @@ async function checkClient(env, key, now) {
   // skip the server push to avoid a duplicate, but still persist the seen-state.
   const appActive = rec.lastActiveAt && (now - rec.lastActiveAt) < ACTIVE_SUPPRESS_MS;
 
-  const history = [...newTriggers, ...(rec.bgTriggered || [])].slice(0, MAX_TRIGGER_HISTORY);
-  await kvPut(env, key, { ...rec, seen: nextSeen, bgTriggered: history, lastCheck: now });
-
-  if (appActive) return;
+  // Re-read before writing: the quote fetches above can take many seconds, and an
+  // alert added/removed by /sync in that window was overwritten by this stale
+  // copy -- permanently, since the app only re-sends alerts when they change.
+  // Only the cron's own fields are merged onto the fresh record.
+  const fresh = (await kvGet(env, key)) || rec;
+  const history = [...newTriggers, ...(fresh.bgTriggered || [])].slice(0, MAX_TRIGGER_HISTORY);
+  const stored = await kvPut(env, key, { ...fresh, seen: nextSeen, bgTriggered: history, lastCheck: now });
+  // If the seen-state didn't persist, the next minute would see the same
+  // crossing as new and push it again -- skip this push rather than repeat it.
+  if (!stored || appActive) return;
 
   let gone = false;
   for (const t of newTriggers) {
-    const sym = (t.market === 'JSE' || t.market === 'TFSA') ? 'R' : '$';
+    const sym = (MARKET_CURRENCY[t.market] || MARKET_CURRENCY.US).sym;   // R / \u00a3 / A$ / \u20ac, not '$' for every non-SA market
     const status = await pushTo(env, rec.subscription, {
       title: `${t.ticker} ${t.direction} ${sym}${t.targetPrice.toFixed(2)}`,
       body: `Now at ${sym}${t.triggerPrice.toFixed(2)}${t.note ? ` — ${t.note}` : ''}`,

@@ -68,8 +68,12 @@ if (typeof PBCore.mergeCostBasis === 'function') {
 
   // ── Anti-drift guard: app.js delegates and no longer inlines the formula ─────
   ok('app.js binds mergeCostBasis from PBCore', /const\s+mergeCostBasis\s*=\s*PBCore\.mergeCostBasis/.test(src));
-  // 1 binding + 3 call sites (dedup, addPosition, importPositions) = 4 references.
-  ok('app.js routes all 3 sites through mergeCostBasis', (src.match(/mergeCostBasis/g) || []).length >= 4);
+  // 1 binding + the startup-dedup call site use mergeCostBasis directly; since
+  // 2026-10-31 addPosition + importPositions route through PBCore.mergeTopUp,
+  // which wraps it (and handles the cost-currency/FX-rate glue; top-up.test.mjs).
+  ok('app.js routes all 3 sites through mergeCostBasis', (src.match(/mergeCostBasis\(/g) || []).length >= 1
+    && (src.match(/PBCore\.mergeTopUp\(/g) || []).length === 2
+    && /mergeCostBasis\(existing\.shares/.test(String(PBCore.mergeTopUp)));
   // The old inlined blend divided a costBasis-weighted sum by a running total —
   // it must be gone from all three sites.
   ok('app.js no longer inlines the avgCost formula', !/costBasis\s*\)\s*\/\s*totalShares/.test(src));

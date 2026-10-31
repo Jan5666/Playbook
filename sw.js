@@ -1,5 +1,5 @@
 // ─── Playbook Service Worker ─────────────────────────────────────────────────
-const CACHE_NAME   = 'playbook-shell-v116';
+const CACHE_NAME   = 'playbook-shell-v117';
 const CDN_CACHE    = 'playbook-cdn-v1';
 // Instrument logos: immutable per filename, so cache-first. Filenames are STABLE
 // across rebuilds, so without a bump an installed PWA keeps serving the old art
@@ -53,7 +53,10 @@ const SHELL_ASSETS = [
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(SHELL_ASSETS))
+      // cache:'reload' bypasses the browser's HTTP cache: Pages serves max-age=600,
+      // so a new version installed within ~10 min of a load could otherwise store
+      // the OLD app.js / pb-*.js under the new cache name (stale offline shell).
+      .then(cache => cache.addAll(SHELL_ASSETS.map(u => new Request(u, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
   );
 });
@@ -253,12 +256,16 @@ function swLooksLikeError(body) {
 async function swFetchVia(url) {
   for (const build of SW_PROXIES) {
     try {
+      // One deadline for headers AND body (fetch resolves on headers; a proxy that
+      // stalls mid-body would otherwise hold the alert check open indefinitely).
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 7000);
-      const res = await fetch(build(url), { cache: 'no-store', signal: ctrl.signal });
-      clearTimeout(t);
-      if (!res.ok) continue;
-      const body = await res.text();
+      let res, body;
+      try {
+        res = await fetch(build(url), { cache: 'no-store', signal: ctrl.signal });
+        if (!res.ok) continue;
+        body = await res.text();
+      } finally { clearTimeout(t); }
       if (swLooksLikeError(body)) continue;
       return body;
     } catch (_e) {}
@@ -309,7 +316,7 @@ async function swRunAlertCheck() {
   const bgTriggered = [...newTriggers, ...(st.bgTriggered || [])].slice(0, SW_MAX_TRIGGER_HISTORY);
   await swIdbSet(BG_KEY, { ...st, seen: { ...(st.seen || {}), ...nextSeen }, bgTriggered, lastCheck: Date.now() }).catch(() => {});
   for (const t of newTriggers) {
-    const sym = (t.market === 'JSE' || t.market === 'TFSA') ? 'R' : '$';
+    const sym = (PBCore.MARKET_CURRENCY[t.market] || PBCore.MARKET_CURRENCY.US).sym;   // not '$' for LSE/ASX/EU
     await self.registration.showNotification(`${t.ticker} ${t.direction} ${sym}${t.targetPrice.toFixed(2)}`, {
       body: `Now at ${sym}${t.triggerPrice.toFixed(2)}${t.note ? ` — ${t.note}` : ''}`,
       tag: 'alert-' + t.id,

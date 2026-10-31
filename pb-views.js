@@ -21,6 +21,11 @@ const marketSession = PBCore.marketSession;
 // 'none'). Every surface that renders a day % must go through this -- the rows
 // used to decide from the wall clock alone and printed stale moves as live ones.
 const quoteSessionState = PBCore.quoteSessionState;
+// The day % a row would actually SHOW, or null. Sorts and the Gainers/Losers
+// filters ranked on raw changePct, so a row withholding a 'stale' (session-
+// behind) move as "\u2014" could still top "Today's move" or pass "Gainers today".
+const shownDayPct = (q, market) => (q && typeof q.changePct === 'number' && isFinite(q.changePct)
+  && quoteSessionState(q, market) !== 'stale') ? q.changePct : null;
 const fetchHistory = PBData.fetchHistory;
 // PBContent/PBCore module globals for the extracted Current (Holdings) view (Phase 4 inc 25).
 const MARKETS = PBContent.MARKETS;
@@ -114,7 +119,7 @@ function HotTopicsView(_refHT) {
                 hotToDate(e.date) ? hotToDate(e.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : ''
               ),
               e.when && e.when !== 'TBD' && React.createElement("span", { className: "hot-when" }, e.when),
-              q && typeof q.changePct === 'number' && React.createElement("span", {
+              shownDayPct(q, e.market || 'US') != null && React.createElement("span", {
                 className: `hot-chg ${q.changePct >= 0 ? 'up' : 'down'}`
               }, (q.changePct >= 0 ? '+' : '') + q.changePct.toFixed(2) + '%')
             )
@@ -154,7 +159,7 @@ function HotTopicsView(_refHT) {
     news.length > 0
       ? React.createElement("div", null, news.map((n, i) => React.createElement("a", {
           key: i,
-          href: n.link && n.link !== '#' ? n.link : undefined,
+          href: /^https?:\/\//i.test(n.link || '') ? n.link : undefined, // only http(s): feed/AI-supplied text must never become a javascript: link
           target: "_blank", rel: "noopener",
           className: "news-item news-item-ai"
         },
@@ -676,6 +681,12 @@ function MarketRotationView(_refMR) {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const loadRef = useRef(false);
   const cacheKey = exchange.id;
+  // The exchange on screen NOW. load() is single-flight, so switching exchange
+  // mid-load used to return early and leave the new exchange unloaded for good
+  // (its effect runs once per switch); the old load's "Updated" stamp and error
+  // also landed on the new exchange. finally{} reloads when this moved.
+  const keyRef = useRef(cacheKey);
+  keyRef.current = cacheKey;
   const cached = cache[cacheKey];
   const sym = (PBCore.MARKET_CURRENCY[exchange.market] && PBCore.MARKET_CURRENCY[exchange.market].sym) || '$';
 
@@ -713,7 +724,7 @@ function MarketRotationView(_refMR) {
         });
       });
       if (buildRows(quotes).filter(r => r.changePct != null).length === 0) {
-        setError('No live data returned. Try again shortly.');
+        if (keyRef.current === cacheKey) setError('No live data returned. Try again shortly.');
         return;
       }
       const snapEntry = aggregate(quotes, cached && cached.series, cached && cached.activity, 0);
@@ -751,11 +762,12 @@ function MarketRotationView(_refMR) {
         series: built ? PBCore.downsampleRotationSeries(built, 48) : null,
         activity: built ? built.activity : null, fetchedAt: finalEntry.fetchedAt
       } }));
-      setLastUpdate(new Date());
+      if (keyRef.current === cacheKey) setLastUpdate(new Date());
     } catch (_e) {
-      setError('Failed to load rotation data. Check your connection.');
+      if (keyRef.current === cacheKey) setError('Failed to load rotation data. Check your connection.');
     } finally {
       loadRef.current = false; setLoading(false); setProgress(null);
+      if (keyRef.current !== cacheKey) setTimeout(() => loadStable.current(false), 0);
     }
   }, [cacheKey, exchange, cache, cached, setPersisted]);
 
@@ -1361,10 +1373,15 @@ function HeatmapView(_ref8b) {
   const [error, setError] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [sectorDetail, setSectorDetail] = useState(null);
-  const [lastUpdate, setLastUpdate] = useState(() => persisted[exchanges[0].id]?.fetchedAt ? new Date(persisted[exchanges[0].id].fetchedAt) : null);
+  const [lastUpdate, setLastUpdate] = useState(() => persisted[exchange.id]?.fetchedAt ? new Date(persisted[exchange.id].fetchedAt) : null); // the SELECTED exchange's stamp, not the first one's
   const cacheKey = exchange.id;
   const cached = cache[cacheKey];
   const loadRef = useRef(false);
+  // Same single-flight trap as Rotation: an exchange switch mid-load must reload
+  // the new exchange once the old load finishes (see keyRef there).
+  const keyRef = useRef(cacheKey);
+  keyRef.current = cacheKey;
+  const loadLatest = useRef(null);
   const mkSkeleton = (c) => ({ ticker: c.t, market: exchange.market, sector: c.s, industry: c.i, value: c.m, price: null, changePct: null });
   const load = useCallback(async (force) => {
     if (loadRef.current) return;
@@ -1397,22 +1414,24 @@ function HeatmapView(_ref8b) {
       });
       const rows = buildRows(quotes);
       if (rows.filter(r => r.changePct != null).length === 0) {
-        setError('No live data returned. Try again shortly.');
+        if (keyRef.current === cacheKey) setError('No live data returned. Try again shortly.');
         setCache(prev => { const n = { ...prev }; delete n[cacheKey]; return n; });
       } else {
         const entry = { rows, fetchedAt: Date.now() };
         setCache(prev => ({ ...prev, [cacheKey]: entry }));
         setPersisted(prev => ({ ...prev, [cacheKey]: entry }));
-        setLastUpdate(new Date());
+        if (keyRef.current === cacheKey) setLastUpdate(new Date());
       }
     } catch (e) {
-      setError('Failed to load heatmap. Check your connection.');
+      if (keyRef.current === cacheKey) setError('Failed to load heatmap. Check your connection.');
     } finally {
       loadRef.current = false;
       setLoading(false);
       setProgress(null);
+      if (keyRef.current !== cacheKey) setTimeout(() => loadLatest.current && loadLatest.current(false), 0);
     }
   }, [cacheKey, exchange, cache, setPersisted]);
+  loadLatest.current = load;
   useEffect(() => {
     if (mode === 'market') {
       const e = cache[cacheKey];
@@ -1705,7 +1724,9 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
     { key: '1y', label: '1Y' }, { key: '2y', label: '2Y' }, { key: '5y', label: '5Y' }, { key: 'all', label: 'All' }
   ];
   const rates = fxRates?.rates || null;
-  const today = new Date().toISOString().slice(0, 10);
+  // LOCAL date: toISOString() is still yesterday between 00:00 and 02:00 SAST,
+  // which sorted a holding dated "today" (local) AFTER the live point.
+  const today = tfsaTodayStr();
 
   const positionKeys = positions.map(p => priceKey(p.market, p.ticker)).sort().join(',');
   useEffect(() => {
@@ -1790,6 +1811,13 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
       dateMap[r.date] = { date: r.date, value: r.value, contributed: 0 };
     });
 
+    // Holdings with no price history (fetch failed, brand-new listing) are drawn
+    // at cost from their entry date and at the live price today. Collect them
+    // first, then make every date they need exist BEFORE adding anything: the
+    // old one-pass loop created a date with value 0 (missing every other
+    // holding's value -- a weekend addedAt read as a ~half-portfolio crash) and a
+    // later fallback's new date never received an earlier fallback's cost.
+    const fallback = [];
     positions.forEach(p => {
       const key = priceKey(p.market, p.ticker);
       const hist = historyCache[key];
@@ -1797,16 +1825,30 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
       const q = prices[key];
       if (!q) return;
       const native = marketCurrency(p.market);
-      const entryDate = p.purchaseDate || p.addedAt?.slice(0, 10) || today;
-      const costVal = convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates) || 0;
-      const curVal = convertCcy(p.shares * q.price, native, displayCurrency, rates) || 0;
-      if (!dateMap[entryDate]) dateMap[entryDate] = { date: entryDate, value: 0, contributed: 0 };
-      if (!dateMap[today]) dateMap[today] = { date: today, value: 0, contributed: 0 };
-      Object.keys(dateMap).forEach(d => {
-        if (d < entryDate) return;
-        dateMap[d].value += d >= today ? curVal : costVal;
+      fallback.push({
+        entryDate: p.purchaseDate || p.addedAt?.slice(0, 10) || today,
+        costVal: convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates) || 0,
+        curVal: convertCcy(p.shares * q.price, native, displayCurrency, rates) || 0,
       });
     });
+    if (fallback.length) {
+      // A new date carries the history-backed portfolio's last known value.
+      const histDates = Object.keys(dateMap).sort();
+      const carried = d => {
+        let v = 0;
+        for (const hd of histDates) { if (hd > d) break; v = dateMap[hd].value; }
+        return v;
+      };
+      const need = new Set(fallback.map(f => f.entryDate));
+      need.add(today);
+      need.forEach(d => { if (!dateMap[d]) dateMap[d] = { date: d, value: carried(d), contributed: 0 }; });
+      fallback.forEach(f => {
+        Object.keys(dateMap).forEach(d => {
+          if (d < f.entryDate) return;
+          dateMap[d].value += d >= today ? f.curVal : f.costVal;
+        });
+      });
+    }
 
     let cumContrib = 0;
     contribSorted.forEach(c => {
@@ -1819,15 +1861,16 @@ function PortfolioLineChart({ positions, contributions, displayCurrency, fxRates
     const sortedDates = Object.keys(dateMap).sort();
     sortedDates.forEach(d => {
       while (contribIdx < contribSorted.length && contribSorted[contribIdx].date <= d) {
-        const conv = convertCcy(contribSorted[contribIdx].amount, contribSorted[contribIdx].currency, displayCurrency, rates);
-        if (conv != null) runningContrib += conv;
+        // contribInDisplay (locked landed-USD rate) -- the same valuation the
+        // total and the today point use; spot conversion here made the cost line
+        // jump on the last point whenever the rand had moved since the deposit.
+        runningContrib += contribInDisplay(contribSorted[contribIdx], displayCurrency, rates);
         contribIdx++;
       }
       dateMap[d].contributed = runningContrib;
     });
     while (contribIdx < contribSorted.length) {
-      const conv = convertCcy(contribSorted[contribIdx].amount, contribSorted[contribIdx].currency, displayCurrency, rates);
-      if (conv != null) runningContrib += conv;
+      runningContrib += contribInDisplay(contribSorted[contribIdx], displayCurrency, rates);
       contribIdx++;
     }
     if (sortedDates.length > 0) {
@@ -2082,8 +2125,13 @@ function DashboardView(_ref6) {
       // convert it into the group's currency so cost and value stay comparable.
       const costCcy = positionCostCcy(p);
       const rawCost = p.shares * p.costBasis;
-      cost += costCcy === native ? rawCost : (convertCcy(rawCost, costCcy, native, fxRates?.rates || null) ?? rawCost);
-      if (q && sameCcy) value += p.shares * q.price; else hasAllPrices = false;
+      // P/L pairs cost and value per holding: an unpriced holding (no quote yet,
+      // a force-added symbol) used to add its cost with no value, reading as a
+      // loss of its whole cost.
+      if (q && sameCcy && isFinite(q.price)) {
+        cost += costCcy === native ? rawCost : (convertCcy(rawCost, costCcy, native, fxRates?.rates || null) ?? rawCost);
+        value += p.shares * q.price;
+      } else hasAllPrices = false;
     });
     return { cost, value, pnl: value - cost, pnlPct: cost > 0 ? (value - cost) / cost * 100 : 0, hasAllPrices };
   };
@@ -2111,9 +2159,10 @@ function DashboardView(_ref6) {
       // Value is in the market's native currency; cost may be booked in another
       // (crypto bought in ZAR), so convert each from its own currency to display.
       const c = convertCcy(p.shares * p.costBasis, positionCostCcy(p), displayCurrency, rates);
-      const v = q ? convertCcy(p.shares * q.price, native, displayCurrency, rates) : null;
-      if (c != null) cost += c;
-      if (v != null) value += v;
+      const v = q && isFinite(q.price) ? convertCcy(p.shares * q.price, native, displayCurrency, rates) : null;
+      // Cost only counts alongside its value, so an unpriced holding (or one
+      // whose FX conversion isn't available yet) can't print as a loss.
+      if (c != null && v != null) { cost += c; value += v; }
     });
     return { ...g, cost, value, pnl: value - cost, pnlPct: cost > 0 ? (value - cost) / cost * 100 : 0 };
   });
@@ -2637,8 +2686,8 @@ function CurrentView(_ref7) {
     arr.sort((a, b) => {
       const qa = prices[priceKey(market, a.ticker)], qb = prices[priceKey(market, b.ticker)];
       if (sortMode === 'today') {
-        const ca = qa && isFinite(qa.changePct) ? qa.changePct : -Infinity;
-        const cb = qb && isFinite(qb.changePct) ? qb.changePct : -Infinity;
+        const ca = shownDayPct(qa, market) ?? -Infinity;
+        const cb = shownDayPct(qb, market) ?? -Infinity;
         return cb - ca;
       }
       // Pre/post move: rank by whatever extended-hours reading a symbol carries --
@@ -2678,8 +2727,11 @@ function CurrentView(_ref7) {
     rows.forEach(p => {
       const q = prices[priceKey(market, p.ticker)];
       const c = convertCcy(p.shares * p.costBasis, positionCostCcy(p), native, rates);
-      cost += (c != null ? c : p.shares * p.costBasis);
       if (q && isFinite(q.price)) {
+        // Cost is summed only for priced holdings, so value - cost is a like-for-
+        // like P/L (an unpriced holding's row shows "—"; it used to subtract its
+        // full cost from the summary's gain).
+        cost += (c != null ? c : p.shares * p.costBasis);
         value += p.shares * q.price; anyPrice = true;
         // Same two gates as the Dashboard hero: the market's regular session must
         // have opened today, and prevClose must be anchored to that session.
@@ -2946,7 +2998,8 @@ function WatchlistView(_ref8) {
     setAlertNote('');
   };
   const popupAlerts = alertPopup ? alerts.filter(a => a.ticker === alertPopup.ticker && a.market === alertPopup.market) : [];
-  const popupCcy = alertPopup ? (alertPopup.market === 'JSE' ? 'ZAR' : 'USD') : 'USD';
+  // The market's own symbol (R, \u00a3, A$, \u20ac): TFSA/LSE/ASX/EUR popups used to show "$".
+  const popupSym = ((alertPopup && MARKET_CURRENCY[alertPopup.market]) || MARKET_CURRENCY.US).sym;
 
   // Swipe-to-delete state
   const [swipedId, setSwipedId] = useState(null);
@@ -3312,7 +3365,7 @@ function WatchlistView(_ref8) {
     if (filterMarket !== 'all') arr = arr.filter(w => w.market === filterMarket);
     if (filterTag !== 'all') arr = arr.filter(w => {
       const q = prices[priceKey(w.market, w.ticker)];
-      const ch = q && typeof q.changePct === 'number' && isFinite(q.changePct) ? q.changePct : null;
+      const ch = shownDayPct(q, w.market);
       if (filterTag === 'up') return ch != null && ch > 0;
       if (filterTag === 'down') return ch != null && ch < 0;
       if (filterTag === 'nearhigh') return !!q && q.yearHigh > 0 && q.price >= q.yearHigh * 0.95;
@@ -3323,8 +3376,8 @@ function WatchlistView(_ref8) {
     else if (sortMode === 'recent') arr = [...arr].sort((a, b) => (b.addedAt || '').localeCompare(a.addedAt || ''));
     else if (sortMode === 'today') arr = [...arr].sort((a, b) => {
       const qa = prices[priceKey(a.market, a.ticker)], qb = prices[priceKey(b.market, b.ticker)];
-      const ca = qa && typeof qa.changePct === 'number' && isFinite(qa.changePct) ? qa.changePct : -Infinity;
-      const cb = qb && typeof qb.changePct === 'number' && isFinite(qb.changePct) ? qb.changePct : -Infinity;
+      const ca = shownDayPct(qa, a.market) ?? -Infinity;
+      const cb = shownDayPct(qb, b.market) ?? -Infinity;
       return cb - ca;
     });
     // Pre/post move: rank by whatever extended-hours reading a symbol carries —
@@ -3686,7 +3739,7 @@ function WatchlistView(_ref8) {
           ),
           React.createElement("div", { className: "alert-target-row" },
             React.createElement("div", { className: "input-prefix-wrap alert-target-wrap" },
-              React.createElement("span", { className: "prefix" }, popupCcy === 'ZAR' ? 'R' : '$'),
+              React.createElement("span", { className: "prefix" }, popupSym),
               React.createElement("input", {
                 type: "text", inputMode: "decimal",
                 autoComplete: "off", autoCorrect: "off", spellCheck: false,
@@ -3704,7 +3757,7 @@ function WatchlistView(_ref8) {
             onClick: submitAlertPopup
           }, React.createElement(Icon, { name: "plus" }),
             " Alert when ", alertDir === 'above' ? 'above ' : 'below ',
-            alertTarget && isFinite(parseDecimal(alertTarget)) ? (popupCcy === 'ZAR' ? 'R' : '$') + fmtNum(parseDecimal(alertTarget)) : 'target')))),
+            alertTarget && isFinite(parseDecimal(alertTarget)) ? popupSym + fmtNum(parseDecimal(alertTarget)) : 'target')))),
 
     React.createElement("div", { className: "eyebrow suggestions-head" },
       React.createElement("span", null, "Suggested for you"),
@@ -3835,7 +3888,10 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove, onRemoveMany }
 
   const submitAdd = () => {
     const amt = parseFloat(form.amount);
-    if (!isFinite(amt) || amt === 0 || !form.date) return;
+    // A TFSA log entry is a contribution. A negative "withdrawal" used to
+    // subtract from annual + lifetime usage, giving back room SARS never restores
+    // (and rendered as "+R..."). Withdrawals are not logged here.
+    if (!isFinite(amt) || amt <= 0 || !form.date) return;
     onAdd(amt, form.date, form.note);
     setForm({ amount: '', date: tfsaTodayStr(), note: '' });
     setAdding(false);
@@ -3847,7 +3903,7 @@ function TFSAContributions({ deposits, onAdd, onUpdate, onRemove, onRemoveMany }
   };
   const submitEdit = () => {
     const amt = parseFloat(editForm.amount);
-    if (!isFinite(amt) || amt === 0 || !editForm.date) return;
+    if (!isFinite(amt) || amt <= 0 || !editForm.date) return;
     onUpdate(editId, { amount: amt, date: editForm.date, note: editForm.note });
     setEditId(null);
   };

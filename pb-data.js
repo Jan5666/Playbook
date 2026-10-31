@@ -230,7 +230,8 @@
 
   // ─── Stooq fallback ─────────────────────────────────────────────────────────
   function stooqSymbol(ticker, market) {
-    if (market === 'JSE' || market === 'TFSA') return ticker.toLowerCase() + '.jo';
+    // Idempotent like PBCore.yahooSymbol: a position stored as "SOL.JO" must not ask for "sol.jo.jo".
+    if (market === 'JSE' || market === 'TFSA') return ticker.toLowerCase().replace(/\.jo$/, '') + '.jo';
     // Stooq quotes crypto as e.g. "btcusd" (no exchange suffix).
     if (market === 'CRYPTO') return ticker.toLowerCase().replace(/-usd$/, '') + 'usd';
     if (ticker === '^SPX' || ticker === '^GSPC') return '%5Espx';

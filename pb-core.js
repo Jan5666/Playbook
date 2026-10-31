@@ -672,6 +672,13 @@
       next.fxRateAtCost = ctx.historicalFx;
     } else if ((!nextDate || nextDate === ctx.today) && ctx.fxRates?.rates?.[fxCode]) {
       next.fxRateAtCost = ctx.fxRates.rates[fxCode];
+    } else if (fxCode !== (existing.costCurrency || marketCurrency(existing.market))) {
+      // The cost moved into a different currency and no rate for it resolved
+      // (historical FX lookup failed). The stored rate belongs to the OLD
+      // currency -- a US holding re-pointed to JSE kept 1.0 and read its cost at
+      // purchase ~18x too high. Clear it; computeFxSnapshot falls back to today's
+      // rate for a null.
+      next.fxRateAtCost = null;
     }
     return next;
   }
@@ -691,6 +698,32 @@
       ? (exShares * exCost + addShares * addCost) / shares
       : exCost;
     return { shares, costBasis };
+  }
+
+  // The device's LOCAL calendar day as YYYY-MM-DD. new Date().toISOString() is
+  // the UTC day, which is still YESTERDAY from 00:00 to 02:00 SAST (01:00 CET):
+  // a TFSA buy at 00:30 on 1 March was dated 28 Feb and counted against the
+  // previous tax year's cap, and the date pickers' max refused the real today.
+  function localDateKey(ms) {
+    const d = ms == null ? new Date() : new Date(ms);
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  // Top up an existing holding with a new lot. The lot is priced in `addCcy`
+  // (with `rateAtCost` resolved for THAT currency); the holding's cost basis may
+  // be booked in another one (crypto bought in ZAR). The lot is converted into
+  // the holding's cost currency at today's rates before averaging, and the
+  // FX-at-cost rate is replaced only when it is a rate for the holding's own cost
+  // currency -- writing a USD rate (1.0) under a ZAR cost basis read the whole
+  // position's cost-at-purchase ~18x too high (fixed 2026-10-31).
+  // Same-currency behaviour is unchanged: the newest lot's rate wins when known.
+  function mergeTopUp(existing, addShares, addCost, addCcy, rateAtCost, rates) {
+    const exCcy = positionCostCcy(existing);
+    const same = addCcy === exCcy;
+    const cost = same ? addCost : (convertCcy(addCost, addCcy, exCcy, rates || null) ?? addCost);
+    const { shares, costBasis } = mergeCostBasis(existing.shares, existing.costBasis, addShares, cost);
+    return { shares, costBasis, fxRateAtCost: same ? (rateAtCost || existing.fxRateAtCost) : existing.fxRateAtCost };
   }
 
   // ─── Yahoo chart parsers (pure, client-only) ─────────────────────────────────
@@ -854,7 +887,11 @@
     // bar is at most a long weekend old; anything older means the series itself is
     // stale (illiquid or delisted symbol, a cached proxy response), and treating
     // an ancient close as "yesterday" would silently report a 0% day.
-    const LAST_BAR_MAX_AGE_MS = 5 * 86400 * 1000;
+    // 6 days, not 5: bars are stamped at the session OPEN, so after a 4-day
+    // closure (JSE/LSE Easter Thu -> Tue, UK Christmas 2027 Fri -> Wed) the last
+    // bar is already 5 days + minutes old at the bell. At 5 the Easter Tuesday
+    // move was measured against Wednesday's close (+3.92% for a true +1.92%).
+    const LAST_BAR_MAX_AGE_MS = 6 * 86400 * 1000;
     const lastBarRecent = lastBar.t != null && (now - lastBar.t) < LAST_BAR_MAX_AGE_MS;
     // Most recent bar landing on a market-local day EARLIER than `day`. Returns
     // the bar's own day alongside its close: which SESSION the previous close came
@@ -1314,9 +1351,15 @@ function parseDecimal(raw) {
     else s = s.replace(/,/g, '');
   } else if (hasComma) {
     // A lone comma: decimal if it looks like one (e.g. 12,50), else thousands.
+    // A zero integer part can't carry a thousands group, so "0,125" is the SA
+    // decimal comma (0.125), not 125.
     const parts = s.split(',');
-    if (parts.length === 2 && parts[1].length !== 3) s = parts[0] + '.' + parts[1];
+    if (parts.length === 2 && (parts[1].length !== 3 || /^-?0*$/.test(parts[0]))) s = parts[0] + '.' + parts[1];
     else s = s.replace(/,/g, '');
+  } else if (hasDot && /^-?\d{1,3}(\.\d{3}){2,}$/.test(s)) {
+    // "1.234.567": two or more dots can't be a decimal point, so they're
+    // thousands groups (parseFloat stopped at the second dot and read 1.234).
+    s = s.replace(/\./g, '');
   }
   const n = parseFloat(s);
   return isFinite(n) ? n : NaN;
@@ -2218,6 +2261,8 @@ function rotationSummary(classified) {
     forwardFillPortfolio,
     resolvePositionUpdates,
     mergeCostBasis,
+    mergeTopUp,
+    localDateKey,
     buildDailyBars,
     marketDayKey,
     weekdaysBetween,

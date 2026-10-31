@@ -122,6 +122,14 @@ if (typeof convertCcy === 'function' && typeof marketCurrency === 'function') {
 
   const noExisting = resolvePositionUpdates(null, { shares: 3 }, ctxToday);
   ok('resolve with no existing returns updates as-is', noExisting.shares === 3 && noExisting.fxRateAtCost === undefined);
+
+  // 2026-10-31: a market/currency change whose new rate can't be resolved (past
+  // date, historical lookup failed) used to keep the OLD currency's rate.
+  const ctxFail = { today: '2026-06-25', historicalFx: null, fxRates: { rates: { USD: 1, ZAR: 18 } } };
+  const repoint = resolvePositionUpdates({ market: 'US', purchaseDate: '2025-01-10', fxRateAtCost: 1 }, { market: 'JSE', costBasis: 3000 }, ctxFail);
+  ok('resolve: currency change with no resolvable rate clears the stale rate', repoint.fxRateAtCost === null);
+  const sameCcyMove = resolvePositionUpdates({ market: 'JSE', purchaseDate: '2025-01-10', fxRateAtCost: 18.4 }, { market: 'TFSA' }, ctxFail);
+  ok('resolve: market change within the SAME currency keeps the rate (JSE -> TFSA)', sameCcyMove.fxRateAtCost === undefined);
 }
 
 // ── Anti-drift guard: app.js delegates to PBCore, carries no local copies ─────
