@@ -3843,6 +3843,12 @@ function App() {
     canPrompt: !!installEvent
   }), React.createElement(LoadingScreen, { visible: booting }));
 }
+// Marquee ribbon motion. Cruise speed in px/s; how fast a fling decays back to it
+// (time constant, s); and a cap on release velocity so a hard flick cannot spin
+// the strip through several laps.
+const RIBBON_SPEED = 30;
+const RIBBON_EASE_S = 0.45;
+const RIBBON_MAX_FLING = 2500;
 function Hero(_ref4) {
   let {
     onOpenDetail
@@ -3852,52 +3858,127 @@ function Hero(_ref4) {
   const prices = PBStore.usePricesMap();
   const ribbonScrollRef = useRef(null);
   const ribbonAnimRef = useRef(null);
+  // Offset into the track in px (positive = content moved left). Kept UNWRAPPED
+  // while a finger is down so a drag maps 1:1 onto the finger; ribbonApply folds
+  // it into [0, period) for display.
   const ribbonOffsetRef = useRef(0);
+  // Current drift velocity in px/s (positive = leftward, the ticker's direction).
+  // At rest it sits at RIBBON_SPEED; a fling sets it to the finger's release
+  // velocity and the animation eases it back, so a swipe either way coasts,
+  // slows, and hands back to the auto-scroll without a stop-start jolt.
+  const ribbonVelRef = useRef(RIBBON_SPEED);
+  // Width of ONE copy of the pills, measured from the first duplicate's
+  // position. It used to be scrollWidth / 2, which is short by half a flex gap
+  // (the track has n*2 - 1 gaps, not n*2), so every wrap jumped 4px.
+  const ribbonPeriodRef = useRef(0);
   const ribbonDragRef = useRef(null);
-  // Tracks whether the last touch interaction was a drag (scrub) rather than a
+  // Tracks whether the last pointer interaction was a drag (scrub) rather than a
   // tap, so dragging the marquee never accidentally opens a card on release.
   const ribbonMovedRef = useRef(false);
+
+  // Paint the current offset. The modulo is what makes a left-to-right drag work:
+  // the old code wrote translateX(-${offset}px) straight from the raw offset, and
+  // dragging right drove it NEGATIVE -- "translateX(--12px)" is invalid CSS, the
+  // browser dropped the transform, and the strip snapped back to 0 under the
+  // finger. That was the "buggy" scroll in that direction.
+  const ribbonApply = () => {
+    const el = ribbonScrollRef.current;
+    const period = ribbonPeriodRef.current;
+    if (!el || !(period > 0)) return;
+    const x = ((ribbonOffsetRef.current % period) + period) % period;
+    el.style.transform = `translate3d(${-x}px, 0, 0)`;
+  };
 
   useEffect(() => {
     if (ribbonMode !== 'marquee') return;
     const el = ribbonScrollRef.current;
     if (!el) return;
+    const n = el.children.length / 2;
+    const measure = () => {
+      const first = el.children[0], dup = el.children[n];
+      ribbonPeriodRef.current = (first && dup) ? dup.offsetLeft - first.offsetLeft : el.scrollWidth / 2;
+    };
+    measure();
+    // Pills widen when their first quote lands, so the period is re-measured on
+    // resize instead of read (and forcing layout) on every frame.
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    if (ro) ro.observe(el);
     let lastT = null;
-    const speed = 30;
     const tick = (t) => {
-      if (!lastT) lastT = t;
-      if (!ribbonDragRef.current) {
-        ribbonOffsetRef.current += (t - lastT) / 1000 * speed;
-        const half = el.scrollWidth / 2;
-        if (half > 0 && ribbonOffsetRef.current >= half) ribbonOffsetRef.current -= half;
-        if (ribbonOffsetRef.current < 0) ribbonOffsetRef.current += half;
-        el.style.transform = `translateX(-${ribbonOffsetRef.current}px)`;
-      }
+      // Clamp the step: after the tab was backgrounded rAF resumes with a gap of
+      // seconds, which would otherwise teleport the strip.
+      const dt = lastT == null ? 0 : Math.min(0.05, (t - lastT) / 1000);
       lastT = t;
+      if (!ribbonDragRef.current) {
+        // Exponential ease of the velocity toward the cruise speed: decays a fling
+        // in either direction and ramps back up after a tap-hold, both smoothly.
+        const v = ribbonVelRef.current;
+        ribbonVelRef.current = v + (RIBBON_SPEED - v) * (1 - Math.exp(-dt / RIBBON_EASE_S));
+        const period = ribbonPeriodRef.current;
+        let off = ribbonOffsetRef.current + ribbonVelRef.current * dt;
+        if (period > 0) off = ((off % period) + period) % period;
+        ribbonOffsetRef.current = off;
+        ribbonApply();
+      }
       ribbonAnimRef.current = requestAnimationFrame(tick);
     };
     ribbonAnimRef.current = requestAnimationFrame(tick);
-    return () => { if (ribbonAnimRef.current) cancelAnimationFrame(ribbonAnimRef.current); };
+    return () => {
+      if (ribbonAnimRef.current) cancelAnimationFrame(ribbonAnimRef.current);
+      if (ro) ro.disconnect();
+    };
   }, [ribbonMode, ribbonItems]);
 
-  const onRibbonTouchStart = (e) => {
-    const touch = e.touches[0];
-    if (!touch) return;
+  // Pointer events cover touch, mouse and pen with one code path. The marquee is
+  // `touch-action: pan-y`, so a vertical swipe that starts on the ribbon still
+  // scrolls the page (the browser takes it and sends pointercancel), while a
+  // horizontal one comes to us. It used to be `touch-action: none`, which made the
+  // ribbon a dead zone for scrolling the page.
+  const onRibbonPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     ribbonMovedRef.current = false;
-    ribbonDragRef.current = { startX: touch.clientX, startOffset: ribbonOffsetRef.current };
+    ribbonDragRef.current = {
+      id: e.pointerId, startX: e.clientX, startOffset: ribbonOffsetRef.current,
+      samples: [{ x: e.clientX, t: e.timeStamp }]
+    };
+    // A finger on the strip holds it still; release eases it back up to speed.
+    ribbonVelRef.current = 0;
   };
-  const onRibbonTouchMove = (e) => {
+  const onRibbonPointerMove = (e) => {
     const drag = ribbonDragRef.current;
-    if (!drag) return;
-    const touch = e.touches[0];
-    if (!touch) return;
-    const dx = touch.clientX - drag.startX;
-    if (Math.abs(dx) > 6) ribbonMovedRef.current = true;
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.startX;
+    if (!ribbonMovedRef.current) {
+      if (Math.abs(dx) <= 6) return;
+      ribbonMovedRef.current = true;
+      // Capture only once it is a drag, so a plain tap still clicks the pill.
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+      e.currentTarget.classList.add('dragging');
+    }
     ribbonOffsetRef.current = drag.startOffset - dx;
-    const el = ribbonScrollRef.current;
-    if (el) el.style.transform = `translateX(-${ribbonOffsetRef.current}px)`;
+    drag.samples.push({ x: e.clientX, t: e.timeStamp });
+    while (drag.samples.length > 2 && e.timeStamp - drag.samples[0].t > 100) drag.samples.shift();
+    ribbonApply();
   };
-  const onRibbonTouchEnd = () => { ribbonDragRef.current = null; };
+  const onRibbonPointerEnd = (e) => {
+    const drag = ribbonDragRef.current;
+    if (!drag || e.pointerId !== drag.id) return;
+    ribbonDragRef.current = null;
+    e.currentTarget.classList.remove('dragging');
+    let v = 0;
+    if (ribbonMovedRef.current && e.type === 'pointerup') {
+      // Release velocity from the last ~100ms of movement. A finger that stopped
+      // before lifting releases at rest instead of flinging on stale samples.
+      const s = drag.samples, a = s[0], b = s[s.length - 1];
+      const span = b.t - a.t;
+      if (span > 0 && e.timeStamp - b.t < 80) v = -(b.x - a.x) / span * 1000;
+      v = Math.max(-RIBBON_MAX_FLING, Math.min(RIBBON_MAX_FLING, v));
+    }
+    ribbonVelRef.current = v;
+    // Re-base the unwrapped drag offset so the tick's modulo starts from here.
+    const period = ribbonPeriodRef.current;
+    if (period > 0) ribbonOffsetRef.current = ((ribbonOffsetRef.current % period) + period) % period;
+  };
 
   const openPill = (cat) => {
     if (ribbonMovedRef.current) return; // a drag, not a tap — don't open a card
@@ -3919,7 +4000,7 @@ function Hero(_ref4) {
       role: "button", tabIndex: 0,
       title: cat.label + ' — tap for chart, info & alerts',
       onClick: () => openPill(cat),
-      onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPill(cat); } }
+      onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ribbonMovedRef.current = false; openPill(cat); } }
     },
       React.createElement("span", { className: "ribbon-pill-label" }, cat.short),
       React.createElement("span", { className: "ribbon-pill-val" }, valStr),
@@ -3939,10 +4020,10 @@ function Hero(_ref4) {
   const ribbonEl = useMarquee
     ? React.createElement("div", {
         className: "ribbon-marquee",
-        onTouchStart: onRibbonTouchStart,
-        onTouchMove: onRibbonTouchMove,
-        onTouchEnd: onRibbonTouchEnd,
-        onTouchCancel: onRibbonTouchEnd
+        onPointerDown: onRibbonPointerDown,
+        onPointerMove: onRibbonPointerMove,
+        onPointerUp: onRibbonPointerEnd,
+        onPointerCancel: onRibbonPointerEnd
       }, React.createElement("div", { ref: ribbonScrollRef, className: "ribbon-marquee-track" },
         ...pills, ...sortedRibbon.map(k => renderPill(k, '-dup')).filter(Boolean)))
     : pills.length > 0 ? React.createElement("div", { className: "ribbon-grid" }, pills) : null;

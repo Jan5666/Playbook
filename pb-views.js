@@ -2637,7 +2637,7 @@ function CurrentView(_ref7) {
     onBuyPosition,
     onSellPosition
   } = _ref7;
-  const { Icon, fmtCcy, fmtCcySigned, MARKET_LABELS, positionDisplayName, usePersistedState } = window.PBApp;
+  const { Icon, fmtCcy, fmtCcySigned, MARKET_LABELS, positionDisplayName } = window.PBApp;
   const prices = PBStore.usePricesMap();
   const valueHidden = PBStore.useSetting('valueHidden');
   // Always offer the three primary US/SA tabs, then surface any other market
@@ -2661,10 +2661,22 @@ function CurrentView(_ref7) {
   const [sortMode, setSortMode] = useState('value');
   const [sortOpen, setSortOpen] = useState(false);
   // Pre-market mode: the Today column reports the extended-hours move instead of
-  // the day's, and the sort menu unlocks ranking by it. This is view-local UI
-  // state, so the raw persisted-state idiom is the right one (not SETTINGS_SCHEMA);
-  // the pb. prefix carries it into cloud backup like the other view prefs.
-  const [showExt, setShowExt] = usePersistedState('pb.holdings.showExt.v1', false);
+  // the day's, the summary adds a rough estimate of the book's ext move, and the
+  // sort menu unlocks ranking by it.
+  //
+  // It belongs to ONE market tab and switches itself off when you move to another
+  // (Jan, 2026-10-31): turning it on is a deliberate "show me this market's
+  // pre-market", and carrying it onto the next tab -- a JSE tab has no pre-market
+  // at all -- made the next market read in the wrong mode. So the state is the
+  // market it was switched on for, cleared during render the moment the active
+  // tab differs (no effect, so not even one frame paints the wrong mode). Coming
+  // BACK to that market starts off too; you turn it on again if you want it.
+  //
+  // Session-only on purpose. It used to persist (pb.holdings.showExt.v1), which
+  // would also bring it back on at launch; that key is simply no longer read.
+  const [extMarket, setExtMarket] = useState(null);
+  if (extMarket !== null && extMarket !== activeMarket) setExtMarket(null);
+  const showExt = extMarket !== null && extMarket === activeMarket;
   // Turning the column back off must not strand a sort the menu no longer offers.
   useEffect(() => {
     if (!showExt && sortMode === 'premarket') setSortMode('value');
@@ -2824,7 +2836,52 @@ function CurrentView(_ref7) {
           // made the percentage smaller, so an incomplete reading was
           // indistinguishable from a weak day.
           s.dayCounted < s.dayPriced ? React.createElement("span", { className: "hsum-today-partial" },
-            s.dayCounted + " of " + s.dayPriced) : null) : null));
+            s.dayCounted + " of " + s.dayPriced) : null) : null),
+      showExt ? renderExtEstimate(rows, market) : null);
+  };
+
+  // Pre-market estimate band. Only rendered while the toggle is on, and drawn to
+  // look nothing like the Today figure above it: amber dashed frame, moon, the
+  // session's name, an "est." tag and a ≈ on the number, plus a caption saying
+  // what it is measured against. It is the share-weighted sum of exactly the ext
+  // chips on the rows below (PBCore.extMoveEstimate), so the two always agree,
+  // and it is never added into Today.
+  const renderExtEstimate = (rows, market) => {
+    const est = PBCore.extMoveEstimate(rows.map(p => ({ shares: p.shares, quote: prices[priceKey(market, p.ticker)] })));
+    const ccy = marketCurrency(market);
+    const tag = (label) => React.createElement("span", { className: "hsum-ext-tag" },
+      React.createElement(Icon, { name: "moon", size: 11 }), label);
+    if (est.change == null) {
+      // Say why there is no number rather than showing nothing: the toggle was
+      // just pressed, so silence would read as "it didn't work".
+      const msg = !PBCore.hasExtendedSession(market)
+        ? 'No pre-market trading on ' + tabLabel(market)
+        : 'No pre-market or after-hours trades yet';
+      return React.createElement("div", { className: "hsum-ext empty" },
+        React.createElement("div", { className: "hsum-ext-line" }, tag('Pre-market'),
+          React.createElement("span", { className: "hsum-ext-note" }, msg)));
+    }
+    const up = est.change >= 0;
+    const label = est.kind === 'pre' ? 'Pre-market'
+      : est.kind === 'post' ? (est.final ? 'After close' : 'After-hours')
+      : 'Extended hrs';
+    const caption = est.kind === 'pre' ? 'Rough estimate if pre-market prices hold at the open'
+      : est.kind === 'post' ? (est.final ? 'Rough estimate of the move since the last close'
+                                         : "Rough estimate of the move since today's close")
+      : "Rough estimate vs each holding's last close";
+    return React.createElement("div", {
+      className: "hsum-ext " + (up ? 'up' : 'down'),
+      title: caption + '. Not included in Today.'
+    },
+      React.createElement("div", { className: "hsum-ext-line" },
+        tag(label + ' \u00b7 est.'),
+        React.createElement("span", { className: "hsum-ext-val mono" },
+          '\u2248 ',
+          React.createElement("span", { className: valueHidden ? "hsum-blur-inline" : "" }, fmtCcySigned(est.change, ccy)),
+          ' \u00b7 ' + (up ? '+' : '') + est.pct.toFixed(2) + '%',
+          est.counted < est.priced ? React.createElement("span", { className: "hsum-today-partial" },
+            ' ' + est.counted + ' of ' + est.priced) : null)),
+      React.createElement("div", { className: "hsum-ext-cap" }, caption + ' \u00b7 not in Today'));
   };
 
   // Sort + Import + Add cluster. Lives directly beneath the market summary (or
@@ -2840,7 +2897,7 @@ function CurrentView(_ref7) {
       className: "wl-iconbtn" + (showExt ? " on" : ""),
       "aria-label": "Show pre-market moves", "aria-pressed": showExt,
       title: "Pre-market / after-hours moves",
-      onClick: () => setShowExt(v => !v)
+      onClick: () => setExtMarket(m => m === market ? null : market)
     }, React.createElement(Icon, { name: "moon", size: 13 }),
        showExt ? React.createElement("span", { className: "wl-iconbtn-dot" }) : null) : null,
     count > 1 ? React.createElement("button", {

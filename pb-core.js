@@ -1215,6 +1215,59 @@
     if (live) out.marketState = kind === 'post' ? 'POST' : 'PRE';
     return out;
   }
+  // Rough portfolio effect of the extended-hours (pre/post) moves: what the
+  // Holdings summary shows while the pre-market toggle is on. It is NOT a day
+  // move and never feeds one -- it is the sum of exactly the per-row ext chips
+  // the user is looking at, weighted by shares, so the summary and the rows
+  // can never disagree.
+  //
+  // items: [{ shares, quote }], all in ONE market (the caller is a market tab),
+  // so every amount is already in that market's quote currency (pence/cents
+  // divided by deriveIntradayExt, same as q.price).
+  //
+  // Each reading is measured against the baseline deriveIntradayExt chose for
+  // its session: PRE -> the previous close (so the estimate reads "where the book
+  // would open if pre-market prices held"); POST -> TODAY's close (so it is the
+  // after-hours effect ON TOP of today's move, not including it). `kind` says
+  // which, and 'mixed' if the holdings disagree, so the label never claims a
+  // session that only part of the figure describes.
+  //
+  // `priced` counts holdings with a usable price, `counted` the ones that carried
+  // an ext reading: a holding with no pre-market trade contributes nothing rather
+  // than a guess, and the caller shows "N of M" when that leaves some out.
+  // Returns change/pct null when nothing carried a reading.
+  function extMoveEstimate(items) {
+    let change = 0, base = 0, counted = 0, priced = 0, anyLive = false;
+    const kinds = new Set();
+    for (const it of (Array.isArray(items) ? items : [])) {
+      const q = it && it.quote;
+      const sh = it && it.shares;
+      if (!(typeof sh === 'number' && isFinite(sh) && sh > 0)) continue;
+      if (!q || !(typeof q.price === 'number' && isFinite(q.price) && q.price > 0)) continue;
+      priced++;
+      // Same gate as the row's ext chip (extKind set, finite extChangePct).
+      if (!q.extKind || typeof q.extChangePct !== 'number' || !isFinite(q.extChangePct)) continue;
+      if (!(typeof q.extPrice === 'number' && isFinite(q.extPrice) && q.extPrice > 0)) continue;
+      // The session's own baseline. extChange is extPrice - baseline; an older
+      // stored quote without it falls back to the percentage, which is exact too.
+      const ref = (typeof q.extChange === 'number' && isFinite(q.extChange))
+        ? q.extPrice - q.extChange
+        : q.extPrice / (1 + q.extChangePct / 100);
+      if (!(ref > 0) || !isFinite(ref)) continue;
+      change += sh * (q.extPrice - ref);
+      base += sh * ref;
+      counted++;
+      kinds.add(q.extKind);
+      if (q.extLive !== false) anyLive = true;
+    }
+    if (!counted || !(base > 0)) return { change: null, pct: null, base: 0, counted: 0, priced, kind: null, final: false };
+    return {
+      change, base, pct: change / base * 100, counted, priced,
+      kind: kinds.size === 1 ? [...kinds][0] : 'mixed',
+      // Every reading is a finished session (the overnight "after close" figure).
+      final: !anyLive
+    };
+  }
   // Convert one Yahoo chart result into the app's normalized quote shape.
   // Returns null if the response shape is unusable so the caller can fall
   // through to the next proxy or data source.
@@ -2242,6 +2295,7 @@ function rotationSummary(classified) {
     lastSessionDay,
     prioritizeSweep,
     hasExtendedSession,
+    extMoveEstimate,
     regularSessionStartedToday,
     fmtAgo,
     refreshChipState,
