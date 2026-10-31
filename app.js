@@ -162,7 +162,7 @@ async function decryptBlob(code, blob) {
 // ignored, so prefer the Web Share sheet (saves into Files / iCloud Drive);
 // fall back to a download anchor on desktop and browsers without file sharing.
 async function saveBackupFile(jsonString) {
-  const filename = `playbook-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  const filename = `playbook-backup-${PBCore.localDateKey()}.json`;
   try {
     const file = new File([jsonString], filename, { type: 'application/json' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -290,6 +290,14 @@ function useTtlCache(ttlMs) {
           [key]: { data, loading: false, fetchedAt: Date.now() }
         }));
         return data;
+      } catch (e) {
+        // A rejected fetch used to leave loading:true forever, and Hot Topics'
+        // refresh button returns early while loading -- dead until a remount.
+        setCache(prev => ({
+          ...prev,
+          [key]: { ...(prev[key] || {}), data: prev[key]?.data || null, loading: false }
+        }));
+        throw e;
       } finally {
         delete inFlight.current[key];
       }
@@ -1051,7 +1059,7 @@ function hotDateKey(v) {
 // One Perplexity call returns earnings + macro + news, minimizing token cost.
 async function fetchHotTopicsAI(apiKey, tickers) {
   if (!apiKey) return null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = PBCore.localDateKey();
   const watched = (tickers || []).slice(0, 40).join(', ');
   const prompt = `Today is ${today}. Build a market "hot topics" briefing for an investor. Respond with STRICT JSON only (no markdown, no prose), exactly this shape:
 {
@@ -1147,8 +1155,11 @@ async function buildHotTopics(apiKey, userSymbols, fundamentals, heldTickers) {
   // ── Earnings (deduped by ticker — one upcoming report per name) ──
   const earnings = [];
   const seenEarn = new Set();
+  // AI output is untrusted shape: a null entry or a numeric ticker (2330) used to
+  // throw here and reject the whole Hot Topics build.
   const pushEarn = (e) => {
-    const ticker = (e.ticker || '').toUpperCase();
+    if (!e || typeof e !== 'object') return;
+    const ticker = String(e.ticker || '').toUpperCase();
     if (!ticker || seenEarn.has(ticker)) return;
     if (!hotToDate(e.date)) return;
     seenEarn.add(ticker);
@@ -1176,11 +1187,12 @@ async function buildHotTopics(apiKey, userSymbols, fundamentals, heldTickers) {
   const macro = [];
   const seenMacro = new Set();
   const pushMacro = (m) => {
+    if (!m || typeof m !== 'object') return;
     const d = hotToDate(m.date);
     if (!d) return;
     const diff = hotDayDiff(d);
     if (diff < 0 || diff > 45) return;
-    const key = hotDateKey(m.date) + '|' + (m.type || '').toUpperCase();
+    const key = hotDateKey(m.date) + '|' + String(m.type || '').toUpperCase();
     if (seenMacro.has(key)) return;
     seenMacro.add(key);
     macro.push({ date: hotDateKey(m.date), title: m.title || '', type: (m.type || 'Event'), detail: m.detail || '' });
@@ -1988,7 +2000,13 @@ function useAlertEngine(alerts, fireNotification) {
       // session (background SW alerts keep running on the real config).
       if (PBStore.getSetting('previewMode')) return;
       const { nextSeen, newTriggers, seenChanged } = evaluateTriggers(alerts, PBStore.getPrices(), seenRef.current);
-      if (seenChanged) setAlertSeenMap(nextSeen);
+      if (seenChanged) {
+        // Update the ref NOW, not in the passive effect after commit: a second
+        // price notification landing in between (the next batch, seedQuote) would
+        // otherwise re-evaluate against the old 'waiting' state and fire again.
+        seenRef.current = nextSeen;
+        setAlertSeenMap(nextSeen);
+      }
       if (newTriggers.length) {
         setTriggered(prev => [...newTriggers, ...prev].slice(0, MAX_TRIGGER_HISTORY));
         newTriggers.forEach(t => fireNotification(t));
@@ -2339,6 +2357,8 @@ function usePortfolio(fxRates) {
   const sectorWeights = PBStore.useCollection('sectorWeights');
   const setSectorWeights = useCallback(v => PBStore.setCollection('sectorWeights', v), []);
   const setSectorWeightsFor = (key, weights) => {
+    // Preview shows the demo book; a save there must not clear the REAL map.
+    if (PBStore.getSetting('previewMode') && typeof window !== 'undefined' && window.PB_DEMO) return;
     setSectorWeights(prev => {
       const next = { ...prev };
       if (weights && weights.length) next[key] = weights;
@@ -2403,7 +2423,7 @@ function usePortfolio(fxRates) {
     // in, so the FX gain/loss breakdown reasons about the right exposure.
     const costCode = (costCurrency && costCurrency !== nativeCode) ? costCurrency : null;
     const fxCode = costCode || nativeCode;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = PBCore.localDateKey();
     const dateKey = purchaseDate && purchaseDate !== today ? purchaseDate : null;
     let rateAtCost = fxRates?.rates?.[fxCode] || null;
     if (dateKey) {
@@ -2424,18 +2444,15 @@ function usePortfolio(fxRates) {
         // sector breakdown lives in the separate pb.sectorWeights map keyed by
         // MARKET:TICKER, so it is untouched here and the allocation structure the
         // user set for this fund stays in place through every top-up.
-        const exCcy = positionCostCcy(existing);
-        const addCcy = costCode || nativeCode;
         // If the top-up was entered in a different currency than the holding's
-        // existing cost basis, convert it across at today's rate before averaging
-        // so the blended avg cost stays in one coherent currency.
-        const addCost = addCcy === exCcy ? newCost
-          : (convertCcy(newCost, addCcy, exCcy, fxRates?.rates || null) ?? newCost);
-        const { shares, costBasis } = mergeCostBasis(existing.shares, existing.costBasis, newShares, addCost);
+        // existing cost basis, PBCore.mergeTopUp converts it across at today's
+        // rate before averaging, and keeps the holding's own FX-at-cost rate.
+        const { shares, costBasis, fxRateAtCost } = PBCore.mergeTopUp(existing, newShares, newCost,
+          costCode || nativeCode, rateAtCost, fxRates?.rates || null);
         return prev.map(p => p.id === existing.id ? {
           ...p, shares, costBasis,
           notes: notes ? (p.notes ? p.notes + '; ' + notes : notes) : p.notes,
-          fxRateAtCost: rateAtCost || p.fxRateAtCost
+          fxRateAtCost
         } : p);
       }
       return [...prev, {
@@ -2465,7 +2482,7 @@ function usePortfolio(fxRates) {
   // applies every row in a single state update so duplicates within the batch
   // merge correctly and the UI only re-renders once. One summary toast.
   const importPositions = async (list) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = PBCore.localDateKey();
     const prepared = [];
     for (const r of list) {
       const nativeCode = marketCurrency(r.market);
@@ -2485,8 +2502,12 @@ function usePortfolio(fxRates) {
         const idx = next.findIndex(p => p.ticker === tickerUp && p.market === r.market);
         if (idx >= 0) {
           const ex = next[idx];
-          const { shares, costBasis } = mergeCostBasis(ex.shares, ex.costBasis, r.shares, r.costBasis);
-          next[idx] = { ...ex, shares, costBasis, name: ex.name || r.name || null, fxRateAtCost: r.rateAtCost || ex.fxRateAtCost };
+          // Imported rows are priced in the market's native currency; a holding
+          // whose cost is booked in another (crypto bought in ZAR) gets the row
+          // converted and keeps its own FX-at-cost rate (PBCore.mergeTopUp).
+          const { shares, costBasis, fxRateAtCost } = PBCore.mergeTopUp(ex, r.shares, r.costBasis,
+            marketCurrency(r.market), r.rateAtCost, fxRates?.rates || null);
+          next[idx] = { ...ex, shares, costBasis, name: ex.name || r.name || null, fxRateAtCost };
           merged++;
         } else {
           next.push({
@@ -2529,7 +2550,7 @@ function usePortfolio(fxRates) {
     const tickerUp = ticker.toUpperCase();
     const numShares = parseFloat(shares);
     const price = parseFloat(sellPrice);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = PBCore.localDateKey();
     setPositions(prev => prev.map(p => {
       if (p.ticker !== tickerUp || p.market !== market) return p;
       const remaining = p.shares - numShares;
@@ -2545,7 +2566,7 @@ function usePortfolio(fxRates) {
   };
   const updatePosition = async (id, updates) => {
     const existing = positions.find(p => p.id === id);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = PBCore.localDateKey();
     // The cost-basis FX rate depends on the holding's native currency (its market)
     // and its purchase date — so refetch it when either changes (e.g. re-pointing
     // a US holding to a JSE listing flips USD→ZAR).
@@ -2622,11 +2643,15 @@ function usePortfolio(fxRates) {
   // ── TFSA deposit log CRUD ──
   const addTfsaDeposit = (amount, date, note) => {
     const amt = parseFloat(amount);
-    if (!isFinite(amt) || amt === 0 || !date) return { ok: false, code: 'deposit-missing-fields' };
+    // TFSA log entries are contributions; a negative one would hand back
+    // contribution room that a withdrawal never restores (unlike the growth
+    // contributions log, where negative = withdrawal by design).
+    if (!isFinite(amt) || amt <= 0 || !date) return { ok: false, code: 'deposit-missing-fields' };
     setTfsaDeposits(prev => [...prev, { id: uid(), amount: amt, date, note: note || '', source: 'manual' }]);
     return { ok: true, code: 'deposit-logged' };
   };
   const updateTfsaDeposit = (id, updates) => {
+    if (updates && updates.amount != null && !(parseFloat(updates.amount) > 0)) return { ok: false, code: 'deposit-missing-fields' };
     setTfsaDeposits(prev => prev.map(d => {
       if (d.id !== id) return d;
       const next = { ...d, ...updates };
@@ -2860,9 +2885,12 @@ function ToastProvider(_ref2) {
     children
   } = _ref2;
   const [toast, setToast] = useState(null);
+  const timerRef = useRef(null);
   const show = useCallback(msg => {
     setToast(msg);
-    setTimeout(() => setToast(null), 3600);
+    // Restart the clock: the previous toast's timer used to clear the new one early.
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setToast(null), 3600);
   }, []);
   return React.createElement(ToastContext.Provider, {
     value: show
@@ -3356,9 +3384,13 @@ function App() {
     } catch (_e) {}
   }, [mergePrices]);
   const fireNotification = useCallback(async trig => {
-    const sym = (trig.market === 'JSE' || trig.market === 'TFSA') ? 'R' : '$';
-    const title = `${trig.ticker} ${trig.direction} ${sym}${trig.targetPrice.toFixed(2)}`;
-    const body = `Now at ${sym}${trig.triggerPrice.toFixed(2)}${trig.note ? ` — ${trig.note}` : ''}`;
+    // The market's own symbol (not '$' for LSE/ASX/EU), and an indicator's own
+    // unit (US10Y "4.50%", not "$4.50").
+    const ind = indicatorFor(trig.market, trig.ticker);
+    const sym = (MARKET_CURRENCY[trig.market] || MARKET_CURRENCY.US).sym;
+    const money = v => ind ? fmtIndicator(ind, v) : sym + v.toFixed(2);
+    const title = `${trig.ticker} ${trig.direction} ${money(trig.targetPrice)}`;
+    const body = `Now at ${money(trig.triggerPrice)}${trig.note ? ` — ${trig.note}` : ''}`;
     try {
       if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage({
@@ -3770,8 +3802,12 @@ function App() {
         if (s && s !== 'Other') setSectorCache(prev => ({ ...prev, [priceKey(data.market, data.ticker)]: { sector: s, industry: data.sector, at: Date.now() } }));
       }
       // Persist the fund's sector breakdown (keyed by instrument, shared across
-      // accounts holding the same fund). Empty clears it.
-      setSectorWeightsFor(priceKey(data.market, data.ticker), data.sectorWeights || null);
+      // accounts holding the same fund). Empty clears it -- but only from the EDIT
+      // form, which is seeded with the stored split. "Add holding" always opens
+      // with empty rows, so topping up a fund you already hold that way used to
+      // silently erase its look-through breakdown.
+      if (posModalEditId || (data.sectorWeights && data.sectorWeights.length))
+        setSectorWeightsFor(priceKey(data.market, data.ticker), data.sectorWeights || null);
       setPosModalOpen(false);
     }
   }), showImport && React.createElement(ModalBoundary, {
@@ -3786,6 +3822,7 @@ function App() {
     }
   })), sellModalPos && React.createElement(SellModal, {
     position: sellModalPos,
+    fxRates: fxRates,
     onClose: () => setSellModalPos(null),
     onSell: (ticker, market, shares, price, date, notes) => {
       sellPosition(ticker, market, shares, price, date, notes);
@@ -4009,7 +4046,11 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
   if (!quote) return React.createElement("span", {
     className: "mono text-dim"
   }, "\u2014");
-  const up = quote.changePct >= 0;
+  // A Morningstar unit-trust NAV with no ClosePriceDate deliberately carries
+  // changePct: null. Calling .toFixed on it threw out of DetailModal (which has no
+  // ModalBoundary) and took the whole app to the root error screen.
+  const hasChg = typeof quote.changePct === 'number' && isFinite(quote.changePct);
+  const up = hasChg && quote.changePct >= 0;
   // Prefer the position's market for the symbol (authoritative \u2014 the user chose
   // it) so a US holding never shows \u00a3/\u20ac; only fall back to the quote's own
   // currency when no market context is available.
@@ -4040,7 +4081,7 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
   // When the "Today" row is shown it carries the day's move (with the cash
   // amount), so omit the inline chip here to avoid showing the % twice.
   // hideChange renders the price alone (the caller shows the move elsewhere).
-  !showDailyRow && !hideChange && React.createElement("span", {
+  !showDailyRow && !hideChange && hasChg && React.createElement("span", {
     className: `chg ${up ? 'up' : 'down'}`
   }, up ? '▲' : '▼', " ", up ? '+' : '', quote.changePct.toFixed(2), "%")),
   // Detail card: lay the daily figures (Today + Prev close) in a left column,
@@ -4055,8 +4096,8 @@ const PriceBlock = React.memo(function PriceBlock(_ref5) {
         // the LAST COMPLETED session's — labelling that "Today" is what made a
         // stale reading indistinguishable from a live one.
         React.createElement("span", { className: "daily-label" }, dayAtClose ? "At close" : "Today"),
-        React.createElement("span", { className: `daily-val mono ${up ? 'up' : 'down'}` },
-          (up ? '+' : '') + quote.changePct.toFixed(2) + '%',
+        React.createElement("span", { className: `daily-val mono ${hasChg ? (up ? 'up' : 'down') : 'text-dim'}` },
+          hasChg ? (up ? '+' : '') + quote.changePct.toFixed(2) + '%' : '\u2014',
           chgAbs != null ? ' · ' + (up ? '+' : '-') + sym + fmtNum(Math.abs(chgAbs)) : ''
         )
       ),
@@ -4306,7 +4347,13 @@ function loadScriptOnce(src) {
     const s = document.createElement('script');
     s.src = src; s.async = true;
     s.onload = () => resolve();
-    s.onerror = () => reject(new Error('Failed to load ' + src));
+    s.onerror = () => {
+      // Don't cache a failed download: one network blip would otherwise make
+      // every later import fail instantly until a reload ("try again" couldn't work).
+      delete loadScriptOnce._cache[src];
+      s.remove();
+      reject(new Error('Failed to load ' + src));
+    };
     document.head.appendChild(s);
   });
   loadScriptOnce._cache[src] = p;
@@ -4489,6 +4536,9 @@ async function ocrImageFile(file, onProgress) {
 const _MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 function mkDate(y, mo, d) {
   if (!(y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return null;
+  // Day must exist in that month: "31/02/2026" used to be stored as 2026-02-31,
+  // which Date later rolls into 3 March.
+  if (d > new Date(Date.UTC(y, mo, 0)).getUTCDate()) return null;
   return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 function parseFlexibleDate(raw) {

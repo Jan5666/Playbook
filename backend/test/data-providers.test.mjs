@@ -95,6 +95,8 @@ ok('stooq TFSA matches JSE exactly', stooqTfsa.price === stooqJse.price && stooq
 ok('stooq TFSA change % survives the divisor', near(stooqTfsa.changePct, stooqJse.changePct));
 ok('stooq US untouched: no divisor, USD', near(stooqUs.price, 9250) && stooqUs.currency === 'USD');
 ok('stooqSymbol maps TFSA to the .jo listing', PBData.stooqSymbol('AIETF', 'TFSA') === PBData.stooqSymbol('AIETF', 'JSE'));
+// A position stored with its suffix (force-added "SOL.JO") must not ask Stooq for sol.jo.jo.
+ok('stooqSymbol does not double an existing .jo suffix', PBData.stooqSymbol('SOL.JO', 'JSE') === 'sol.jo');
 // Column 0 is the row's own session date. Stooq's .jo file is END OF DAY and its
 // latest row is routinely the previous session; the quote carries no
 // regularMarketTime, so without sessionDay quoteTradedToday fell through to the

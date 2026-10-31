@@ -18,7 +18,7 @@ npx serve .                       # or: python -m http.server
 
 # Unit tests — zero-framework Node scripts, run individually (cwd doesn't matter):
 node backend/test/money-math.test.mjs
-for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (45)
+for f in backend/test/*.test.mjs; do node "$f" || break; done   # full suite (50)
 
 # MONEY GATE — must be green on ANY change touching money/import code:
 #   money-math, cost-basis, import-matching, ee-ocr-parse, fx-providers
@@ -89,7 +89,7 @@ node --check app.js
 ## The wiring checklist (miss one and the live site breaks)
 
 Any change to shipped files → **bump `CACHE_NAME` in sw.js** (currently
-`playbook-shell-v116`), or installed PWAs serve stale assets offline.
+`playbook-shell-v117`), or installed PWAs serve stale assets offline.
 (`LOGO_CACHE` is separate and `node tools/build-logos.mjs` bumps it itself — logo
 filenames are stable across rebuilds and `/logos/` is served cache-first, so a
 rebuilt pack would otherwise never reach an installed PWA.)

@@ -214,8 +214,8 @@ function buildImportAttempts(ranked, opts) {
 const IMPORT_SYNONYMS = {
   ticker: ['ticker', 'symbol', 'symb', 'code', 'instrument', 'security', 'scrip', 'share code', 'stock code', 'isin'],
   shares: ['shares', 'quantity', 'qty', 'units', 'no. of shares', 'number of shares', 'share qty', 'units held', 'quantity held', 'holding', 'holdings', 'nominal', 'volume', 'position'],
-  cost:   ['cost basis', 'avg cost', 'average cost', 'avg. cost', 'cost price', 'unit cost', 'avg price', 'average price', 'avg. price', 'price paid', 'purchase price', 'buy price', 'avg buy price', 'book cost per share', 'entry price', 'vwap', 'cost'],
-  total:  ['total cost', 'book cost', 'book value', 'amount invested', 'invested', 'total invested', 'cost value', 'total cost basis'],
+  cost:   ['average cost basis', 'avg cost basis', 'cost basis', 'avg cost', 'average cost', 'avg. cost', 'cost price', 'unit cost', 'avg price', 'average price', 'avg. price', 'price paid', 'purchase price', 'buy price', 'avg buy price', 'book cost per share', 'entry price', 'vwap', 'cost'],
+  total:  ['total cost', 'book cost', 'book value', 'amount invested', 'invested', 'total invested', 'cost value', 'total cost basis', 'cost basis total'],
   price:  ['last price', 'current price', 'market price', 'last', 'price', 'close'],
   market: ['market', 'exchange', 'mkt', 'listing'],
   currency: ['currency', 'ccy', 'curr'],
@@ -253,9 +253,38 @@ function inferMarket(currencyRaw, marketRaw, suffixMarket) {
   return 'US';
 }
 
+// Pick ONE delimiter for a whole pasted block. Choosing it per line (what
+// splitLine alone does) broke every input whose cells legitimately contain the
+// other delimiters: PDF text joins cells with two spaces, so "1,250" split at
+// its thousands comma; a semicolon CSV with decimal commas ("10,5") read as
+// comma-separated. The real delimiter is the one that cuts most lines into the
+// SAME number of cells (>1). Ties keep the old per-line preference order.
+// Returns null when no delimiter is consistent on at least two lines, and the
+// caller falls back to per-line detection (single-line pastes, ragged text).
+const WS_DELIM = '  ';
+function cellCount(line, delim) {
+  if (delim === WS_DELIM) return line.trim().split(/\s{2,}/).length;
+  if (delim === '\t') return line.split('\t').length;
+  return splitCsvLine(line, delim).length;
+}
+function detectDelimiter(lines) {
+  if (lines.length < 2 || lines.some(l => /^\s*\|/.test(l))) return null;
+  let best = null, bestSupport = 1;
+  for (const d of ['\t', ';', ',', WS_DELIM]) {
+    const byCount = {};
+    for (const l of lines) { const n = cellCount(l, d); if (n > 1) byCount[n] = (byCount[n] || 0) + 1; }
+    const support = Math.max(0, ...Object.values(byCount));
+    if (support > bestSupport) { best = d; bestSupport = support; }
+  }
+  return best;
+}
 // Split a single text line into cells, auto-detecting the delimiter. Falls back
 // to runs of 2+ spaces (fixed-width / PDF text) when no real delimiter exists.
-function splitLine(line) {
+// `delim` (from detectDelimiter) overrides the per-line guess.
+function splitLine(line, delim) {
+  if (delim === WS_DELIM) return line.trim().split(/\s{2,}/).map(c => c.trim());
+  if (delim === '\t') return line.split('\t').map(c => c.trim());
+  if (delim === ';' || delim === ',') return splitCsvLine(line, delim);
   if (line.includes('\t')) return line.split('\t').map(c => c.trim());
   // Markdown table row
   if (/^\s*\|/.test(line)) return line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
@@ -290,6 +319,10 @@ function splitCsvLine(line, delim) {
 }
 
 function looksLikeHeader(cells) {
+  // A header row labels columns; it never carries a figure. Without this a data
+  // row like "Texas Instruments, 8, 180" (contains "instrument") was taken as
+  // the header and every row above it thrown away.
+  if (cells.some(c => /^[-+(]?\s*[R$£€]?\s*\d[\d\s.,]*\)?%?$/.test(String(c || '').trim()))) return false;
   const joined = cells.join(' ').toLowerCase();
   const all = [].concat(...Object.values(IMPORT_SYNONYMS));
   return all.some(syn => joined.includes(syn));
@@ -314,18 +347,12 @@ function matchColumn(headers, synonyms, used) {
 function rowsToHoldings(rows) {
   const cleaned = rows.filter(r => r && r.some(c => c && String(c).trim() !== '') && !/^[-\s|:]+$/.test(r.join('')));
   if (cleaned.length === 0) return [];
-  let headerIdx = -1;
-  for (let i = 0; i < Math.min(cleaned.length, 5); i++) {
-    if (looksLikeHeader(cleaned[i])) { headerIdx = i; break; }
-  }
-  let cols, dataRows;
-  if (headerIdx >= 0) {
-    const headers = cleaned[headerIdx];
+  // Order matters: claim the more specific fields first so generic ones
+  // (e.g. "cost" containing "book cost") don't steal a total/value column.
+  const mapHeader = (headers) => {
     const used = new Set();
     const claim = (syns) => { const i = matchColumn(headers, syns, used); if (i >= 0) used.add(i); return i; };
-    // Order matters: claim the more specific fields first so generic ones
-    // (e.g. "cost" containing "book cost") don't steal a total/value column.
-    cols = {
+    return {
       ticker:   claim(IMPORT_SYNONYMS.ticker),
       total:    claim(IMPORT_SYNONYMS.total),
       cost:     claim(IMPORT_SYNONYMS.cost),
@@ -336,9 +363,21 @@ function rowsToHoldings(rows) {
       date:     claim(IMPORT_SYNONYMS.date),
       name:     claim(IMPORT_SYNONYMS.name),
     };
-    dataRows = cleaned.slice(headerIdx + 1);
-    if (cols.ticker < 0 && cols.name < 0) { headerIdx = -1; }
+  };
+  // Scan the first five rows and keep the candidate that maps the most columns.
+  // The scan used to stop at the FIRST row containing any synonym, so a title row
+  // ("Portfolio holdings") above the real header ended it: the title mapped no
+  // ticker/name column, the whole block fell back to header-less inference, and
+  // the real header was read as data ("Total Cost" never divided by shares).
+  let headerIdx = -1, cols, dataRows, bestMapped = 0;
+  for (let i = 0; i < Math.min(cleaned.length, 5); i++) {
+    if (!looksLikeHeader(cleaned[i])) continue;
+    const c = mapHeader(cleaned[i]);
+    if (c.ticker < 0 && c.name < 0) continue;
+    const mapped = Object.values(c).filter(v => v >= 0).length;
+    if (mapped > bestMapped) { headerIdx = i; cols = c; bestMapped = mapped; }
   }
+  if (headerIdx >= 0) dataRows = cleaned.slice(headerIdx + 1);
   if (headerIdx < 0) {
     // No header row: infer each column's role from the data itself rather than
     // assuming a fixed order. We classify every column across all rows as a
@@ -451,15 +490,34 @@ function parseImportDate(raw) {
   const s = String(raw).trim();
   let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
   if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-  m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/); // DD/MM/YYYY (assume day-first)
+  const ymd = (y, mo, d) => {
+    // Reject impossible days ("31/02") instead of storing a string V8 later rolls
+    // into March.
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return '';
+    return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  };
+  if (m) return ymd(+m[1], +m[2], +m[3]);
+  m = s.match(/^(\d{4})\.(\d{1,2})\.(\d{1,2})$/);
+  if (m) return ymd(+m[1], +m[2], +m[3]);
+  // DD/MM/YYYY, DD-MM-YY, DD.MM.YYYY (assume day-first; swap only when the
+  // second number can't be a month). Two-digit years used to fall through to
+  // V8's month-first Date.parse.
+  m = s.match(/^(\d{1,2})([-/.])(\d{1,2})\2(\d{2}|\d{4})$/);
   if (m) {
-    let d = +m[1], mo = +m[2];
+    let d = +m[1], mo = +m[3];
+    const y = m[4].length === 2 ? 2000 + +m[4] : +m[4];
     if (d > 12 && mo <= 12) { /* clearly DD/MM */ }
     else if (mo > 12) { [d, mo] = [mo, d]; } // was MM/DD
-    return `${m[3]}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    return ymd(y, mo, d);
   }
   const t = Date.parse(s);
-  if (!isNaN(t)) return new Date(t).toISOString().slice(0, 10);
+  if (!isNaN(t)) {
+    // Date.parse reads "15 Mar 2024" as LOCAL midnight; toISOString() would turn
+    // that into the previous UTC day for every user east of Greenwich.
+    const dt = new Date(t);
+    return ymd(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+  }
   return '';
 }
 // Strip leading markdown list markers ("- ", "* ", "+ ", "•", "1. ", "1) ")
@@ -477,7 +535,8 @@ function parseHoldingsFromText(text) {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
     .map(stripListMarker)
     .filter(l => l.trim() !== '');
-  const rows = lines.map(splitLine);
+  const delim = detectDelimiter(lines);
+  const rows = lines.map(l => splitLine(l, delim));
   return rowsToHoldings(rows);
 }
 
@@ -691,8 +750,11 @@ function parseEEDetailScreenshot(lines, market, headerText) {
   // when the title strip was missed or came back too short to be a name.
   const headerName = eeBestHeaderName(headerText);
   const name = (headerName.match(/[A-Za-z]/g) || []).length >= 4 ? headerName : heur.name;
-  const sharesWhole = eeFieldValue(lines, /#?\s*shares\b/i);
-  const fsrs = eeFieldValue(lines, /#?\s*f\s?s\s?rs?\b/i);
+  // Anchored: the label starts the line or follows '#'. Unanchored, a fund
+  // NAMED "...Shares" (CoreShares Top 50, iShares Core S&P 500) matched on its
+  // title line and its right-most number (50, 500) became the share count.
+  const sharesWhole = eeFieldValue(lines, /(?:^|#)\s*shares\b/i);
+  const fsrs = eeFieldValue(lines, /(?:^|#)\s*f\s?s\s?rs?\b/i);
   const avgPrice = eeFieldValue(lines, /avg\b[.,]?\s*purchase\s*price/i);
   const purchaseValue = eeFieldValue(lines, /purchase\s*value/i);
   // Easy Equities splits a position into whole "Shares" plus fractional-share
@@ -817,7 +879,10 @@ function parseEEEmailScreenshot(lines, market) {
 // it cleanly from any number inside the name.
 function parseEEHistoryScreenshot(lines, market) {
   const joined = lines.join(' ').replace(/\s{2,}/g, ' ');
-  const m = joined.match(/bought\s+(.+?)\s+(\d[\d,\s]*\.\d+)\s*@\s*R?\s*([\d,\s]*\.?\d+)/i);
+  // Thousands groups must be exactly 3 digits: with a free-form [\d,\s]* a name
+  // ending in a number ("Satrix 40 12.5000") had that number glued onto the
+  // quantity (4012.5).
+  const m = joined.match(/bought\s+(.+?)\s+(\d{1,3}(?:[,\s]\d{3})*\.\d+|\d+\.\d+)\s*@\s*R?\s*([\d,\s]*\.?\d+)/i);
   if (!m) return null;
   const name = eeCleanName(m[1]);
   const shares = parseDecimal(m[2]);

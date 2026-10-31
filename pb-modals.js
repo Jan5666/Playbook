@@ -449,7 +449,7 @@ function ContributionModal({ onClose, onSave, onOpenImport }) {
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('USD');
   const [usdLanded, setUsdLanded] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(PBCore.localDateKey());
   const [note, setNote] = useState('');
   const panelRef = useRef(null);
   useSwipeDownToClose(panelRef, onClose);
@@ -465,7 +465,7 @@ function ContributionModal({ onClose, onSave, onOpenImport }) {
     // and overall-return maths net them out automatically.
     onSave(isWithdraw ? -a : a, currency, date, note, showLanded ? usdLanded : '');
   };
-  const ccy = currency === 'ZAR' ? 'R' : '$';
+  const ccy = CURRENCY_SYMBOLS[currency] || '$';   // GBP/EUR/AUD deposits used to show "$"
   return React.createElement("div", { className: "modal" },
     React.createElement("div", { className: "modal-backdrop", onClick: onClose }),
     React.createElement("div", { className: "modal-panel", style: { maxWidth: 520 }, ref: panelRef },
@@ -2243,7 +2243,10 @@ function EarningsBadge(_refEB) {
   const end = f.earningsDateEnd ? new Date(f.earningsDateEnd) : null;
   const endMs = end ? end.getTime() : f.earningsDate;
   if (endMs < now - 24 * 3600 * 1000) return null;
-  const days = Math.round((f.earningsDate - now) / (24 * 3600 * 1000));
+  // Whole CALENDAR days, not elapsed ms: at 15:00 a report tomorrow is <1 day of
+  // ms away and Math.round called it "Today" (and flagged it urgent).
+  const dayStart = (ms) => { const x = new Date(ms); x.setHours(0, 0, 0, 0); return x.getTime(); };
+  const days = Math.round((dayStart(f.earningsDate) - dayStart(now)) / (24 * 3600 * 1000));
   const isPast = f.earningsDate < now && endMs >= now;
   const dateLabel = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const rangeLabel = end && end.toDateString() !== d.toDateString()
@@ -2923,7 +2926,7 @@ function DetailModal(_ref10) {
       className: "text-xs"
     }, "Loading…")), news && news.data && news.data.length > 0 ? React.createElement("div", null, news.data.map((n, i) => React.createElement("a", {
       key: i,
-      href: n.link && n.link !== '#' ? n.link : undefined,
+      href: /^https?:\/\//i.test(n.link || '') ? n.link : undefined, // only http(s): feed/AI-supplied text must never become a javascript: link
       target: "_blank", rel: "noopener",
       className: `news-item${n.ai ? ' news-item-ai' : ''}`
     }, React.createElement("div", { className: "news-title" },
@@ -2942,7 +2945,13 @@ function DetailModal(_ref10) {
 // Pure display/delegate: removes/clears alerts and requests notification permission through
 // props; alert evaluation + money math stay in pb-core. Deps reached via the PBApp bridge.
 function AlertsModal(_ref11) {
-  const { Icon, fmt, timeAgo, useBodyScrollLock } = window.PBApp;
+  const { Icon, fmt, timeAgo, useBodyScrollLock, indicatorFor, fmtIndicator } = window.PBApp;
+  // Indicator alerts (US10Y, Fear & Greed, payrolls) carry their own unit;
+  // fmt() priced them as dollars ("$4.50") and dropped a negative's sign.
+  const fmtTarget = (a) => {
+    const ind = indicatorFor(a.market, a.ticker);
+    return ind ? fmtIndicator(ind, a.targetPrice) : fmt(a.targetPrice, a.market);
+  };
   let {
     alerts,
     triggered,
@@ -3073,7 +3082,7 @@ function AlertsModal(_ref11) {
     className: "market-badge"
   }, t.market), " ", React.createElement("span", {
     className: "mono text-sm"
-  }, t.direction === 'above' ? '↑ ' : '↓ ', fmt(t.targetPrice, t.market))), React.createElement("div", {
+  }, t.direction === 'above' ? '↑ ' : '↓ ', fmtTarget(t))), React.createElement("div", {
     className: "text-xs text-dim mt-1"
   }, timeAgo(t.triggeredAt), " \xB7 hit at ", fmt(t.triggerPrice, t.market))), React.createElement(Icon, {
     name: "chevron", size: 15, className: "alert-item-go"
@@ -3101,7 +3110,7 @@ function AlertsModal(_ref11) {
     className: "market-badge"
   }, a.market)), React.createElement("div", {
     className: "mono text-sm"
-  }, a.direction === 'above' ? '↑ above ' : '↓ below ', fmt(a.targetPrice, a.market)), a.note && React.createElement("div", {
+  }, a.direction === 'above' ? '↑ above ' : '↓ below ', fmtTarget(a)), a.note && React.createElement("div", {
     className: "text-xs text-dim mt-1"
   }, a.note)), React.createElement("button", {
     className: "btn btn-ghost btn-xs",
@@ -3115,7 +3124,7 @@ function AlertsModal(_ref11) {
 function ImportModal({ onClose, onImport, defaultMarket }) {
   const { Icon, fmt, uid, sanitizeDecimalInput, resolveTickerName, useBodyScrollLock, TickerSearch, parseImportFile, ocrImageFile, searchListingsMulti } = window.PBApp;
   const DATA = window.PB_DATA; // data.js loads after this bucket - read at render time
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = PBCore.localDateKey();
   const [stage, setStage] = useState('input'); // 'input' | 'review'
   const [rows, setRows] = useState([]);
   const [parsing, setParsing] = useState(false);
@@ -3304,15 +3313,29 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     };
   };
 
+  // Per-row request tokens. Every action that (re)starts or overrides a row's
+  // match bumps its token, and a lookup only lands if its token is still current.
+  // Without this a bulk worker still running could overwrite a listing the user
+  // had just picked by hand (manual: true is meant to be never overruled), and a
+  // re-match of an edited row could be clobbered by the old query's result.
+  const seqRef = useRef({});
+  const bumpSeq = (id) => (seqRef.current[id] = (seqRef.current[id] || 0) + 1);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
   const resolveRows = async (list) => {
     setResolving(true);
+    const tok = {};
+    list.forEach(l => { tok[l.id] = bumpSeq(l.id); });
     setRows(prev => prev.map(x => list.some(l => l.id === x.id) ? { ...x, status: 'resolving' } : x));
     let i = 0;
     const worker = async () => {
       while (i < list.length) {
         const r = list[i++];
+        if (seqRef.current[r.id] !== tok[r.id]) continue;
         if (!r.query.trim()) { setRows(prev => prev.map(x => x.id === r.id ? { ...x, status: 'notfound' } : x)); continue; }
         const res = await resolveRow(r);
+        if (seqRef.current[r.id] !== tok[r.id]) continue;
         setRows(prev => prev.map(x => x.id === r.id ? { ...x, ...res } : x));
       }
     };
@@ -3324,11 +3347,18 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   const removeRow = (id) => setRows(prev => prev.filter(r => r.id !== id));
 
   // Re-resolve a single row (after the user edits its search text or market).
-  const reResolveRow = async (id) => {
-    let target = null;
-    setRows(prev => prev.map(r => { if (r.id === id) { target = r; return { ...r, status: 'resolving' }; } return r; }));
-    if (!target) return;
-    const res = await resolveRow({ ...target, status: 'resolving' });
+  // `patch` is applied first and used for the lookup. The row used to be captured
+  // inside a setRows updater, which React runs LATER when another update is
+  // already queued (the Exchange select's updateRow): target stayed null, the
+  // lookup never started, and the row sat on "Searching..." for good.
+  const reResolveRow = async (id, patch) => {
+    const cur = rowsRef.current.find(r => r.id === id);
+    if (!cur) return;
+    const target = { ...cur, ...(patch || {}), status: 'resolving' };
+    const tok = bumpSeq(id);
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ...(patch || {}), status: 'resolving' } : r));
+    const res = await resolveRow(target);
+    if (seqRef.current[id] !== tok) return;
     setRows(prev => prev.map(r => r.id === id ? { ...r, ...res } : r));
   };
 
@@ -3341,8 +3371,10 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
   const chooseCandidate = async (id, cand) => {
     const row = rows.find(r => r.id === id);
     const market = (row && sameUnderlyingExchange(cand.market, row.market)) ? row.market : cand.market;
+    const tok = bumpSeq(id);
     setRows(prev => prev.map(r => r.id === id ? { ...r, ticker: cand.ticker, market, resolvedName: cand.name, status: 'resolving', showAlts: false, lowConfidence: false } : r));
     const q = await fetchQuote(cand.ticker, market).catch(() => null);
+    if (seqRef.current[id] !== tok) return;
     setRows(prev => prev.map(r => r.id === id ? {
       ...r,
       status: q ? 'ok' : 'unverified',
@@ -3363,6 +3395,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
     if (!r) return;
     const sym = (r.ticker || '').trim() || (looksLikeTickerToken(r.query) ? String(r.query).trim().toUpperCase() : '');
     if (!sym) { updateRow(id, { manualSearch: true, showAlts: false }); return; }
+    bumpSeq(id);
     updateRow(id, {
       ticker: sym.toUpperCase(),
       status: 'unverified',
@@ -3659,7 +3692,7 @@ function ImportModal({ onClose, onImport, defaultMarket }) {
           React.createElement("span", { className: "import-qty-label" }, "Exchange"),
           React.createElement("select", {
             className: "import-input import-field-select", value: r.market,
-            onChange: e => { updateRow(r.id, { market: e.target.value, status: 'resolving', ticker: '' }); reResolveRow(r.id); }
+            onChange: e => reResolveRow(r.id, { market: e.target.value, ticker: '' })
           }, MARKETS.map(m => React.createElement("option", { key: m.value, value: m.value },
               m.label + " — " + m.country)))),
         React.createElement("div", { className: "import-qty-field import-date-field" },
@@ -3778,7 +3811,7 @@ function BuyModal({ position, fxRates, onClose, onBuy }) {
   const prices = PBStore.usePricesMap();
   const [shares, setShares] = useState('');
   const [buyPrice, setBuyPrice] = useState('');
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = PBCore.localDateKey();
   const [buyDate, setBuyDate] = useState(todayISO);
   const [notes, setNotes] = useState('');
   const panelRef = useRef(null);
@@ -3867,13 +3900,13 @@ function BuyModal({ position, fxRates, onClose, onBuy }) {
             className: "btn btn-primary", onClick: submit, disabled: !valid
           }, "Add shares")))));
 }
-function SellModal({ position, onClose, onSell }) {
+function SellModal({ position, fxRates, onClose, onSell }) {
   const { Icon, useBodyScrollLock, sanitizeDecimalInput } = window.PBApp;
   const prices = PBStore.usePricesMap();
   const [shares, setShares] = useState('');
   const [pctStr, setPctStr] = useState('');
   const [sellPrice, setSellPrice] = useState('');
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = PBCore.localDateKey();
   const [sellDate, setSellDate] = useState(todayISO);
   const [notes, setNotes] = useState('');
   const panelRef = useRef(null);
@@ -3884,6 +3917,15 @@ function SellModal({ position, onClose, onSell }) {
     if (q && !sellPrice) setSellPrice(q.price.toFixed(2));
   }, [q]);
   const ccy = (MARKET_CURRENCY[position.market] || MARKET_CURRENCY.US).sym;
+  // The sell price is entered (and recorded) in the market's currency, but a
+  // crypto holding's cost may be booked in ZAR. Compare like with like: the
+  // estimate used to subtract a rand cost from a dollar price (~-$113k on a
+  // small sale), and the header printed the rand average with a "$".
+  const costCcy = positionCostCcy(position);
+  const nativeCode = marketCurrency(position.market);
+  const costSym = costCcy === nativeCode ? ccy : (CURRENCY_SYMBOLS[costCcy] || (costCcy + ' '));
+  const costNative = costCcy === nativeCode ? position.costBasis
+    : convertCcy(position.costBasis, costCcy, nativeCode, fxRates?.rates || null);
   const numShares = parseDecimal(shares);
   const numPrice = parseDecimal(sellPrice);
   // Sell by % of holding: typing a % (or clicking a chip) fills the share count,
@@ -3917,7 +3959,7 @@ function SellModal({ position, onClose, onSell }) {
   };
   const pctOfHolding = isFinite(numShares) && position.shares > 0 ? numShares / position.shares * 100 : null;
   const valid = isFinite(numShares) && numShares > 0 && numShares <= position.shares && isFinite(numPrice) && numPrice > 0;
-  const pnl = valid ? (numPrice - position.costBasis) * numShares : null;
+  const pnl = valid && costNative != null && isFinite(costNative) ? (numPrice - costNative) * numShares : null;
   const submit = () => {
     if (!valid) return;
     onSell(position.ticker, position.market, numShares, numPrice, sellDate, notes);
@@ -3931,7 +3973,7 @@ function SellModal({ position, onClose, onSell }) {
         React.createElement("div", null,
           React.createElement("div", { className: "modal-title" }, "Sell ", position.ticker),
           React.createElement("div", { className: "modal-subtitle" },
-            position.shares, " shares held \xB7 avg ", ccy, position.costBasis.toFixed(2))),
+            position.shares, " shares held \xB7 avg ", costSym, position.costBasis.toFixed(2))),
         React.createElement("button", { className: "modal-close", onClick: onClose, "aria-label": "Close" },
           React.createElement(Icon, { name: "x" }))),
       React.createElement("div", { className: "modal-body" },
@@ -3999,7 +4041,7 @@ function SellModal({ position, onClose, onSell }) {
         },
           React.createElement("div", { className: "text-xs text-dim" }, "Estimated P/L"),
           React.createElement("div", { className: `mono font-semibold ${pnl >= 0 ? 'text-up' : 'text-down'}`, style: { fontSize: 18 } },
-            (pnl >= 0 ? '+' : '') + ccy + Math.abs(pnl).toFixed(2))),
+            (pnl >= 0 ? '+' : '\u2212') + ccy + Math.abs(pnl).toFixed(2))),
         React.createElement("div", { className: "form-actions" },
           React.createElement("button", { className: "btn btn-secondary", onClick: onClose }, "Cancel"),
           React.createElement("button", {
@@ -4029,14 +4071,17 @@ function PositionModal(_ref12) {
   // either a price per coin or the total they spent. costCurrency defaults to the
   // user's display currency so a ZAR user gets ZAR without extra taps; absent /
   // USD it behaves exactly like a normal USD-priced holding.
-  const [costCurrency, setCostCurrency] = useState(existing?.costCurrency || displayCurrency || 'USD');
+  // EDIT starts from the holding's ACTUAL cost currency. A USD-bought coin stores
+  // no costCurrency, so falling through to displayCurrency opened the form on ZAR
+  // and a notes-only save relabelled a $60,000 cost as R60,000.
+  const [costCurrency, setCostCurrency] = useState(existing ? positionCostCcy(existing) : (displayCurrency || 'USD'));
   const [costMode, setCostMode] = useState(isEdit ? 'perUnit' : 'total'); // crypto only
   const [totalSpent, setTotalSpent] = useState(
     existing && existing.costCurrency && existing.shares
       ? String(parseFloat((existing.shares * existing.costBasis).toFixed(2)))
       : '');
   const [notes, setNotes] = useState(existing?.notes || '');
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = PBCore.localDateKey();
   const [purchaseDate, setPurchaseDate] = useState(existing?.purchaseDate || todayISO);
   const [verifying, setVerifying] = useState(false);
   const [tickerError, setTickerError] = useState('');
@@ -4139,7 +4184,10 @@ function PositionModal(_ref12) {
       sectorWeights: cleanSectorRows.length ? cleanSectorRows : null,
       // Only persist a cost currency when it genuinely differs from the market's
       // native one (crypto bought in ZAR) — keeps every normal holding untouched.
-      costCurrency: (isCrypto && costCcyCode !== marketCurrency(market)) ? costCcyCode : undefined
+      costCurrency: (isCrypto && costCcyCode !== marketCurrency(market)) ? costCcyCode : undefined,
+      // Re-pointed to a different listing: drop the old company name (it was
+      // spread forward and kept labelling the new ticker with the wrong company).
+      ...(listingChanged ? { name: null } : {})
     };
     // Editing an existing holding: confirm the change first and show exactly
     // what's changing (field: old → new) so an accidental edit can't slip
