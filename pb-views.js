@@ -3062,7 +3062,14 @@ function WatchlistView(_ref8) {
   // long-press drag-reorder runs (it reorders the whole array by index, so it
   // can't operate on a filtered subset).
   const groups = watchlistGroups || [];
-  const [activeList, setActiveList] = usePersistedState('pb.watchlist.activeList.v1', 'all');
+  const [storedList, setActiveList] = usePersistedState('pb.watchlist.activeList.v1', 'all');
+  // Preview shows the demo watchlist, which has no custom lists (groups = []), so a
+  // stored custom-list id is "missing" there. Render "All" for it, but never WRITE
+  // the fallback while previewing: that used to reset the user's real list choice
+  // the moment they opened the tab in a demo.
+  const previewMode = PBStore.useSetting('previewMode');
+  const storedListValid = storedList === 'all' || storedList === 'default' || groups.some(g => g.id === storedList);
+  const activeList = storedListValid ? storedList : 'all';
   const [search, setSearch] = useState('');
   const [filterMarket, setFilterMarket] = useState('all');
   // Smart filter tag — an extra axis beyond market: movers, near-high, alerts.
@@ -3082,8 +3089,8 @@ function WatchlistView(_ref8) {
   const [renameValue, setRenameValue] = useState('');
   // If a stored active list was deleted elsewhere, fall back to All.
   useEffect(() => {
-    if (activeList !== 'all' && activeList !== 'default' && !groups.some(g => g.id === activeList)) setActiveList('all');
-  }, [activeList, groups]);
+    if (!storedListValid && !previewMode) setActiveList('all');
+  }, [storedListValid, previewMode]);
   // A stock can sit in several lists at once, so membership is a set test rather
   // than a single id compare. customListsOf drives the per-card list badges.
   const inList = (w, id) => watchListIds(w).includes(id);
@@ -4185,10 +4192,22 @@ function TFSABalancer({ positions, onBuyPosition }) {
   // not SETTINGS_SCHEMA because setTarget below passes an UPDATER FN, which
   // setCollection accepts and setSetting does not. Same keys + same stored shapes as
   // before, so cloud backup is unchanged.
-  const targets = PBStore.useCollection('tfsaTargets');
-  const setTargets = v => PBStore.setCollection('tfsaTargets', v);
-  const contribution = PBStore.useCollection('tfsaContribution');
-  const setContribution = v => PBStore.setCollection('tfsaContribution', v);
+  //
+  // Preview swaps the demo TFSA book in, but these two are keyed by ticker and were
+  // still read from and written to the REAL store: "Equal weight" / "Use current
+  // weights" replace the whole map, so one tap in a demo wiped the user's real
+  // targets and left the demo tickers behind, and the real monthly contribution was
+  // on screen in a session meant not to reveal real data. In preview they are
+  // scratch state that dies with the session.
+  const previewMode = PBStore.useSetting('previewMode');
+  const storedTargets = PBStore.useCollection('tfsaTargets');
+  const storedContribution = PBStore.useCollection('tfsaContribution');
+  const [demoTargets, setDemoTargets] = useState({});
+  const [demoContribution, setDemoContribution] = useState('');
+  const targets = previewMode ? demoTargets : storedTargets;
+  const setTargets = v => previewMode ? setDemoTargets(v) : PBStore.setCollection('tfsaTargets', v);
+  const contribution = previewMode ? demoContribution : storedContribution;
+  const setContribution = v => previewMode ? setDemoContribution(v) : PBStore.setCollection('tfsaContribution', v);
   const [editing, setEditing] = useState(false);
 
   const rows = positions.map(p => {

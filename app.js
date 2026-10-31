@@ -2313,6 +2313,12 @@ function usePushBackend(pushBackend, setPushBackend, alerts, notifPerm) {
   }, [base, setPushBackend]);
   return { pushStatus, connectPush, testPush, disconnectPush };
 }
+// What preview shows while window.PB_DEMO is not (yet) loaded: an empty book,
+// never the real one. Frozen so nothing can mutate the shared fallback.
+const EMPTY_DEMO = Object.freeze({
+  positions: Object.freeze([]), watchlist: Object.freeze([]), contributions: Object.freeze([]),
+  transactions: Object.freeze([]), tfsaDeposits: Object.freeze([])
+});
 // Owns positions/watchlist/contributions/alerts + CRUD. fxRates is needed for
 // purchase-date FX resolution. Mutators return { ok, code, ...data } outcomes
 // (see describeOutcome) instead of toasting directly — the App edge toasts them.
@@ -2358,7 +2364,7 @@ function usePortfolio(fxRates) {
   const setSectorWeights = useCallback(v => PBStore.setCollection('sectorWeights', v), []);
   const setSectorWeightsFor = (key, weights) => {
     // Preview shows the demo book; a save there must not clear the REAL map.
-    if (PBStore.getSetting('previewMode') && typeof window !== 'undefined' && window.PB_DEMO) return;
+    if (PBStore.getSetting('previewMode')) return { ok: false, code: 'preview-readonly' };
     setSectorWeights(prev => {
       const next = { ...prev };
       if (weights && weights.length) next[key] = weights;
@@ -2390,8 +2396,14 @@ function usePortfolio(fxRates) {
     };
     document.head.appendChild(el);
   }, [previewMode]);
-  const DEMO = (typeof window !== 'undefined' && window.PB_DEMO) || null;
-  const inPreview = !!(previewMode && DEMO);
+  // Preview is the SETTING, not "the setting and a loaded dataset". It used to be
+  // `previewMode && PB_DEMO`, which meant that while demo-data.js was still being
+  // pulled in by the self-heal above -- or for good, if that fetch failed -- the
+  // header said "Preview" over the REAL book, with every mutator live. The pill and
+  // the swap now always agree: until the demo arrives the book is empty (and the
+  // load-failed toast says why), never the real one.
+  const DEMO = (typeof window !== 'undefined' && window.PB_DEMO) || EMPTY_DEMO;
+  const inPreview = !!previewMode;
   const guardPreview = (fn) => (...args) => {
     if (inPreview) return { ok: false, code: 'preview-readonly' };
     return fn(...args);
@@ -2792,7 +2804,12 @@ function usePortfolio(fxRates) {
     moveWatch: guardPreview(moveWatch), toggleWatchList: guardPreview(toggleWatchList),
     addWatchGroup: guardPreview(addWatchGroup), renameWatchGroup: guardPreview(renameWatchGroup),
     removeWatchGroup: guardPreview(removeWatchGroup),
-    addAlert: guardPreview(addAlert), removeAlert: guardPreview(removeAlert)
+    addAlert: guardPreview(addAlert), removeAlert: guardPreview(removeAlert),
+    // The watchlist drag-reorder used to be handed the RAW setWatchlist. In preview
+    // the view is showing the demo list, so a drag committed the demo rows straight
+    // over the real pb.watchlist.v2 -- the one write path the read-only guard missed.
+    reorderWatchlist: guardPreview(arr => { setWatchlist(arr); }),
+    inPreview
   };
 }
 
@@ -3062,6 +3079,7 @@ function LoadingScreen({ visible }) {
       React.createElement("span", { className: "pb-sheen" })),
     React.createElement("div", { className: "pb-word" }, "Playbook"));
 }
+const NO_ITEMS = Object.freeze([]);
 function App() {
   const theme = PBStore.useSetting('theme');
   // Demo-book flag — shows the header "Preview" pill so a demo can't be
@@ -3156,7 +3174,7 @@ function App() {
   // Reactive reads pass straight through — they must change every render.
   const {
     positions, watchlist, watchlistGroups, alerts, contributions, transactions,
-    tfsaDeposits, sectorCache, sectorWeights, previewLoadError,
+    tfsaDeposits, sectorCache, sectorWeights, previewLoadError, inPreview,
   } = _p;
   // Stable-identity action wrappers (built once) so memo'd leaves skip re-render on
   // unrelated App renders. Each wrapper toasts describeOutcome at the edge and always
@@ -3167,7 +3185,7 @@ function App() {
     addPosition, updatePosition, removePosition, removePositions, sellPosition, importPositions,
     addContribution, removeContribution, importContributions, addTfsaDeposit, updateTfsaDeposit,
     removeTfsaDeposit, removeTfsaDeposits, addWatch, removeWatch, moveWatch, toggleWatchList,
-    addWatchGroup, renameWatchGroup, removeWatchGroup, addAlert, removeAlert,
+    addWatchGroup, renameWatchGroup, removeWatchGroup, addAlert, removeAlert, reorderWatchlist,
   } = useToastEvents({
     setPositions: _p.setPositions, setWatchlist: _p.setWatchlist,
     setWatchlistGroups: _p.setWatchlistGroups, setContributions: _p.setContributions,
@@ -3184,6 +3202,7 @@ function App() {
     removeWatch: _p.removeWatch, moveWatch: _p.moveWatch, toggleWatchList: _p.toggleWatchList,
     addWatchGroup: _p.addWatchGroup, renameWatchGroup: _p.renameWatchGroup,
     removeWatchGroup: _p.removeWatchGroup, addAlert: _p.addAlert, removeAlert: _p.removeAlert,
+    reorderWatchlist: _p.reorderWatchlist,
   }, toast);
   useEffect(() => {
     if (previewLoadError > 0) { const m = describeOutcome({ code: 'preview-load-failed' }); if (m) toast(m); }
@@ -3294,6 +3313,22 @@ function App() {
   useEffect(() => {
     if (failStreak === 2) { const m = describeOutcome({ code: 'feed-unreachable' }); if (m) toast(m); }
   }, [failStreak]);
+  // Entering preview swaps the whole visible book for symbols that, typically,
+  // have never been fetched. The fetchKey change does trigger a refresh -- but the
+  // auto-poll path deliberately no-ops while a sweep is in flight, and the in-flight
+  // sweep computed its symbol list from the REAL book. A full real sweep runs for
+  // minutes, so the demo sat unpriced (every figure at cost, or blank) until the
+  // next poll that happened to find the feed idle: "preview doesn't always work".
+  // Turning preview on is a deliberate act, like the refresh button, so it gets the
+  // button's semantics: supersede, and fetch the (small) demo book first. Leaving
+  // preview needs nothing: the real quotes are still in the store, and the normal
+  // key-change refresh tops them up behind the short demo sweep.
+  const prevPreviewRef = useRef(inPreview);
+  useEffect(() => {
+    if (prevPreviewRef.current === inPreview) return;
+    prevPreviewRef.current = inPreview;
+    if (inPreview) refreshPricesNow();
+  }, [inPreview, refreshPricesNow]);
   // Entering a lazy tab: warm its list on first visit (so it joins the poll set)
   // and force an immediate, prioritized refresh so its prices are fresh within a
   // tick (the rehydrated cache paints last-known meanwhile). queuePricesRefresh never
@@ -3428,6 +3463,13 @@ function App() {
     toast(`${title}: ${body}`);
   }, [toast]);
   const { triggered, setTriggered, alertSeenMap, setAlertSeenMap } = useAlertEngine(alerts, fireNotification);
+  // Alerts are not part of the demo book, and the real ones name real tickers and
+  // target prices. The engine, the SW mirror, the push sync and the fetch plan all
+  // keep the REAL list (useAlertEngine already pauses itself in preview); only what
+  // is RENDERED is swapped. Passing [] to usePushBackend instead would sync an empty
+  // alert list to the Worker and silently stop server alerts.
+  const shownAlerts = inPreview ? NO_ITEMS : alerts;
+  const shownTriggered = inPreview ? NO_ITEMS : triggered;
   // Background price-alert delivery: mirror config to the SW, register periodic
   // sync, and reconcile anything fired while the app was closed.
   useBackgroundAlerts(alerts, alertSeenMap, setAlertSeenMap, setTriggered, notifPerm);
@@ -3478,6 +3520,8 @@ function App() {
     }
   }, [toast]);
   const clearTriggered = () => {
+    // Preview hides the real history, so "Clear" there must not wipe it.
+    if (PBStore.getSetting('previewMode')) return;
     setTriggered([]);
     toast('Cleared');
   };
@@ -3620,10 +3664,10 @@ function App() {
       watchlist: watchlist,
       positions: positions,
       watchlistGroups: watchlistGroups,
-      alerts: alerts,
+      alerts: shownAlerts,
       onAdd: addWatch,
       onRemove: removeWatch,
-      onReorder: setWatchlist,
+      onReorder: reorderWatchlist,
       onMoveWatch: moveWatch,
       onAddWatchGroup: addWatchGroup,
       onRenameWatchGroup: renameWatchGroup,
@@ -3669,7 +3713,7 @@ function App() {
       toast: toast
     })
   };
-  const recentTriggered24h = triggered.filter(t => Date.now() - new Date(t.triggeredAt).getTime() < 24 * 3600 * 1000).length;
+  const recentTriggered24h = shownTriggered.filter(t => Date.now() - new Date(t.triggeredAt).getTime() < 24 * 3600 * 1000).length;
   return React.createElement("div", {
     className: "app"
   }, React.createElement("header", {
@@ -3696,9 +3740,9 @@ function App() {
     name: "bell"
   }), recentTriggered24h > 0 && React.createElement("span", {
     className: "badge"
-  }, recentTriggered24h > 9 ? '9+' : recentTriggered24h), recentTriggered24h === 0 && alerts.length > 0 && React.createElement("span", {
+  }, recentTriggered24h > 9 ? '9+' : recentTriggered24h), recentTriggered24h === 0 && shownAlerts.length > 0 && React.createElement("span", {
     className: "badge blue"
-  }, alerts.length > 9 ? '9+' : alerts.length)), React.createElement("button", {
+  }, shownAlerts.length > 9 ? '9+' : shownAlerts.length)), React.createElement("button", {
     className: "icon-btn",
     onClick: () => setShowSettings(true),
     "aria-label": "Settings"
@@ -3731,7 +3775,7 @@ function App() {
     positions: positions,
     watchlist: watchlist,
     watchlistGroups: watchlistGroups,
-    alerts: alerts.filter(a => a.ticker === selected.ticker && a.market === selected.market),
+    alerts: shownAlerts.filter(a => a.ticker === selected.ticker && a.market === selected.market),
     news: newsByTicker[priceKey(selected.market, selected.ticker)],
     historyByTicker: historyByTicker,
     fundamentals: fundamentalsByTicker[priceKey(selected.market, selected.ticker)],
@@ -3765,8 +3809,8 @@ function App() {
     onDisconnectPush: disconnectPush,
     onClose: () => setShowSettings(false)
   }), showAlerts && React.createElement(AlertsModal, {
-    alerts: alerts,
-    triggered: triggered,
+    alerts: shownAlerts,
+    triggered: shownTriggered,
     notifPerm: notifPerm,
     onClose: () => setShowAlerts(false),
     onRemoveAlert: removeAlert,
@@ -3795,6 +3839,10 @@ function App() {
         if (quote) mergePrices({ [priceKey(data.market, data.ticker)]: quote });
         else seedQuote(data.ticker, data.market);
       }
+      // Preview is read-only: the mutator above refused (and its wrapper toasted
+      // why), but the side effects below would not, and would land in the REAL store
+      // keyed by a demo ticker. The modal stays open so nothing looks saved.
+      if (inPreview) return;
       // Remember the sector the user confirmed/picked so the allocation chart uses
       // it (same learned-cache path the import flow writes to).
       if (data.sector) {

@@ -244,7 +244,13 @@ Key mechanics:
   `{ok, code, ...}`; the single copy catalog is `describeOutcome` (app.js:2499);
   `useToastEvents` wraps mutators at the App edge with stable identities.
 - **Preview mode** (`pb.previewMode.v1`): `usePortfolio` swaps in `window.PB_DEMO`
-  read-only so the app can be demoed without revealing real data.
+  read-only so the app can be demoed without revealing real data. Preview is the
+  SETTING alone (an empty book until the demo loads, never the real one); real alerts
+  and trigger history are hidden from the views only (engine/push keep the real list);
+  the watchlist reorder goes through a guarded `reorderWatchlist`, never the raw setter;
+  TFSA targets/contribution are session scratch state; and turning preview on
+  supersedes an in-flight sweep so the demo book is priced at once.
+  `verify-preview-mode.mjs` Part B pins all of it (9 FAILs on the pre-fix code).
 
 ### 3.3 The backend contract
 
