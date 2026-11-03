@@ -1104,10 +1104,10 @@ function diagnosticsRows(d, cacheName) {
 }
 
 function SettingsModal({ fxRates, onRefreshFx, feedHealth,
-                        positions, contributions, onExport, onImport, cloudBackup, onDeleteHoldings,
+                        positions, contributions, onExport, onExportHoldings, onImport, cloudBackup, onDeleteHoldings,
                         tabOrder, hiddenTabs,
                         pushStatus, onConnectPush, onTestPush, onDisconnectPush, onClose }) {
-  const { Icon, fmt, useBodyScrollLock, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE } = window.PBApp;
+  const { Icon, fmt, fmtCcy, useBodyScrollLock, computeFxSnapshot, formatCode, normalizeCode, positionDisplayName, DEFAULT_TAB_ORDER, MARKET_LABELS, TAB_ALWAYS_VISIBLE } = window.PBApp;
   const prices = PBStore.usePricesMap();
   // Settings edited here are read/written directly on the store (no prop-drilling).
   const displayCurrency = PBStore.useSetting('displayCurrency');
@@ -1135,6 +1135,8 @@ function SettingsModal({ fxRates, onRefreshFx, feedHealth,
   const [diag, setDiag] = useState(null);
   const [diagCache, setDiagCache] = useState(null);
   const [diagCopied, setDiagCopied] = useState(false);
+  const [exportMarkets, setExportMarkets] = useState([]);
+  const [exportCopied, setExportCopied] = useState(false);
   const fileInputRef = useRef(null);
   const panelRef = useRef(null);
   // Settings is a centered dialog (premium app feel), not a swipe-down sheet,
@@ -1224,6 +1226,7 @@ function SettingsModal({ fxRates, onRefreshFx, feedHealth,
     { key: 'ribbon', label: 'Ribbon', icon: 'activity', tint: 'var(--amber)', group: 'General' },
     { key: 'fx', label: 'FX Rates', icon: 'refresh', tint: 'var(--emerald)', group: 'Portfolio' },
     { key: 'holdings', label: 'Holdings', icon: 'briefcase', tint: 'var(--brand)', group: 'Portfolio' },
+    { key: 'export', label: 'Export holdings', icon: 'share', tint: '#0d9488', group: 'Portfolio' },
     { key: 'preview', label: 'Preview', icon: 'eye', tint: '#0ea5e9', group: 'Portfolio' },
     { key: 'connections', label: 'Connections', icon: 'link', tint: 'var(--rose)', group: 'Data & sync' },
     { key: 'data', label: 'Data', icon: 'download', tint: '#71717a', group: 'Data & sync' },
@@ -1275,6 +1278,34 @@ function SettingsModal({ fxRates, onRefreshFx, feedHealth,
     const q = prices[priceKey(p.market, p.ticker)];
     const px = q && isFinite(q.price) ? q.price : (isFinite(p.costBasis) ? p.costBasis : null);
     return px == null ? null : px * p.shares;
+  };
+  // Settings -> Export holdings. [] = all markets; otherwise the chosen ones.
+  const exportTable = useMemo(() => activeSection !== 'export' ? null : PBCore.buildHoldingsTable(positions, prices, {
+    rates: fxRates?.rates || null,
+    displayCurrency,
+    markets: exportMarkets,
+    marketOrder: MARKETS.map(m => m.value),
+    nameOf: p => positionDisplayName(p, p.market, prices[priceKey(p.market, p.ticker)]),
+  }), [activeSection, positions, prices, fxRates, displayCurrency, exportMarkets]);
+  const toggleExportMarket = (mkt) => setExportMarkets(prev => {
+    const next = prev.includes(mkt) ? prev.filter(m => m !== mkt) : [...prev, mkt];
+    // Every market ticked is the same table as "All holdings" - say so in the UI.
+    const present = new Set(positions.map(p => p.market));
+    return next.length >= present.size && Array.from(present).every(m => next.includes(m)) ? [] : next;
+  });
+  const fmtShares = n => (n == null || !isFinite(n)) ? "\u2014" : n.toLocaleString('en-US', { maximumFractionDigits: 8 });
+  const copyExport = async () => {
+    if (!exportTable) return;
+    try {
+      await navigator.clipboard.writeText(PBCore.holdingsTableText(exportTable, '\t'));
+      setExportCopied(true);
+      setTimeout(() => setExportCopied(false), 1800);
+    } catch (_e) { setExportCopied(false); }
+  };
+  const downloadExport = () => {
+    if (!exportTable || !onExportHoldings) return;
+    const scope = exportMarkets.length ? exportTable.markets.join('-') : 'all';
+    onExportHoldings(PBCore.holdingsTableText(exportTable, ','), `playbook-holdings-${scope}-${PBCore.localDateKey()}.csv`);
   };
   const activeLabel = (sections.find(s => s.key === activeSection) || {}).label || '';
   return React.createElement("div", { className: "settings-overlay" },
@@ -1613,6 +1644,70 @@ function SettingsModal({ fxRates, onRefreshFx, feedHealth,
                     }, React.createElement(Icon, { name: "trash", size: 13 }),
                        selectedDel.size > 0 ? " Delete (" + selectedDel.size + ")" : " Delete")))
               )
+        ),
+        // --- Export holdings ----------------------------------------------
+        // A plain table of the holdings for the chosen markets (or all). The
+        // numbers come from PBCore.buildHoldingsTable so they match the money
+        // math used everywhere else; this view only lays them out. Read-only.
+        activeSection === 'export' && React.createElement("div", { className: "settings-section" },
+          positions.length === 0
+            ? React.createElement("div", { className: "settings-empty" },
+                React.createElement(Icon, { name: "briefcase", size: 24 }),
+                React.createElement("p", null, "No holdings to export yet."))
+            : React.createElement(React.Fragment, null,
+                React.createElement("div", { className: "settings-row-desc mb-3" },
+                  "Choose which markets to include, then download the table as a CSV file (opens in Excel, Numbers or Google Sheets) or copy it to paste straight into a spreadsheet."),
+                React.createElement("div", { className: "hx-chips", role: "group", "aria-label": "Markets to export" },
+                  React.createElement("button", {
+                    type: "button", className: "hx-chip" + (exportMarkets.length === 0 ? " on" : ""),
+                    "aria-pressed": exportMarkets.length === 0,
+                    onClick: () => setExportMarkets([])
+                  }, "All holdings", React.createElement("span", { className: "hx-chip-n" }, positions.length)),
+                  delGroups.map(g => {
+                    const on = exportMarkets.includes(g.market);
+                    return React.createElement("button", {
+                      key: g.market, type: "button", className: "hx-chip" + (on ? " on" : ""),
+                      "aria-pressed": on,
+                      onClick: () => toggleExportMarket(g.market)
+                    }, g.label, React.createElement("span", { className: "hx-chip-n" }, g.rows.length));
+                  })),
+                React.createElement("div", { className: "hx-scroll" },
+                  React.createElement("table", { className: "hx-table" },
+                    React.createElement("thead", null,
+                      React.createElement("tr", null,
+                        React.createElement("th", { scope: "col" }, "Stock"),
+                        React.createElement("th", { scope: "col", className: "num" }, "Purchase price"),
+                        React.createElement("th", { scope: "col", className: "num" }, "Shares"),
+                        React.createElement("th", { scope: "col", className: "num" }, "Purchase value"),
+                        React.createElement("th", { scope: "col", className: "num" }, "% of portfolio"))),
+                    React.createElement("tbody", null,
+                      exportTable.rows.map(r => React.createElement("tr", { key: r.id != null ? r.id : r.market + ':' + r.ticker },
+                        React.createElement("td", null,
+                          React.createElement("span", { className: "hx-name" }, r.name),
+                          React.createElement("span", { className: "hx-tkr" }, r.ticker, " \xB7 ", MARKET_LABELS[r.market] || r.market)),
+                        React.createElement("td", { className: "num" }, fmtCcy(r.purchasePrice, r.currency)),
+                        React.createElement("td", { className: "num" }, fmtShares(r.shares)),
+                        React.createElement("td", { className: "num" }, fmtCcy(r.purchaseValue, r.currency)),
+                        React.createElement("td", { className: "num" }, r.pctOfPortfolio == null ? "\u2014" : r.pctOfPortfolio.toFixed(2) + "%")))),
+                    React.createElement("tfoot", null,
+                      React.createElement("tr", null,
+                        React.createElement("td", null, "Total \xB7 ", exportTable.rows.length, exportTable.rows.length === 1 ? " holding" : " holdings"),
+                        React.createElement("td", null),
+                        React.createElement("td", null),
+                        React.createElement("td", { className: "num" },
+                          exportTable.totalPurchaseValue == null ? "Mixed currencies" : fmtCcy(exportTable.totalPurchaseValue, exportTable.currencies[0])),
+                        React.createElement("td", { className: "num" },
+                          exportTable.selectionPct == null ? "\u2014" : exportTable.selectionPct.toFixed(2) + "%"))))),
+                React.createElement("div", { className: "settings-row-desc hx-note" },
+                  "Purchase price and value are in each holding's own purchase currency and exclude broker fees. % of portfolio is today's market value as a share of your whole portfolio (in ", displayCurrency, "), the same basis as the allocation chart",
+                  exportTable.unpriced > 0
+                    ? ". " + exportTable.unpriced + (exportTable.unpriced === 1 ? " holding has" : " holdings have") + " no live price or exchange rate yet, so " + (exportTable.unpriced === 1 ? "its" : "their") + " % is left blank and not counted."
+                    : "."),
+                React.createElement("div", { className: "hx-actions" },
+                  React.createElement("button", { className: "btn btn-ghost btn-sm", type: "button", onClick: copyExport },
+                    React.createElement(Icon, { name: exportCopied ? "check" : "list", size: 13 }), exportCopied ? " Copied" : " Copy table"),
+                  React.createElement("button", { className: "btn btn-primary btn-sm", type: "button", onClick: downloadExport, disabled: !onExportHoldings },
+                    React.createElement(Icon, { name: "download", size: 13 }), " Download CSV")))
         ),
         activeSection === 'connections' && React.createElement("div", { className: "settings-section" },
           React.createElement("div", { className: "settings-row-desc mb-3" },

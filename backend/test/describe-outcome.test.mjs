@@ -114,7 +114,7 @@ test('returns null for an unrecognised code rather than throwing', () => {
 });
 
 test('every case yields a non-empty string for a plausible payload', () => {
-  // Blanket coverage over all 37 codes, so a case returning undefined (a missing
+  // Blanket coverage over all 38 codes, so a case returning undefined (a missing
   // `return`, say) cannot hide behind the targeted assertions below.
   const payload = { added: 2, merged: 1, count: 2, ticker: 'NVDA', name: 'Core',
                     list: 'default', isIOS: false, detail: 'boom', status: 500 };
@@ -123,7 +123,7 @@ test('every case yields a non-empty string for a plausible payload', () => {
     assert.strictEqual(typeof msg, 'string', `${code} returns a string`);
     assert.ok(msg.length > 0, `${code} returns a non-empty string`);
   }
-  assert.strictEqual(CASES.length, 37, 'case count is 37 (update this if copy is added)');
+  assert.strictEqual(CASES.length, 38, 'case count is 38 (update this if copy is added)');
 });
 
 // ─── Pluralization and interpolation — the breakable branches ────────────────
