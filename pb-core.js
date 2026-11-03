@@ -2351,6 +2351,131 @@ function rotationSummary(classified) {
   return 'No clear direction; breadth ' + br + ', dispersion ' + c.dispersion.toFixed(2) + 'pp. Market ' + pct(c.marketPct) + '.';
 }
 
+// --- Holdings export table (Settings -> Export holdings) ----------------------
+// A plain table of the user's positions for one or more markets (or all of
+// them), built here so the money math is testable away from the view.
+//
+// Columns, and what each one means (pinned in holdings-export.test.mjs):
+//   purchasePrice  = p.costBasis, per share, in the position's COST currency
+//                    (positionCostCcy: native for normal holdings, the booked
+//                    fiat for crypto bought in ZAR). Broker fees are excluded,
+//                    exactly as everywhere else in the app.
+//   shares         = p.shares
+//   purchaseValue  = shares x costBasis, same cost currency. Never FX-converted:
+//                    a table that mixes rand and dollar rows says so per row
+//                    (the `currency` column) instead of guessing a rate.
+//   pctOfPortfolio = this holding's CURRENT market value as a share of the
+//                    WHOLE portfolio's market value, both in displayCurrency at
+//                    today's rates. Same basis as the allocation chart, so the
+//                    two never disagree. It is measured against the whole book
+//                    even when only some markets are exported - "x% of my
+//                    portfolio" - and `selectionPct` reports what the exported
+//                    rows add up to.
+// A position with no live price, or one whose currency cannot be converted
+// (FX rates not loaded yet), has pctOfPortfolio = null and is left out of the
+// denominator rather than valued at a guess; `unpriced` counts them so the
+// view can say so.
+function buildHoldingsTable(positions, prices, opts) {
+  const o = opts || {};
+  const list = Array.isArray(positions) ? positions : [];
+  const px = prices || {};
+  const rates = o.rates || null;
+  const displayCurrency = o.displayCurrency || 'USD';
+  const sel = Array.isArray(o.markets) && o.markets.length ? new Set(o.markets) : null; // null = all
+  const order = Array.isArray(o.marketOrder) ? o.marketOrder : [];
+  const nameOf = typeof o.nameOf === 'function' ? o.nameOf : null;
+  const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+  const valueInDisplay = p => {
+    const q = px[priceKey(p.market, p.ticker)];
+    const price = q ? num(q.price) : null;
+    const shares = num(p.shares);
+    if (price == null || shares == null) return null;
+    return convertCcy(shares * price, marketCurrency(p.market), displayCurrency, rates);
+  };
+  let portfolioValue = 0;
+  const all = list.filter(p => p && p.ticker && p.market).map(p => {
+    const v = valueInDisplay(p);
+    if (v != null && v > 0) portfolioValue += v;
+    return { p, v: v != null && v > 0 ? v : null };
+  });
+  const rank = m => { const i = order.indexOf(m); return i < 0 ? order.length : i; };
+  let unpriced = 0;
+  let selectionPct = 0;
+  const rows = all.filter(x => !sel || sel.has(x.p.market)).map(({ p, v }) => {
+    const shares = num(p.shares);
+    const cost = num(p.costBasis);
+    const pct = v != null && portfolioValue > 0 ? v / portfolioValue * 100 : null;
+    if (pct == null) unpriced++;
+    else selectionPct += pct;
+    let name = null;
+    if (nameOf) { try { name = nameOf(p); } catch (_e) { name = null; } }
+    return {
+      id: p.id,
+      name: (name || p.name || p.ticker) + '',
+      ticker: p.ticker,
+      market: p.market,
+      currency: positionCostCcy(p),
+      purchasePrice: cost,
+      shares,
+      purchaseValue: cost != null && shares != null ? cost * shares : null,
+      marketValue: v,
+      pctOfPortfolio: pct,
+    };
+  }).sort((a, b) => (rank(a.market) - rank(b.market))
+    || ((b.pctOfPortfolio == null ? -1 : b.pctOfPortfolio) - (a.pctOfPortfolio == null ? -1 : a.pctOfPortfolio))
+    || (a.ticker < b.ticker ? -1 : a.ticker > b.ticker ? 1 : 0));
+  const currencies = Array.from(new Set(rows.map(r => r.currency)));
+  // A purchase-value total only means something in one currency.
+  const totalPurchaseValue = currencies.length === 1
+    ? rows.reduce((s, r) => s + (r.purchaseValue || 0), 0)
+    : null;
+  const markets = Array.from(new Set(rows.map(r => r.market))).sort((a, b) => rank(a) - rank(b));
+  return {
+    rows, markets, currencies, displayCurrency,
+    portfolioValue: portfolioValue > 0 ? portfolioValue : null,
+    selectionPct: rows.length && rows.length > unpriced ? selectionPct : null,
+    totalPurchaseValue,
+    unpriced,
+  };
+}
+
+// Serialise a buildHoldingsTable() result. `delim` ',' -> CSV for a file, '\t'
+// -> TSV for the clipboard (pastes into Excel / Numbers / Sheets as cells).
+// Numbers are written raw with a '.' decimal and no thousands separator, so a
+// spreadsheet reads them as numbers rather than text. Text cells are quoted
+// when needed, and a leading = + - @ is neutralised so a name can never run
+// as a spreadsheet formula (CSV injection).
+const HOLDINGS_TABLE_HEADERS = ['Name', 'Ticker', 'Market', 'Currency', 'Purchase price', 'Holding (shares)', 'Purchase value', '% of portfolio'];
+function holdingsTableText(table, delim) {
+  const d = delim || ',';
+  const text = v => {
+    let s = v == null ? '' : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    if (s.indexOf(d) >= 0 || /["\r\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  };
+  const round = (v, dp) => {
+    if (v == null || !isFinite(v)) return '';
+    const f = Math.pow(10, dp);
+    return String(Math.round(v * f) / f);
+  };
+  const lines = [HOLDINGS_TABLE_HEADERS.map(text).join(d)];
+  const t = table || { rows: [] };
+  (t.rows || []).forEach(r => {
+    lines.push([
+      text(r.name), text(r.ticker), text(r.market), text(r.currency),
+      round(r.purchasePrice, 6), round(r.shares, 8), round(r.purchaseValue, 2), round(r.pctOfPortfolio, 2)
+    ].join(d));
+  });
+  if ((t.rows || []).length) {
+    lines.push([
+      text('Total'), '', '', text(t.currencies && t.currencies.length === 1 ? t.currencies[0] : ''),
+      '', '', round(t.totalPurchaseValue, 2), round(t.selectionPct, 2)
+    ].join(d));
+  }
+  return lines.join('\r\n') + '\r\n';
+}
+
   const PBCore = {
     TRIGGER_COOLDOWN_MS,
     SESSIONS,
@@ -2419,7 +2544,10 @@ function rotationSummary(classified) {
     buildIntradaySeries,
     combineSectorSeries,
     downsampleRotationSeries,
-    rotationSummary
+    rotationSummary,
+    buildHoldingsTable,
+    holdingsTableText,
+    HOLDINGS_TABLE_HEADERS
   };
 
   // Dual export: CommonJS for the Worker bundler + Node tests; global for the

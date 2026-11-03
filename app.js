@@ -162,25 +162,38 @@ async function decryptBlob(code, blob) {
 // ignored, so prefer the Web Share sheet (saves into Files / iCloud Drive);
 // fall back to a download anchor on desktop and browsers without file sharing.
 async function saveBackupFile(jsonString) {
-  const filename = `playbook-backup-${PBCore.localDateKey()}.json`;
+  const downloaded = await saveTextFile(jsonString, `playbook-backup-${PBCore.localDateKey()}.json`,
+    'application/json', 'Playbook backup');
+  // The share sheet is its own feedback; only the download path toasts.
+  return downloaded ? { ok: true, code: 'backup-saved' } : undefined;
+}
+// Settings -> Export holdings. Same save path as the backup (share sheet on iOS).
+async function saveHoldingsCsv(csv, filename) {
+  // A UTF-8 BOM so Excel reads names with accents correctly instead of as mojibake.
+  const downloaded = await saveTextFile('\uFEFF' + csv, filename, 'text/csv', 'Playbook holdings');
+  return downloaded ? { ok: true, code: 'holdings-exported' } : undefined;
+}
+// Returns true when it fell back to a download anchor, undefined when the share
+// sheet handled it (saved or dismissed).
+async function saveTextFile(text, filename, type, title) {
   try {
-    const file = new File([jsonString], filename, { type: 'application/json' });
+    const file = new File([text], filename, { type });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'Playbook backup' });
+      await navigator.share({ files: [file], title });
       return; // user saved or cancelled within the sheet
     }
   } catch (e) {
     if (e && e.name === 'AbortError') return; // user dismissed the share sheet
     // otherwise fall through to the download path
   }
-  const blob = new Blob([jsonString], { type: 'application/json' });
+  const blob = new Blob([text], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return { ok: true, code: 'backup-saved' };
+  return true;
 }
 function usePersistedState(key, defaultValue) {
   const [value, setValue] = useState(() => LS.get(key, defaultValue));
@@ -2867,6 +2880,7 @@ function describeOutcome(o) {
     case 'feed-unreachable':       return 'Price feed unreachable — showing last known prices';
     // backup
     case 'backup-saved':           return 'Backup saved';
+    case 'holdings-exported':      return 'Holdings table saved';
     default:                       return null;
   }
 }
@@ -3476,9 +3490,9 @@ function App() {
   // Optional server-push backend for always-on, app-closed alerts (premium tier).
   const { pushStatus, connectPush: _connectPush, testPush: _testPush, disconnectPush: _disconnectPush } =
     usePushBackend(pushBackend, setPushBackend, alerts, notifPerm);
-  const { connectPush, testPush, disconnectPush, saveBackup } = useToastEvents({
+  const { connectPush, testPush, disconnectPush, saveBackup, exportHoldings } = useToastEvents({
     connectPush: _connectPush, testPush: _testPush, disconnectPush: _disconnectPush,
-    saveBackup: saveBackupFile,
+    saveBackup: saveBackupFile, exportHoldings: saveHoldingsCsv,
   }, toast);
   const cloudBackup = useCloudBackup(pushBackend, toast);
   const requestNotifPerm = useCallback(async () => {
@@ -3798,6 +3812,7 @@ function App() {
     positions: positions,
     contributions: contributions,
     onExport: exportData,
+    onExportHoldings: exportHoldings,
     onImport: importData,
     cloudBackup: cloudBackup,
     onDeleteHoldings: removePositions,
