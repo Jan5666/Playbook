@@ -522,21 +522,38 @@
   // Minimal promise concurrency limiter: returns limited(fn) that runs at most
   // `concurrency` fns at once. Pure (no globals) — pb-data uses it to cap
   // simultaneous fetch() calls across all proxied requests.
-  function pLimit(concurrency) {
-    const queue = [];
-    let active = 0;
+  // Concurrency limiter with an optional PRIORITY lane.
+  //   limited(fn)                      -> normal lane (FIFO), as it always was
+  //   limited(fn, { priority: true })  -> priority lane, served first
+  // `opts.reserve` keeps that many slots for the normal lane WHILE it has work
+  // waiting, so a priority stream that never lets up (the price sweep runs back to
+  // back while markets are open) cannot starve everything else: with
+  // pLimit(8, { reserve: 2 }) the priority lane gets all 8 slots when nothing else
+  // is queued and at most 6 when something is. reserve 0 (the default) is strict
+  // priority; with no priority calls at all this is the plain FIFO limiter.
+  function pLimit(concurrency, opts) {
+    const reserve = Math.max(0, Math.min(concurrency - 1, (opts && opts.reserve) | 0));
+    const hi = [], lo = [];
+    let active = 0, activeHi = 0;
     const next = () => {
-      while (active < concurrency && queue.length) {
+      while (active < concurrency && (hi.length || lo.length)) {
+        const takeHi = hi.length && (!lo.length || activeHi < concurrency - reserve);
+        const job = takeHi ? hi.shift() : lo.shift();
         active++;
-        const { fn, resolve, reject } = queue.shift();
-        Promise.resolve().then(fn).then(
-          (v) => { active--; resolve(v); next(); },
-          (e) => { active--; reject(e); next(); }
+        if (job.hi) activeHi++;
+        const done = () => { active--; if (job.hi) activeHi--; };
+        Promise.resolve().then(job.fn).then(
+          (v) => { done(); job.resolve(v); next(); },
+          (e) => { done(); job.reject(e); next(); }
         );
       }
     };
-    return function limited(fn) {
-      return new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
+    return function limited(fn, callOpts) {
+      const isHi = !!(callOpts && callOpts.priority);
+      return new Promise((resolve, reject) => {
+        (isHi ? hi : lo).push({ fn, resolve, reject, hi: isHi });
+        next();
+      });
     };
   }
 

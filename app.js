@@ -1907,8 +1907,8 @@ function usePriceFeed(order, fetchKey) {
         if (!due.length) continue;
         const newPrices = await fetchQuoteBatch(ordered, {
           cacheBust: force,
-          // A newer sweep (the refresh button) supersedes this one: stop issuing
-          // batches at the next boundary instead of finishing a stale plan.
+          // A newer sweep (the refresh button) supersedes this one: its workers
+          // take no new symbol instead of finishing a stale plan.
           shouldStop: () => seq !== sweepSeqRef.current,
           // Merge each batch as it lands so holdings paint progressively. Ungated by
           // `seq` on purpose: a fresher quote is welcome whoever fetched it.
@@ -1977,7 +1977,7 @@ function usePriceFeed(order, fetchKey) {
   // reads 'atClose', so nothing is "unhealthy"), so a press during a long sweep did
   // nothing visible for minutes: the sweep it was waiting on was walking ~100 closed
   // US names through six free proxies. A press now SUPERSEDES the sweep: bumping the
-  // sequence makes the old one stop at its next batch boundary (fetchQuoteBatch's
+  // sequence makes the old one stop taking new symbols (fetchQuoteBatch's
   // shouldStop), and a forced, cache-busted sweep starts at once with
   // prioritizeSweep putting the broken and the trading symbols first. Only one sweep
   // ever issues new batches, so this cannot stack the way two full sweeps did.

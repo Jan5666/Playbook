@@ -228,9 +228,21 @@ try {
   // (visually revealed only on a press-and-hold peek); a tap on .refresh-btn refreshes.
   const chipText0 = await evals(ws, `return document.querySelector('.refresh-peek-text')?.textContent || '';`);
   ok('refresh control exposes relative/state text (not bare HH:MM)', /ago|just now|Updating|Updated|Loading/i.test(chipText0), JSON.stringify(chipText0));
-  await evals(ws, `const c=document.querySelector('.refresh-btn'); if(c) c.click(); return true;`);
-  const chipText1 = await evals(ws, `return document.querySelector('.refresh-peek-text')?.textContent || '';`);
-  ok('tapping the button flips status to Updating… instantly', /Updating/i.test(chipText1), JSON.stringify(chipText1));
+  // Record EVERY label the control shows from the tap on, rather than sampling it
+  // once a CDP round trip later. Since the sweep became a worker pool on the
+  // gate's priority lane (2026-11-12) the forced sweep against this mocked feed
+  // can finish inside that round trip -- measured: "Updating…" ~5 ms after the
+  // tap, "Updated ✓" 4-6 ms later -- so a single read reported "Updated ✓" for a
+  // control that had flipped correctly. The sample could also pass by luck (a
+  // sweep already running); the first recorded change after the tap cannot.
+  await evals(ws, `window.__peekSeen=[]; const el=document.querySelector('.refresh-peek-text'); if(el){ window.__peekMo=new MutationObserver(()=>window.__peekSeen.push(el.textContent)); window.__peekMo.observe(el,{childList:true,characterData:true,subtree:true}); } return true;`);
+  // The label at the instant of the tap, read in the same evaluation: if a sweep
+  // was already running it already says "Updating…" and no change is recorded.
+  const atTap = await evals(ws, `const t=document.querySelector('.refresh-peek-text')?.textContent || ''; const c=document.querySelector('.refresh-btn'); if(c) c.click(); return t;`);
+  await sleep(50);
+  const seen1 = JSON.parse(await evals(ws, `return JSON.stringify(window.__peekSeen || []);`));
+  const chipText1 = seen1[0] || atTap;
+  ok('tapping the button flips status to Updating… instantly', /Updating/i.test(chipText1), JSON.stringify(seen1));
   await sleep(3000);
   const chipText2 = await evals(ws, `return document.querySelector('.refresh-peek-text')?.textContent || '';`);
   ok('status settles to Updated/relative after the sweep', /Updated|ago/i.test(chipText2), JSON.stringify(chipText2));

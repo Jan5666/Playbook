@@ -254,13 +254,36 @@ Adding a **new runtime file** additionally requires ALL of:
   queued *behind* the in-flight one) left the button a no-op in exactly the SA morning: before
   the bell every quote reads `'atClose'`, so nothing counted as "unhealthy" and the press waited
   minutes for a sweep walking ~100 closed US names. Now `refreshNow` bumps the sweep sequence,
-  the old sweep stops at its next batch boundary (`fetchQuoteBatch`'s `shouldStop`, and a
+  the old sweep stops taking new symbols (`fetchQuoteBatch`'s `shouldStop`, and a
   stopped sweep publishes no miss list), and a forced sweep starts at once. Every sweep is
   ordered by `PBCore.prioritizeSweep`: no quote / `'stale'` / held / missed first, then markets
   in their regular session, then the rest. A **tab switch** still uses `queueRefresh` (the old
   polite queue) so browsing can't keep restarting the sweep. Note `hasExtendedSession` also
   drops the redundant second Yahoo call on markets with no pre/post tier — measured 2 requests
   -> 1 for JSE/TFSA in session.
+- **The sweep is a worker POOL on the gate's PRIORITY lane, not lock-step batches
+  (2026-11-12).** `fetchQuoteBatch` used to take 8 symbols, await ALL of them, then take
+  the next 8 -- so one symbol stalled on a dead proxy (8 s per edge, then the same walk
+  again for Stooq) held the other seven slots idle, and every batch ran as slow as its
+  worst symbol. That is what made the US book crawl at the open, when ~100 US quotes go a
+  session behind together. It also queued FIFO beside the Dashboard's max-range history
+  (every holding, BOTH Yahoo hosts) and the heatmap's 16-at-a-time light quotes, so a
+  launch gave most of the 8 slots to background reads. Now 8 workers each take the next
+  symbol as theirs settles (landed quotes coalesce into `onBatch` every 8 or 300 ms), and
+  `pLimit(8, { reserve: 2 })` serves `{ priority: true }` calls first while keeping 2
+  slots for background work whenever it has any -- never starved, just second. Modelled
+  on the real `pb-data.js` against simulated free proxies (stalls, rate limits, a 403
+  edge), 95 symbols: half the book painted 39.9 s -> 10.3 s, sweep 71.9 s -> 32.1 s; with
+  launch history running, 53.1 s -> 12.5 s and 112.9 s -> 35.8 s; same request count.
+  `morning-feed.test.mjs` E1/E1b and `plimit.test.mjs` pin it (E1b and the priority
+  tests fail on the old code). A superseded sweep starts no new symbol; up to 8 in flight
+  still finish and merge, as an in-flight batch always did. Knock-on: against the mount
+  gate's mocked feed the forced sweep now finishes INSIDE one CDP round trip ("Updating…"
+  ~5 ms after the tap, "Updated ✓" 4-6 ms later), so `verify-refresh-behavior`'s
+  "flips to Updating… instantly" check -- a single read after the click -- went 2-of-3 red
+  while the control was behaving perfectly. It now records every label with a
+  MutationObserver installed before the tap and asserts the FIRST change; passes on both
+  old and new code. A one-shot read of a transient UI state is a race, not a check.
 - **A merge must never step a symbol BACKWARDS in time.** `guardBatch` used to accept any
   plausible quote, and old ones arrive constantly: a proxy replaying its cached pre-open
   response, Stooq's EOD row (yesterday by construction), a superseded sweep's last batch. Each
