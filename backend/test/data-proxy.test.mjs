@@ -64,6 +64,37 @@ const nf = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/v8/fin
 ok('not-found: body returned to the caller, not swallowed', nf === YAHOO_404);
 ok('not-found: only one proxy tried, not the whole ladder', ladder === 1, `tried ${ladder}`);
 
+// ── ...but an upstream REFUSAL in the same envelope is about the proxy's IP ──
+// Yahoo wraps "Unauthorized" / "Too Many Requests" / 5xx in the same
+// {"chart"|"finance":{"result":null,"error":{…}}} shape as a not-found. Those are
+// verdicts on the egress IP, not the symbol. Accepting them ended the ladder with
+// no quote AND floated the refused proxy to the front as lastGoodProxy, so one
+// throttled edge kept costing symbols their quotes while five others sat unused.
+const YAHOO_401 = '{"finance":{"result":null,"error":{"code":"Unauthorized","description":"User is unable to access this feature"}}}';
+const YAHOO_429 = '{"chart":{"result":null,"error":{"code":"Too Many Requests","description":"Rate limited"}}}';
+const YAHOO_500 = '{"chart":{"result":null,"error":{"code":"Internal Server Error","description":"upstream"}}}';
+ok('yahoo Unauthorized envelope IS a proxy error', PBData.looksLikeProxyError(YAHOO_401) === true);
+ok('yahoo Too Many Requests envelope IS a proxy error', PBData.looksLikeProxyError(YAHOO_429) === true);
+ok('yahoo 5xx envelope IS a proxy error', PBData.looksLikeProxyError(YAHOO_500) === true);
+ok('a malformed-symbol answer (Bad Request) still ends the ladder',
+  PBData.looksLikeProxyError('{"chart":{"result":null,"error":{"code":"Bad Request","description":"Invalid input"}}}') === false);
+ok('a null result with no error code is left to the parser',
+  PBData.looksLikeProxyError('{"chart":{"result":null,"error":null},"pad":"aaaaaaaa"}') === false);
+// End to end: the refused edge is skipped, the next one answers, and the refused
+// edge is NOT remembered as the good one.
+PBData._setLastGoodProxy(null);
+PBData._resetProxyHealth();
+const GOOD = '{"chart":{"result":[{"meta":{"regularMarketPrice":1}}],"error":null}}';
+let refusedCalls = [];
+globalThis.fetch = async (u) => {
+  refusedCalls.push(u);
+  return { ok: true, text: async () => (u.includes('corsmirror.com') ? YAHOO_401 : GOOD) };
+};
+const viaNext = await PBData.fetchViaProxies('https://query1.finance.yahoo.com/v8/finance/chart/REFUSED');
+ok('refusal: the next proxy is asked and its body returned', viaNext === GOOD && refusedCalls.length === 2, `tried ${refusedCalls.length}`);
+ok('refusal: the refused proxy is not floated as lastGoodProxy', PBData._lastGoodProxy !== 'corsmirror');
+PBData._resetProxyHealth();
+
 // fetchViaProxies returns the first clean body and floats lastGoodProxy
 PBData._setLastGoodProxy(null);
 let calls = installFetch([{ match: 'finance.yahoo.com', body: '{"ok":true,"padding":"aaaaaaaaaaaaaaaaaaaa"}' }]);

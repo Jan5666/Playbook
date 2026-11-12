@@ -86,6 +86,10 @@
   // Detect proxy responses that returned 200 but contain an upstream error or
   // rate-limit message. Treating these as success would silently propagate
   // stale/wrong data to the UI — better to fall through to the next proxy.
+  // Yahoo error codes that are a verdict on the REQUEST (the symbol does not
+  // exist / is malformed), as opposed to a verdict on whoever sent it. Asking
+  // another proxy cannot change these, so they end the ladder.
+  const UPSTREAM_ANSWER_CODES = /^(not found|bad request|unprocessable entity)$/i;
   function looksLikeProxyError(body) {
     if (!body || body.length < 20) return true;
     const head = body.slice(0, 200);
@@ -100,7 +104,22 @@
     // holding starts costing the others their quotes. Every parser downstream
     // already copes with a null result (fetchQuote's `data?.chart?.result?.[0]`
     // guard falls through to Stooq), so hand the body back and let them decide.
-    if (/^\s*\{\s*"(chart|quoteSummary|finance)"\s*:/.test(head)) return false;
+    //
+    // ...but only when the negative answer is ABOUT THE SYMBOL. Yahoo wraps its
+    // own edge refusals in the very same envelope -- "Unauthorized", "Too Many
+    // Requests", "Internal Server Error" -- and those are verdicts on the IP the
+    // request came from, i.e. on this proxy, not on the ticker. Accepting them as
+    // answers was worse than a wasted round-trip: the ladder stopped at that
+    // proxy, the caller got no quote, AND the proxy was recorded as healthy and
+    // floated to the front as lastGoodProxy -- so an edge Yahoo had started
+    // refusing kept first place and kept costing symbols their quotes, while the
+    // five edges behind it were never asked. A refusal now falls through to the
+    // next proxy (a different egress IP) and counts against this one's health.
+    if (/^\s*\{\s*"(chart|quoteSummary|finance)"\s*:/.test(head)) {
+      if (!/"result"\s*:\s*null/.test(head)) return false;
+      const code = (/"code"\s*:\s*"([^"]*)"/.exec(head) || [])[1];
+      return !!code && !UPSTREAM_ANSWER_CODES.test(code);
+    }
     if (/Too Many Requests|Rate limit exceeded|Server-side requests are not allowed|Free usage is limited|domain_not_registered|"error"\s*:/i.test(head)) return true;
     return false;
   }
