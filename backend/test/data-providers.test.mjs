@@ -129,6 +129,25 @@ globalThis.fetch = async (proxiedUrl) => {
 res = await PBData.fetchQuoteBatch([{ ticker: 'AAPL', market: 'US' }, { ticker: 'MSFT', market: 'US' }]);
 ok('fetchQuoteBatch second pass recovers a missing symbol', res['US:MSFT'] && res['US:MSFT'].price === 400 && msftCalls >= 2);
 
+// onAttempt reports a no-answer symbol PER BATCH, and still does when the sweep is
+// superseded -- onMissing (a whole-sweep verdict) is withheld then, which is how a
+// user pressing refresh while symbols failed never saw the failures in Diagnostics.
+globalThis.fetch = async (proxiedUrl) => {
+  const dec = decodeURIComponent(proxiedUrl);
+  if (dec.includes('/chart/AAPL')) return { ok: true, text: async () => yahooChart('AAPL', 150, 145, 'Apple') };
+  return { ok: false, text: async () => '' };
+};
+let attempts = [], missedVerdict = null, batches = 0;
+await PBData.fetchQuoteBatch([{ ticker: 'AAPL', market: 'US' }, { ticker: 'DEAD', market: 'US' }], {
+  onAttempt: (it) => attempts.push(it.market + ':' + it.ticker),
+  onBatch: () => { batches++; },
+  onMissing: (m) => { missedVerdict = m; },
+  shouldStop: () => batches >= 1          // superseded right after the first batch
+});
+ok('onAttempt names the symbol that got no quote', attempts.includes('US:DEAD'), JSON.stringify(attempts));
+ok('onAttempt does not name a symbol that was priced', !attempts.includes('US:AAPL'));
+ok('...and fires even though the superseded sweep publishes no miss list', missedVerdict === null);
+
 // ── fetchHistory reliability: parallel hosts + second-pass retry ─────────────
 // The chart used to fetch once and give up — a transient proxy miss left the card
 // blank until the user toggled ranges. It must self-heal like the quote batchers.

@@ -194,7 +194,7 @@ const { quoteSettled, hasExtendedSession } = PBCore;
   ok('app.js: the prioritiser sees held and missed symbols as broken',
     /const\s+flagged\s*=\s*new\s+Set\(Object\.keys\(heldRef\.current\)[\s\S]{0,120}?missingRef\.current/.test(appSrc));
   ok('app.js: the merge never steps a symbol backwards in time',
-    /guardBatch[\s\S]{0,900}?if\s*\(PBCore\.quoteOlderThan\(cur\[k\],\s*obj\[k\],\s*now\)\)\s*continue;/.test(appSrc));
+    /guardBatch[\s\S]{0,900}?if\s*\(PBCore\.quoteOlderThan\(cur\[k\],\s*obj\[k\],\s*now\)\)\s*(continue;|\{[^{}]*\{[^{}]*\};\s*continue;\s*\})/.test(appSrc));
 }
 
 // ── The second Yahoo call is skipped only where it cannot say anything new ───

@@ -819,7 +819,7 @@
   // next batch. Per-symbol failures are kept out of `results` so callers can
   // treat absence as "no data"; the rejection reason is logged for diagnostics.
   async function fetchQuoteBatch(items, opts = {}) {
-    const { onBatch, onMissing, cacheBust, shouldStop } = opts;
+    const { onBatch, onMissing, onAttempt, cacheBust, shouldStop } = opts;
     // A superseded sweep stops at the next batch boundary (see usePriceFeed's
     // refreshNow). Batches already in flight finish and still merge — only new
     // ones are not started — and a stopped sweep reports no miss list, because a
@@ -848,6 +848,12 @@
           }
         });
         if (onBatch && Object.keys(fresh).length) onBatch(fresh);
+        // Per-symbol, per-BATCH record of the symbols that got no quote at all.
+        // onMissing below is a whole-sweep verdict and is withheld from a sweep the
+        // refresh button superseded -- so a user pressing refresh while symbols fail
+        // (exactly when they would) never saw those failures in Diagnostics. This
+        // fires as each batch lands, superseded or not.
+        if (onAttempt) batch.forEach(it => { if (!fresh[priceKey(it.market, it.ticker)]) onAttempt(it); });
       }
     };
     await runPass(items, cacheBust);
