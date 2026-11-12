@@ -128,7 +128,13 @@
   // detail view don't stack into one proxy-tripping burst. cacheBust appends a
   // unique &_=<ts> so manual refreshes are distinct urls and bypass de-dupe.
   const _inflight = new Map();
-  const _fetchLimit = pLimit(8);
+  // Priority lane: the price sweep (fetchQuoteBatch) goes ahead of background
+  // reads -- growth-chart history, heatmap/rotation light quotes, fundamentals.
+  // Those used to queue FIFO beside it, so opening the Dashboard (max-range
+  // history for every holding, on BOTH Yahoo hosts) or the Heatmap (16 light
+  // quotes at a time) took most of the 8 slots from the prices the user was
+  // waiting on. 2 slots stay reserved for background work while it has any.
+  const _fetchLimit = pLimit(8, { reserve: 2 });
   // ONE deadline covering the headers AND the body, run inside the limiter.
   //
   // The obvious shape — abort the fetch, then read the body — is wrong, and was
@@ -146,7 +152,7 @@
   // while it is queued for a slot — a request shouldn't time out waiting its turn,
   // so wall-clock-to-failure can still exceed timeoutMs by the queue wait.
   // Returns { ok, status, value }; `value` is whatever `read` produced.
-  function fetchWithDeadline(url, init, timeoutMs, read) {
+  function fetchWithDeadline(url, init, timeoutMs, read, priority) {
     return _fetchLimit(async () => {
       const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
@@ -155,15 +161,15 @@
         if (!res.ok) return { ok: false, status: res.status, value: null };
         return { ok: true, status: res.status, value: await read(res) };
       } finally { if (t) clearTimeout(t); }
-    });
+    }, { priority: !!priority });
   }
-  function fetchViaProxies(url, { timeoutMs = 8000 } = {}) {
+  function fetchViaProxies(url, { timeoutMs = 8000, priority = false } = {}) {
     const existing = _inflight.get(url);
     if (existing) return existing;
     const run = (async () => {
       for (const px of orderedProxies()) {
         try {
-          const out = await fetchWithDeadline(px.build(url), { cache: 'no-store' }, timeoutMs, r => r.text());
+          const out = await fetchWithDeadline(px.build(url), { cache: 'no-store' }, timeoutMs, r => r.text(), priority);
           if (!out.ok) { if (out.status !== 404) noteProxy(px.name, false); continue; }
           const body = px.unwrap(out.value);
           if (looksLikeProxyError(body)) { noteProxy(px.name, false); continue; }
@@ -659,7 +665,8 @@
     // price and the day move overstates (Oracle read +11% against Yahoo's +9%).
     // Extended hours comes from the intraday chart below, which keeps the flag.
     const dailyUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d${cb}`;
-    const dailyText = await fetchViaProxies(dailyUrl);
+    const prio = { priority: !!opts.priority };
+    const dailyText = await fetchViaProxies(dailyUrl, prio);
     let quote = null;
     if (dailyText) {
       try {
@@ -712,7 +719,7 @@
       && quote.sessionDay != null && quote.sessionDay === marketDayKey(Date.now(), market);
     if ((looksStale || inExtHours) && !intradayRedundant) {
       const intraUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1m&range=1d&includePrePost=true${cb}`;
-      const intraText = await fetchViaProxies(intraUrl);
+      const intraText = await fetchViaProxies(intraUrl, prio);
       if (intraText) {
         try {
           const data = JSON.parse(intraText);
@@ -805,7 +812,7 @@
       return null;
     }
     const stooqUrl = `https://stooq.com/q/d/l/?s=${stooqSymbol(ticker, market)}&i=d`;
-    const stooqText = await fetchViaProxies(stooqUrl);
+    const stooqText = await fetchViaProxies(stooqUrl, prio);
     if (stooqText) {
       const stooqQuote = parseStooqCsv(stooqText, market);
       if (stooqQuote) return stooqQuote;
@@ -813,42 +820,72 @@
     console.warn(`Price fetch failed for ${ticker} (${market})`);
     return null;
   }
-  // Batches are awaited sequentially (not parallel across all items) so we don't
-  // hammer shared CORS proxies with a burst that trips their rate limits — each
-  // batch of 4 lets 4 fetchQuote calls race in parallel, then we pause for the
-  // next batch. Per-symbol failures are kept out of `results` so callers can
-  // treat absence as "no data"; the rejection reason is logged for diagnostics.
+  // At most SWEEP_WORKERS symbols are in flight at once (below), so the sweep never
+  // bursts the shared CORS proxies into their rate limits, and its reads ride the
+  // gate's priority lane. Per-symbol failures are kept out of `results` so callers
+  // can treat absence as "no data"; the rejection reason is logged for diagnostics.
   async function fetchQuoteBatch(items, opts = {}) {
-    const { onBatch, onMissing, cacheBust, shouldStop } = opts;
-    // A superseded sweep stops at the next batch boundary (see usePriceFeed's
-    // refreshNow). Batches already in flight finish and still merge — only new
-    // ones are not started — and a stopped sweep reports no miss list, because a
+    const { onBatch, onMissing, onAttempt, cacheBust, shouldStop } = opts;
+    // A superseded sweep stops issuing new symbols (see usePriceFeed's
+    // refreshNow). Symbols already in flight finish and still merge -- only new
+    // ones are not started -- and a stopped sweep reports no miss list, because a
     // plan it abandoned half-way has no verdict on the symbols it never asked for.
     const stopped = () => !!(shouldStop && shouldStop());
     const results = {};
-    const batchSize = 8;
+    // A POOL of SWEEP_WORKERS, not lock-step batches. The sweep used to take 8
+    // symbols, await ALL of them, then take the next 8 -- so one symbol walking the
+    // proxy ladder into a stalled edge (8s per dead proxy, and a failed Yahoo read
+    // then walks it again for Stooq) held the other seven slots idle until it gave
+    // up. Free proxies stall often enough that most batches contained one, which
+    // made every batch as slow as its worst symbol: the "US market takes forever
+    // at the open" report, when ~100 US names all go a session behind at once and
+    // the whole book has to be re-fetched. Each worker now takes the next symbol
+    // the moment its last one settles. Same concurrency, same proxy load -- the
+    // slots just stop waiting on each other.
+    const SWEEP_WORKERS = 8;
+    // Painting: coalesce landed quotes so a ~100-symbol sweep still merges in a
+    // handful of store updates (each merge re-renders every price subscriber), but
+    // never sit on a quote for long -- a flush is due SWEEP_FLUSH_MS after the
+    // first quote of a run lands, or as soon as SWEEP_FLUSH_COUNT have.
+    const SWEEP_FLUSH_COUNT = 8;
+    const SWEEP_FLUSH_MS = 300;
+    let pending = {}, pendingN = 0, flushTimer = null;
+    const flush = () => {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      if (!pendingN) return;
+      const fresh = pending; pending = {}; pendingN = 0;
+      if (onBatch) onBatch(fresh);
+    };
+    const land = (key, quote) => {
+      pending[key] = quote; pendingN++;
+      if (pendingN >= SWEEP_FLUSH_COUNT) flush();
+      else if (!flushTimer && typeof setTimeout === 'function') flushTimer = setTimeout(flush, SWEEP_FLUSH_MS);
+    };
     const runPass = async (list, bust) => {
-      for (let i = 0; i < list.length; i += batchSize) {
-        if (stopped()) return;
-        const batch = list.slice(i, i + batchSize);
-        const settled = await Promise.allSettled(batch.map(it => fetchQuote(it.ticker, it.market, { cacheBust: bust })));
-        // Collect just this batch's fresh quotes so the caller can paint them
-        // immediately — the portfolio's "today" move then updates as the first
-        // holdings land instead of waiting for the whole sweep (watchlist, ribbon,
-        // recommended lists) to finish.
-        const fresh = {};
-        settled.forEach((r, idx) => {
-          const { market, ticker } = batch[idx];
-          const key = priceKey(market, ticker);
-          if (r.status === 'fulfilled' && r.value) {
-            results[key] = r.value;
-            fresh[key] = r.value;
-          } else if (r.status === 'rejected') {
-            console.warn(`fetchQuoteBatch: ${key} rejected`, r.reason);
+      let next = 0;
+      const worker = async () => {
+        while (next < list.length) {
+          if (stopped()) return;
+          const it = list[next++];
+          const key = priceKey(it.market, it.ticker);
+          let q = null;
+          try {
+            q = await fetchQuote(it.ticker, it.market, { cacheBust: bust, priority: true });
+          } catch (e) {
+            console.warn(`fetchQuoteBatch: ${key} rejected`, e);
           }
-        });
-        if (onBatch && Object.keys(fresh).length) onBatch(fresh);
-      }
+          if (q) { results[key] = q; land(key, q); }
+          // Per-symbol record of a symbol that got no quote at all. onMissing below
+          // is a whole-sweep verdict and is withheld from a sweep the refresh button
+          // superseded -- so a user pressing refresh while symbols fail (exactly
+          // when they would) never saw those failures in Diagnostics. This fires as
+          // each symbol settles, superseded or not.
+          else if (onAttempt) onAttempt(it);
+        }
+      };
+      const n = Math.min(SWEEP_WORKERS, list.length);
+      await Promise.all(Array.from({ length: n }, worker));
+      flush();
     };
     await runPass(items, cacheBust);
     // Second pass for any symbols that came back empty. Non-US markets (JSE/LSE/

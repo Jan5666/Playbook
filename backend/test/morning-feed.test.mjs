@@ -110,27 +110,62 @@ if (!isChild) {
     ok('D: an empty list is fine', prioritizeSweep([], P, now).length === 0);
   }
 
-  // ── E1. A superseded sweep stops at the next batch boundary ──────────────
+  // ── E1. A superseded sweep starts no new symbol ──────────────────────────
   // Pristine: fetchQuoteBatch ignored shouldStop and walked all its batches.
+  // Since 2026-11-12 the sweep is a worker POOL, not lock-step batches, so the
+  // guarantee is stated per symbol: once shouldStop flips, no worker takes another
+  // one; whatever is already in flight (at most SWEEP_WORKERS) finishes and still
+  // merges, exactly as an in-flight batch always did.
   {
     const YQ = (sym) => JSON.stringify({ chart: { result: [{
       meta: { regularMarketPrice: 10, currency: 'USD', regularMarketTime: Math.floor(Date.now() / 1000), symbol: sym },
       timestamp: [Math.floor(Date.now() / 1000) - 86400, Math.floor(Date.now() / 1000)],
       indicators: { quote: [{ close: [9.5, 10] }] } }] } });
     const calls = [];
+    const symOf = (u) => (decodeURIComponent(u).match(/chart\/([^?]+)/) || [])[1];
     globalThis.fetch = async (u) => { calls.push(u); return { ok: true, status: 200, text: async () => YQ('X') }; };
     PBData._setLastGoodProxy(null); PBData._resetProxyHealth();
     const items = Array.from({ length: 24 }, (_, i) => ({ market: 'CRYPTO', ticker: 'C' + i + '-USD' }));
-    let batches = 0, missingCalled = false;
+    let landed = 0, missingCalled = false;
+    let stopAt = null;
     await PBData.fetchQuoteBatch(items, {
-      onBatch: () => { batches++; },
+      onBatch: (fresh) => { landed += Object.keys(fresh).length; },
       onMissing: () => { missingCalled = true; },
-      shouldStop: () => batches >= 1,           // superseded once the first batch landed
+      // superseded the moment 8 symbols have been asked for
+      shouldStop: () => { const n = new Set(calls.map(symOf)).size; if (n >= 8 && stopAt == null) stopAt = n; return n >= 8; },
     });
-    ok('E1: a superseded sweep issues no further batches', batches === 1, `${batches} batch(es)`);
+    const touched = new Set(calls.map(symOf)).size;
+    ok('E1: a superseded sweep starts no new symbol', touched === 8, `${touched} symbols`);
+    ok('E1: the symbols already in flight still merge', landed === 8, `${landed} landed`);
     ok('E1: and publishes no miss list for a plan it abandoned', missingCalled === false);
-    const touched = new Set(calls.map(u => (decodeURIComponent(u).match(/chart\/([^?]+)/) || [])[1])).size;
-    ok('E1: only the first batch\'s symbols were requested', touched === 8, `${touched} symbols`);
+  }
+
+  // ── E1b. One slow symbol no longer holds the other slots idle ─────────────
+  // Pristine: lock-step batches of 8 -- the sweep awaited EVERY symbol of a batch
+  // before starting the next, so one symbol stalled on a dead proxy kept seven
+  // slots empty for its whole timeout. With the pool, the other workers carry on.
+  {
+    const YQ = JSON.stringify({ chart: { result: [{
+      meta: { regularMarketPrice: 10, currency: 'USD', regularMarketTime: Math.floor(Date.now() / 1000), symbol: 'X' },
+      timestamp: [Math.floor(Date.now() / 1000) - 86400, Math.floor(Date.now() / 1000)],
+      indicators: { quote: [{ close: [9.5, 10] }] } }] } });
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const started = new Set();
+    globalThis.fetch = async (u) => {
+      const sym = (decodeURIComponent(u).match(/chart\/([^?]+)/) || [])[1];
+      started.add(sym);
+      if (sym === 'C0-USD') await gate;                 // the stalled one
+      return { ok: true, status: 200, text: async () => YQ };
+    };
+    PBData._setLastGoodProxy(null); PBData._resetProxyHealth();
+    const items = Array.from({ length: 24 }, (_, i) => ({ market: 'CRYPTO', ticker: 'C' + i + '-USD' }));
+    const done = PBData.fetchQuoteBatch(items, {});
+    for (let i = 0; i < 50; i++) await new Promise(r => setImmediate(r));
+    ok('E1b: while one symbol stalls, the rest of the sweep keeps going', started.size === 24, `${started.size} of 24 started`);
+    release();
+    const res = await done;
+    ok('E1b: and the stalled symbol still lands when it answers', !!res['CRYPTO:C0-USD'] && Object.keys(res).length === 24);
   }
 
   // ── E2. The auto-poll can no longer be served an arbitrarily old proxy cache ─

@@ -95,6 +95,37 @@ ok('refusal: the next proxy is asked and its body returned', viaNext === GOOD &&
 ok('refusal: the refused proxy is not floated as lastGoodProxy', PBData._lastGoodProxy !== 'corsmirror');
 PBData._resetProxyHealth();
 
+// ── The price sweep rides the gate's PRIORITY lane ──────────────────────────
+// Saturate the shared gate with stalled background reads (history, light quotes),
+// then ask for a sweep-priority url: when ONE slot frees it must go to the sweep,
+// not to the next background read in the FIFO.
+{
+  PBData._setLastGoodProxy(null); PBData._resetProxyHealth();
+  const held = [];
+  const admitted = [];
+  globalThis.fetch = (u) => new Promise(res => {
+    const tag = decodeURIComponent(u).match(/\/(BG\d+|SWEEP)\b/);
+    admitted.push(tag ? tag[1] : '?');
+    held.push(() => res({ ok: true, status: 200, text: async () => '{"chart":{"result":[{"meta":{}}]},"pad":"xxxxxxxxxx"}' }));
+  });
+  const bg = Array.from({ length: 12 }, (_, i) => PBData.fetchViaProxies('https://query1.finance.yahoo.com/v8/finance/chart/BG' + i));
+  const sweep = PBData.fetchViaProxies('https://query1.finance.yahoo.com/v8/finance/chart/SWEEP', { priority: true });
+  await new Promise(r => setTimeout(r, 5));
+  ok('gate saturated by background reads (8 in flight, sweep queued)', admitted.length === 8 && !admitted.includes('SWEEP'), admitted.join(','));
+  held.shift()();                       // one background read finishes
+  await new Promise(r => setTimeout(r, 5));
+  ok('the freed slot goes to the sweep, not the next background read', admitted[8] === 'SWEEP', admitted.slice(8).join(','));
+  while (held.length) { held.shift()(); await new Promise(r => setTimeout(r, 1)); }
+  await Promise.all(bg.concat([sweep]));
+}
+// ...and fetchQuoteBatch is what asks for it.
+const dataSrc = readFileSync(join(here, '..', '..', 'pb-data.js'), 'utf8');
+ok('fetchQuoteBatch requests the priority lane', /fetchQuote\(it\.ticker, it\.market, \{ cacheBust: bust, priority: true \}\)/.test(dataSrc));
+ok('fetchQuote threads priority to every Yahoo/Stooq read',
+  (dataSrc.match(/fetchViaProxies\((dailyUrl|intraUrl|stooqUrl), prio\)/g) || []).length === 3);
+ok('the shared gate keeps a reserve for background work', /const _fetchLimit = pLimit\(8, \{ reserve: 2 \}\);/.test(dataSrc));
+PBData._resetProxyHealth();
+
 // fetchViaProxies returns the first clean body and floats lastGoodProxy
 PBData._setLastGoodProxy(null);
 let calls = installFetch([{ match: 'finance.yahoo.com', body: '{"ok":true,"padding":"aaaaaaaaaaaaaaaaaaaa"}' }]);

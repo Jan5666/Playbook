@@ -160,5 +160,30 @@ out = rows([pos('NPN'), pos('XYZ')], {
 }, {}, NOW);
 ok('...and reported the moment the market opens', out.length === 1 && out[0].label === 'JSE:XYZ');
 
+// ── The last fetch ATTEMPT, so "failing" and "answered with an older session"
+//    stop looking identical (2026-11-12: five TFSA ETFs 17h old, no flag at all) ──
+const behind = { price: 250, prevClose: 248, sessionDay: TUE, regularMarketTime: sast(4, 17, 0), fetchedAt: sast(4, 20), source: 'yahoo+intraday' };
+const book = { 'JSE:NPN': healthy, 'JSE:XYZ': behind };
+out = rows([pos('NPN'), pos('XYZ')], book, {}, NOW);
+ok('no attempt recorded reads as such', /try: none yet/.test(byKey(out)['JSE:XYZ']), byKey(out)['JSE:XYZ']);
+out = rows([pos('NPN'), pos('XYZ')], book, { attempts: { 'JSE:XYZ': { at: NOW - 120000, outcome: 'none' } } }, NOW);
+ok('a no-answer attempt is named', /NO ANSWER/.test(byKey(out)['JSE:XYZ']), byKey(out)['JSE:XYZ']);
+out = rows([pos('NPN'), pos('XYZ')], book, { attempts: { 'JSE:XYZ': {
+  at: NOW - 60000, outcome: 'older', day: TUE, tick: sast(4, 16, 58), src: 'yahoo', heldTick: sast(4, 17, 0) } } }, NOW);
+v = byKey(out)['JSE:XYZ'];
+ok('a dropped older reply is named with what it carried', /DROPPED older reply \(yahoo day 2026-08-04 tick 14:58Z vs held 15:00Z\)/.test(v), v);
+out = rows([pos('NPN'), pos('XYZ')], book, { attempts: { 'JSE:XYZ': {
+  at: NOW - 60000, outcome: 'ok', day: TUE, tick: sast(4, 17, 0), src: 'yahoo' } } }, NOW);
+v = byKey(out)['JSE:XYZ'];
+ok('an accepted reply still a session behind says so (Yahoo has no trade today)', /: ok \(yahoo day 2026-08-04/.test(v), v);
+out = rows([pos('NPN')], { 'JSE:NPN': healthy }, { attempts: { 'JSE:NPN': { at: NOW, outcome: 'ok' } } }, NOW);
+ok('a healthy row is still not listed just because it has an attempt', out.length === 0);
+
+// app.js must actually record the drop -- the readout is useless if nothing writes it.
+const appSrc = readFileSync(join(here, '..', '..', 'app.js'), 'utf8');
+ok('guardBatch records a quoteOlderThan drop', /quoteOlderThan\(cur\[k\], obj\[k\], now\)\) \{\s*attemptsRef\.current\[k\] = \{[^}]*outcome: 'older'/.test(appSrc));
+ok('the sweep wires onAttempt', /onAttempt: \(it\) => \{\s*attemptsRef\.current\[/.test(appSrc));
+ok('feedHealth exposes the attempts', /attempts: attemptsRef\.current/.test(appSrc));
+
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll price-feed-rows tests passed');
 process.exit(failures ? 1 : 0);

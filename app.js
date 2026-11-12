@@ -1770,6 +1770,13 @@ function usePriceFeed(order, fetchKey) {
   // refreshNow builds its recovery list from it (see below) and runs outside the
   // render that produced it. Same reason heldRef exists alongside feedHeld.
   const missingRef = useRef([]);
+  // Last fetch ATTEMPT per symbol, for Diagnostics only: when, and what became of
+  // it -- 'ok' (merged), 'none' (no quote came back), 'older' (a quote came back
+  // but was older than the one held, so quoteOlderThan dropped it), 'held' (the
+  // plausibility gate froze it). The last two used to leave no trace at all, and
+  // 'none' only surfaced if a whole sweep finished un-superseded. Mutated in
+  // place and read when Diagnostics renders -- never drives a render itself.
+  const attemptsRef = useRef({});
   const syncHeld = useCallback(() => {
     const sig = (m) => Object.keys(m).sort().map(k => k + '@' + (m[k] && m[k].at)).join('|');
     const next = heldRef.current;
@@ -1786,9 +1793,16 @@ function usePriceFeed(order, fetchKey) {
       // just an older one — and merging it put yesterday back on a row that had
       // already moved to today. Left out of `out` entirely, so the held quote keeps
       // its object reference (the memo contract) and is simply not touched.
-      if (PBCore.quoteOlderThan(cur[k], obj[k], now)) continue;
+      if (PBCore.quoteOlderThan(cur[k], obj[k], now)) {
+        attemptsRef.current[k] = { at: now, outcome: 'older', day: obj[k].sessionDay || null,
+          tick: obj[k].regularMarketTime || null, src: obj[k].source || null,
+          heldTick: (cur[k] && cur[k].regularMarketTime) || null };
+        continue;
+      }
       const g = PBCore.guardQuote(cur[k], obj[k], now);
       out[k] = g.quote;
+      attemptsRef.current[k] = { at: now, outcome: g.rejected ? 'held' : 'ok', day: obj[k].sessionDay || null,
+        tick: obj[k].regularMarketTime || null, src: obj[k].source || null };
       // guardQuote's verdict used to be dropped on the floor right here (only
       // `.quote` was read). A rejected symbol keeps its LAST GOOD quote — a
       // believable price wearing an old session — which looks exactly like a symbol
@@ -1893,12 +1907,15 @@ function usePriceFeed(order, fetchKey) {
         if (!due.length) continue;
         const newPrices = await fetchQuoteBatch(ordered, {
           cacheBust: force,
-          // A newer sweep (the refresh button) supersedes this one: stop issuing
-          // batches at the next boundary instead of finishing a stale plan.
+          // A newer sweep (the refresh button) supersedes this one: its workers
+          // take no new symbol instead of finishing a stale plan.
           shouldStop: () => seq !== sweepSeqRef.current,
           // Merge each batch as it lands so holdings paint progressively. Ungated by
           // `seq` on purpose: a fresher quote is welcome whoever fetched it.
           onBatch: (partial) => { PBStore.mergePrices(guardBatch(partial)); persistPrices(); },
+          onAttempt: (it) => {
+            attemptsRef.current[priceKey(it.market, it.ticker)] = { at: Date.now(), outcome: 'none' };
+          },
           // The sweep's own miss list. failStreak cannot stand in for it: it resets
           // to 0 whenever ANY symbol lands, so a sweep that priced 59 of 60 is
           // indistinguishable from a clean one and the "feed unreachable" toast can
@@ -1960,7 +1977,7 @@ function usePriceFeed(order, fetchKey) {
   // reads 'atClose', so nothing is "unhealthy"), so a press during a long sweep did
   // nothing visible for minutes: the sweep it was waiting on was walking ~100 closed
   // US names through six free proxies. A press now SUPERSEDES the sweep: bumping the
-  // sequence makes the old one stop at its next batch boundary (fetchQuoteBatch's
+  // sequence makes the old one stop taking new symbols (fetchQuoteBatch's
   // shouldStop), and a forced, cache-busted sweep starts at once with
   // prioritizeSweep putting the broken and the trading symbols first. Only one sweep
   // ever issues new batches, so this cannot stack the way two full sweeps did.
@@ -1993,7 +2010,7 @@ function usePriceFeed(order, fetchKey) {
   // out the next interval tick.
   usePolledRefresh(refresh, pollMs, OPEN_POLL_MS, fetchKey);
   const feedHealth = useMemo(
-    () => ({ missing: feedMissing, held: feedHeld, sweepSize: order.length }),
+    () => ({ missing: feedMissing, held: feedHeld, sweepSize: order.length, attempts: attemptsRef.current }),
     [feedMissing, feedHeld, order.length]);
   return { loading, lastUpdate, failStreak, refresh, refreshNow, queueRefresh, mergePrices, feedHealth };
 }

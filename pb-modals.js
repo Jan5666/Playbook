@@ -1046,6 +1046,17 @@ function priceFeedRows(positions, prices, feedHealth, nowMs) {
     bits.push('age ' + (q && q.fetchedAt ? fmtAgo(q.fetchedAt, nowMs) : 'never'));
     bits.push('day ' + ((q && q.sessionDay) || 'n/a') + ' vs ' + (marketDayKey(nowMs, market) || '?'));
     bits.push(quoteSessionState(q, market, nowMs));
+    // What the LAST fetch attempt for this symbol actually got. This is the line
+    // that separates "the feed is failing" from "the feed answers, but with an
+    // older session than we hold" -- the dump cannot tell those apart otherwise.
+    const att = health.attempts && health.attempts[key];
+    const hhmm = (t) => (typeof t === 'number' && isFinite(t)) ? new Date(t).toISOString().slice(11, 16) + 'Z' : '?';
+    if (!att) bits.push('try: none yet');
+    else if (att.outcome === 'none') bits.push('try ' + fmtAgo(att.at, nowMs) + ': NO ANSWER');
+    else if (att.outcome === 'older') bits.push('try ' + fmtAgo(att.at, nowMs) + ': DROPPED older reply (' + (att.src || '?')
+      + ' day ' + (att.day || 'n/a') + ' tick ' + hhmm(att.tick) + ' vs held ' + hhmm(att.heldTick) + ')');
+    else bits.push('try ' + fmtAgo(att.at, nowMs) + ': ' + att.outcome + ' (' + (att.src || '?') + ' day ' + (att.day || 'n/a')
+      + ' tick ' + hhmm(att.tick) + ')');
     if (missed.has(key)) bits.push('MISSED SWEEP');
     if (held[key]) bits.push('HELD at ' + held[key].price);
     rows.push({ label: key, value: bits.join(' | ') });
